@@ -1,6 +1,6 @@
 # oxblocks
 
-A Monero block explorer for `monerod`, written in Rust.
+Oxide Blocks is a Monero block explorer for `monerod`, written in Rust.
 
 Server-rendered HTML plus a JSON API. No JavaScript, no cookies, no external assets,
 no database.
