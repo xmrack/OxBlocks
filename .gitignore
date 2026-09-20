@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Captured node data is reproducible; fixtures under fixtures/ are not ignored
+# because the test suite depends on them.
+/tmp
+
+# Compiled oracle binaries. Rebuild with tools/txextra-oracle/build.sh, which
+# needs Monero's headers -- so they are artifacts, not sources.
+/tools/txextra-oracle/batch
+/tools/txextra-oracle/oracle
+__pycache__/

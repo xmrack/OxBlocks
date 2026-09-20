@@ -1,0 +1,11 @@
+{
+  "data": {
+    "api": 65538,
+    "blockchain_height": 134861,
+    "git_branch_name": "k-anon-tx",
+    "last_git_commit_date": "2026-09-17",
+    "last_git_commit_hash": "71ba956",
+    "monero_version_full": "0.18.1.0-fc49af622"
+  },
+  "status": "success"
+}

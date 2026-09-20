@@ -1,0 +1,28 @@
+{
+  "data": {
+    "block_height": 134720,
+    "current_height": 134861,
+    "hash": "075c7a8353f33c5b905c803428ba13c3f76394c431ca0d481005b17186503a51",
+    "size": 240,
+    "timestamp": 1789694651,
+    "timestamp_utc": "2026-09-18 01:24:11",
+    "txs": [
+      {
+        "coinbase": true,
+        "extra": "012ab64acb47c18fd7ba0678de6f62310c769f6999267280e26ce11b1d7093777f",
+        "mixin": 0,
+        "payment_id": "",
+        "payment_id8": "",
+        "rct_type": 0,
+        "tx_fee": 0,
+        "tx_hash": "5637791e056fbc8629cb62b2279fdd4b6d636acfaa230248d53c466ce0415f9b",
+        "tx_size": 240,
+        "tx_version": 1,
+        "unlock_time": 134780,
+        "xmr_inputs": 0,
+        "xmr_outputs": 15471130882154
+      }
+    ]
+  },
+  "status": "success"
+}

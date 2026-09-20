@@ -1,0 +1,15 @@
+{
+  "credits": 0,
+  "outs": [
+    {
+      "height": 4733,
+      "key": "fb5e7415133c8e08d29f6592a274169f3480ef66925db5ded7a3bedf760b33ab",
+      "mask": "59a03a3153a994d72327e4d92421d3e3291b1fa1b240de44b92d7f62ec0128f1",
+      "txid": "",
+      "unlocked": true
+    }
+  ],
+  "status": "OK",
+  "top_hash": "",
+  "untrusted": false
+}

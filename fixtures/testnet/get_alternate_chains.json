@@ -1,0 +1,166 @@
+{
+  "id": "0",
+  "jsonrpc": "2.0",
+  "result": {
+    "chains": [
+      {
+        "block_hash": "25f6f4cb288f204b2d595be2f3dec1c7cbb648d9d8f84c818c28e8a4d9e0e6fb",
+        "block_hashes": [
+          "25f6f4cb288f204b2d595be2f3dec1c7cbb648d9d8f84c818c28e8a4d9e0e6fb"
+        ],
+        "difficulty": 134741,
+        "difficulty_top64": 0,
+        "height": 134740,
+        "length": 1,
+        "main_chain_parent_block": "25393b3fcbcb08e0716e39a082526c3ec63408fed2042d3d03bdfe9edf8f1d96",
+        "wide_difficulty": "0x20e55"
+      },
+      {
+        "block_hash": "63e82f23ff340c243c2ae6321fa60c180fd0ee5427915b8f9fe1aa70e2a9d69e",
+        "block_hashes": [
+          "63e82f23ff340c243c2ae6321fa60c180fd0ee5427915b8f9fe1aa70e2a9d69e"
+        ],
+        "difficulty": 134794,
+        "difficulty_top64": 0,
+        "height": 134793,
+        "length": 1,
+        "main_chain_parent_block": "dea2bb380f87b3d0b49ba4c23e7fedb859ad275c3e7ad81d74676c2f11ead499",
+        "wide_difficulty": "0x20e8a"
+      },
+      {
+        "block_hash": "5c7da2dac5edd9df388e717494e7d6335ab19dd1264fcabcd69888590f659197",
+        "block_hashes": [
+          "5c7da2dac5edd9df388e717494e7d6335ab19dd1264fcabcd69888590f659197"
+        ],
+        "difficulty": 134809,
+        "difficulty_top64": 0,
+        "height": 134808,
+        "length": 1,
+        "main_chain_parent_block": "5dc7c87c2503e63906dfd4dfe821d822f040d8d948522a63b95285d1f81cfd18",
+        "wide_difficulty": "0x20e99"
+      },
+      {
+        "block_hash": "8e63b1a3b5792146bc14fa25e075f97479a47ad9a22dc4402142722e8136a87d",
+        "block_hashes": [
+          "8e63b1a3b5792146bc14fa25e075f97479a47ad9a22dc4402142722e8136a87d"
+        ],
+        "difficulty": 134803,
+        "difficulty_top64": 0,
+        "height": 134802,
+        "length": 1,
+        "main_chain_parent_block": "da124567fd1bc7df79bb1a64ab8f2aa640a58bc1504d8c6a31481505e132b578",
+        "wide_difficulty": "0x20e93"
+      },
+      {
+        "block_hash": "8ad9721bdcdf7717ede67e8cc2d5dd6a94ee285b1f14be6dd09aac9009811a78",
+        "block_hashes": [
+          "8ad9721bdcdf7717ede67e8cc2d5dd6a94ee285b1f14be6dd09aac9009811a78"
+        ],
+        "difficulty": 134777,
+        "difficulty_top64": 0,
+        "height": 134776,
+        "length": 1,
+        "main_chain_parent_block": "914651f826328b2ac5bfee48eab074decc67684b889ee844770c9bb48a63ef76",
+        "wide_difficulty": "0x20e79"
+      },
+      {
+        "block_hash": "e1017491225244fa01b267b9f7768b7f094e9372b59289f11b677c37578dda44",
+        "block_hashes": [
+          "e1017491225244fa01b267b9f7768b7f094e9372b59289f11b677c37578dda44"
+        ],
+        "difficulty": 134806,
+        "difficulty_top64": 0,
+        "height": 134805,
+        "length": 1,
+        "main_chain_parent_block": "bc3fd850ea5e41d04fdc3de2eee58e8211c6ab1615e5942018938bd68683491e",
+        "wide_difficulty": "0x20e96"
+      },
+      {
+        "block_hash": "d450fff1f031f09cadce498681b22d02bed979340e688c4460a90e5d8ecbfcfc",
+        "block_hashes": [
+          "d450fff1f031f09cadce498681b22d02bed979340e688c4460a90e5d8ecbfcfc"
+        ],
+        "difficulty": 134800,
+        "difficulty_top64": 0,
+        "height": 134799,
+        "length": 1,
+        "main_chain_parent_block": "4945332bfafe93cee04886ac1d1b07c2316fa8636f61b5b822bc68f03b0553ae",
+        "wide_difficulty": "0x20e90"
+      },
+      {
+        "block_hash": "6e8783047ccf5cf16140464aeddcec93623621947ab1705b7a90806b9b178a7a",
+        "block_hashes": [
+          "6e8783047ccf5cf16140464aeddcec93623621947ab1705b7a90806b9b178a7a"
+        ],
+        "difficulty": 134788,
+        "difficulty_top64": 0,
+        "height": 134787,
+        "length": 1,
+        "main_chain_parent_block": "d8a464230524c643698317e9e43933575ee53f00247ae62757d7f6d429000e57",
+        "wide_difficulty": "0x20e84"
+      },
+      {
+        "block_hash": "c1f9498edd4b37e2df4de7a945512edd291a54d73812720114ccc6c951631c33",
+        "block_hashes": [
+          "c1f9498edd4b37e2df4de7a945512edd291a54d73812720114ccc6c951631c33"
+        ],
+        "difficulty": 134753,
+        "difficulty_top64": 0,
+        "height": 134752,
+        "length": 1,
+        "main_chain_parent_block": "46285cfb9695f7ce7bebe4dd671e65c526d2cb6f934db073ccdf2e810965af36",
+        "wide_difficulty": "0x20e61"
+      },
+      {
+        "block_hash": "4e7b11e9ad72d8eebedab15ecad252b65969fac98a91c6ca9204669cb4abe9dd",
+        "block_hashes": [
+          "4e7b11e9ad72d8eebedab15ecad252b65969fac98a91c6ca9204669cb4abe9dd"
+        ],
+        "difficulty": 134744,
+        "difficulty_top64": 0,
+        "height": 134743,
+        "length": 1,
+        "main_chain_parent_block": "dfef8b68b900c18240eb593f95136d7f42c5c9867b469ebf6c11c927102bc111",
+        "wide_difficulty": "0x20e58"
+      },
+      {
+        "block_hash": "d3bb6092e35a572b4ee87ae2e02559848e0288e3e78c69ac6028e34ce9e7c209",
+        "block_hashes": [
+          "d3bb6092e35a572b4ee87ae2e02559848e0288e3e78c69ac6028e34ce9e7c209"
+        ],
+        "difficulty": 134791,
+        "difficulty_top64": 0,
+        "height": 134790,
+        "length": 1,
+        "main_chain_parent_block": "decc80643eee78c7968d86c568c55b789d00064ea0438308effe85ce685e3974",
+        "wide_difficulty": "0x20e87"
+      },
+      {
+        "block_hash": "644b3e32943114cf8f7eedc9148d8ea048f8f1f58160e35ac344e5cbdd444b72",
+        "block_hashes": [
+          "644b3e32943114cf8f7eedc9148d8ea048f8f1f58160e35ac344e5cbdd444b72"
+        ],
+        "difficulty": 134780,
+        "difficulty_top64": 0,
+        "height": 134779,
+        "length": 1,
+        "main_chain_parent_block": "2c3dcd55a611047e00b14a3741fe645f130b4085f4697f832fc14eee10e432c0",
+        "wide_difficulty": "0x20e7c"
+      },
+      {
+        "block_hash": "6e611f079797dbf1b725956f01fe9514c4e50b9eccc3e6d136445082b02f9b01",
+        "block_hashes": [
+          "6e611f079797dbf1b725956f01fe9514c4e50b9eccc3e6d136445082b02f9b01"
+        ],
+        "difficulty": 134797,
+        "difficulty_top64": 0,
+        "height": 134796,
+        "length": 1,
+        "main_chain_parent_block": "d7b022aad132b467419b6150ea3367e4f0a4286083871cf99d909c21a5ac3772",
+        "wide_difficulty": "0x20e8d"
+      }
+    ],
+    "status": "OK",
+    "untrusted": false
+  }
+}

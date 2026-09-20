@@ -1,0 +1,43 @@
+{
+  "data": {
+    "block_height": 3900,
+    "current_height": 134861,
+    "hash": "64bf27a607d419dfbebecdce5e1a8df70c1f8e144c44666fdb3694d1881dfd37",
+    "size": 8362,
+    "timestamp": 1789689716,
+    "timestamp_utc": "2026-09-18 00:01:56",
+    "txs": [
+      {
+        "coinbase": true,
+        "extra": "0195ef777e1a75634e1da0096787cf1e6d69bf43549b85ace72045f5b59c7fd4cf",
+        "mixin": 0,
+        "payment_id": "",
+        "payment_id8": "",
+        "rct_type": 0,
+        "tx_fee": 0,
+        "tx_hash": "97faa8bed4f09efbbc05d0051aabcff0282816969bacbfceb461e22a6da60acd",
+        "tx_size": 276,
+        "tx_version": 1,
+        "unlock_time": 3960,
+        "xmr_inputs": 0,
+        "xmr_outputs": 17542876400215
+      },
+      {
+        "coinbase": false,
+        "extra": "0142d9a2a7154d62290790376326328c105f1266f60b509a77cf8b878d5fb5257d",
+        "mixin": 16,
+        "payment_id": "",
+        "payment_id8": "",
+        "rct_type": 0,
+        "tx_fee": 16000000000,
+        "tx_hash": "1a8fb2131e5320cc7ba7f4e2312ee5ab255675cce76097336d498088c59bb0ac",
+        "tx_size": 8086,
+        "tx_version": 1,
+        "unlock_time": 0,
+        "xmr_inputs": 10580000000000,
+        "xmr_outputs": 10564000000000
+      }
+    ]
+  },
+  "status": "success"
+}

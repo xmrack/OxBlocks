@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # A broken intra-doc link is a broken claim: the docs here carry the
+      # reasoning, and a link that no longer resolves usually means the thing
+      # it named has been renamed or removed.
+      - name: Docs
+        run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      # No daemon and no network: every test that needs one is #[ignore]d, and
+      # the fixtures under fixtures/ are checked in precisely so this holds.
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Build release
+        run: cargo build --workspace --release --locked
+
+  # rust-version in Cargo.toml and the Dockerfile's base image both claim 1.88.
+  # An unchecked minimum drifts upward silently the first time a dependency or
+  # a language feature needs more, and the Dockerfile stops building.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build at the declared minimum supported Rust version
+        run: cargo check --workspace --all-targets --locked
+
+  # The memory-safety claim is compiler-enforced, but only if nothing quietly
+  # relaxes it. This fails if `forbid(unsafe_code)` is dropped from any crate.
+  unsafe-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every crate must forbid unsafe
+        run: ./tools/check-unsafe.sh
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources

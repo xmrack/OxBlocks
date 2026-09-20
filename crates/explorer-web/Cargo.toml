@@ -1,0 +1,31 @@
+[package]
+name = "explorer-web"
+description = "HTML and JSON front end for oxblocks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "oxblocks"
+path = "src/main.rs"
+
+[dependencies]
+explorer-core = { path = "../explorer-core", version = "0.1.0" }
+monerod-rpc = { path = "../monerod-rpc", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+hex.workspace = true
+
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
+tower = { version = "0.5", features = ["limit", "timeout"] }
+tower-http = { version = "0.6", features = ["trace", "limit", "set-header", "timeout", "catch-panic", "compression-gzip", "compression-deflate", "compression-br"] }
+clap = { version = "4", features = ["derive", "env"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+askama = "0.16"
+
+[lints]
+workspace = true

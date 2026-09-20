@@ -1,0 +1,36 @@
+# cargo-deny configuration.
+#
+# The project's claim is a small, checkable dependency tree. That claim decays
+# silently unless something enforces it, so these checks run in CI.
+
+[advisories]
+# Any advisory against anything we ship is a build failure. An explorer is
+# public-facing; there is no "we will get to it" tier.
+yanked = "deny"
+
+[bans]
+# Two versions of the same crate means two copies of its bugs, and it is
+# usually an unnoticed transitive upgrade rather than a decision.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[licenses]
+# Permissive licences only. The project is MIT; a copyleft dependency would
+# change what downstream users may do with it, which is not a decision to make
+# by accident during a `cargo add`.
+# Exactly what the current tree contains, and nothing speculative: a new
+# licence should require someone to look at the dependency that brought it in.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

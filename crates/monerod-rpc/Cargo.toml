@@ -1,0 +1,27 @@
+[package]
+name = "monerod-rpc"
+description = "Typed async client for the monerod daemon RPC"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+
+[features]
+default = ["tls"]
+# Only needed to reach a remote node over HTTPS. A loopback monerod does not
+# need this, and dropping it removes the whole TLS stack from the build.
+tls = ["reqwest/rustls-tls"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

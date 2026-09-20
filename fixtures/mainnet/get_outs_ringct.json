@@ -1,0 +1,36 @@
+{
+  "credits": 0,
+  "outs": [
+    {
+      "height": 1228296,
+      "key": "d7daee4c35a95e9164fd526b5ec9a4bb34295530300c24f0879748a9468ef699",
+      "mask": "d5478fecc8ca7f38ffb4d07ce1b387a0d2c89f436ee2a69e95209757ec312a00",
+      "txid": "1371613108f69643263de3b29dfaac0aac3a1d699c1bc0fd09a82d444a512e0f",
+      "unlocked": true
+    },
+    {
+      "height": 1241214,
+      "key": "b148051350654ccee296097aeb4a1a1b0c38f27af6f6dd5b913b9181de7db9b7",
+      "mask": "3ec9468a2cb3baa9c2a20b9073e76203da52410534403bde1605dbfbcc519555",
+      "txid": "ffd6a006ed82969a638b50fa6ce93ba6e775c27b2e0b43aa4bb3f8a0a07a7725",
+      "unlocked": true
+    },
+    {
+      "height": 1241468,
+      "key": "9dfe46e20979ff66f0f42380ad54e0d6fc2cd7f1767652f6c0520ebf43cf2553",
+      "mask": "15039780fbf8c4fbadf05fc9465d940af57c82e499940e67008d581972666038",
+      "txid": "59c230a46a3ea9d6b67b23d88a241830d0c5a7817af975c171371ec7381d1d38",
+      "unlocked": true
+    },
+    {
+      "height": 1245466,
+      "key": "10ca6de9e9b3265a93ba6a1194d7469eb730828af74b1291666dbfd99580212d",
+      "mask": "f4921357947d2b14173a710fe6f48e9d85fd65733ca3199348fb725caf9dcf8e",
+      "txid": "c0d63c7dde7e51ca7cc71b9e9bdc0a121c1f0d4a2efd9033aae9a5676382372a",
+      "unlocked": true
+    }
+  ],
+  "status": "OK",
+  "top_hash": "",
+  "untrusted": false
+}

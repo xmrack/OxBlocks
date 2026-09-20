@@ -1,0 +1,31 @@
+{
+  "credits": 0,
+  "status": "OK",
+  "top_hash": "",
+  "txs": [
+    {
+      "as_hex": "",
+      "as_json": "{\n  \"version\": 2, \n  \"unlock_time\": 0, \n  \"vin\": [ {\n      \"key\": {\n        \"amount\": 0, \n        \"key_offsets\": [ 54732528, 2477855, 2419897, 388105, 195959, 12467, 144525, 7341, 1633, 10927, 9187, 3734, 13453, 921, 3804, 1504\n        ], \n        \"k_image\": \"28534d4572eae6a023e7bab3bc7802c61a4c391e15deca5ddc8678c7bdf7699e\"\n      }\n    }\n  ], \n  \"vout\": [ {\n      \"amount\": 0, \n      \"target\": {\n        \"tagged_key\": {\n          \"key\": \"ebb1f3052e74392507bf23bebc068af4149b474a4b8382d2a733d8b3202298bb\", \n          \"view_tag\": \"72\"\n        }\n      }\n    }, {\n      \"amount\": 0, \n      \"target\": {\n        \"tagged_key\": {\n          \"key\": \"87379273eb02ebdceccc73c6987bd33d886c792ca63c573731325298bab4f445\", \n          \"view_tag\": \"68\"\n        }\n      }\n    }\n  ], \n  \"extra\": [ 1, 108, 154, 223, 199, 63, 95, 74, 139, 176, 91, 88, 96, 48, 144, 62, 96, 55, 212, 59, 59, 146, 113, 93, 179, 10, 214, 42, 5, 193, 142, 221, 81, 2, 9, 1, 88, 165, 65, 25, 154, 220, 19, 104\n  ], \n  \"rct_signatures\": {\n    \"type\": 6, \n    \"txnFee\": 6128000000, \n    \"ecdhInfo\": [ {\n        \"amount\": \"103cc3e1454488a8\"\n      }, {\n        \"amount\": \"15298bad46164230\"\n      }], \n    \"outPk\": [ \"5d27107b5585b20de8c3a53904180348b1f73c304287348974f1e9620e7a4c7d\", \"fd5c8558a9e311c1db8e8d4e20636f1610f754c2be52ea833ec8d9ea550773ce\"]\n  }\n}",
+      "block_height": 2700001,
+      "block_timestamp": 1661752945,
+      "confirmations": 420731,
+      "double_spend_seen": false,
+      "in_pool": false,
+      "output_indices": [
+        60424358,
+        60424359
+      ],
+      "prunable_as_hex": "",
+      "prunable_hash": "f751fec3e72547885d895b85538180e38bdc6591b9570067cf5204997eb88629",
+      "pruned_as_hex": "020001020010f0cd8c1a9f9e9701b9d9930189d817f7fa0bb3618de908ad39e10caf55e347961d8d699907dc1de00b28534d4572eae6a023e7bab3bc7802c61a4c391e15deca5ddc8678c7bdf7699e020003ebb1f3052e74392507bf23bebc068af4149b474a4b8382d2a733d8b3202298bb72000387379273eb02ebdceccc73c6987bd33d886c792ca63c573731325298bab4f445682c016c9adfc73f5f4a8bb05b586030903e6037d43b3b92715db30ad62a05c18edd5102090158a541199adc13680680b887ea16103cc3e1454488a815298bad461642305d27107b5585b20de8c3a53904180348b1f73c304287348974f1e9620e7a4c7dfd5c8558a9e311c1db8e8d4e20636f1610f754c2be52ea833ec8d9ea550773ce",
+      "tx_hash": "bf11248dfc573c4d980e4e8b3cfe21ef9a1ef810a1382cd1e7abf0b057d2ca86"
+    }
+  ],
+  "txs_as_hex": [
+    ""
+  ],
+  "txs_as_json": [
+    "{\n  \"version\": 2, \n  \"unlock_time\": 0, \n  \"vin\": [ {\n      \"key\": {\n        \"amount\": 0, \n        \"key_offsets\": [ 54732528, 2477855, 2419897, 388105, 195959, 12467, 144525, 7341, 1633, 10927, 9187, 3734, 13453, 921, 3804, 1504\n        ], \n        \"k_image\": \"28534d4572eae6a023e7bab3bc7802c61a4c391e15deca5ddc8678c7bdf7699e\"\n      }\n    }\n  ], \n  \"vout\": [ {\n      \"amount\": 0, \n      \"target\": {\n        \"tagged_key\": {\n          \"key\": \"ebb1f3052e74392507bf23bebc068af4149b474a4b8382d2a733d8b3202298bb\", \n          \"view_tag\": \"72\"\n        }\n      }\n    }, {\n      \"amount\": 0, \n      \"target\": {\n        \"tagged_key\": {\n          \"key\": \"87379273eb02ebdceccc73c6987bd33d886c792ca63c573731325298bab4f445\", \n          \"view_tag\": \"68\"\n        }\n      }\n    }\n  ], \n  \"extra\": [ 1, 108, 154, 223, 199, 63, 95, 74, 139, 176, 91, 88, 96, 48, 144, 62, 96, 55, 212, 59, 59, 146, 113, 93, 179, 10, 214, 42, 5, 193, 142, 221, 81, 2, 9, 1, 88, 165, 65, 25, 154, 220, 19, 104\n  ], \n  \"rct_signatures\": {\n    \"type\": 6, \n    \"txnFee\": 6128000000, \n    \"ecdhInfo\": [ {\n        \"amount\": \"103cc3e1454488a8\"\n      }, {\n        \"amount\": \"15298bad46164230\"\n      }], \n    \"outPk\": [ \"5d27107b5585b20de8c3a53904180348b1f73c304287348974f1e9620e7a4c7d\", \"fd5c8558a9e311c1db8e8d4e20636f1610f754c2be52ea833ec8d9ea550773ce\"]\n  }\n}"
+  ],
+  "untrusted": false
+}

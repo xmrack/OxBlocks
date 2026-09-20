@@ -1,0 +1,37 @@
+{
+  "id": "0",
+  "jsonrpc": "2.0",
+  "result": {
+    "blob": "0c0cc2faa5f0055b0ad4da7bd13add13136552814aad6b4c32c95d29bf03968dd57f3de6131835ad92000002bc897a01ff80897a01ef9096d9af3b022ee15ed05f71cc4d3dda3d1f3fe7724af90c3dd15e5d1d7886d42639d0cc7be73401f9b95f4fae7e4ce7192b78f9645a25307e93bdc510be558006cf65194d23d18c0211000011eb7f5956130000000000000000000000",
+    "block_header": {
+      "block_size": 103,
+      "block_weight": 103,
+      "cumulative_difficulty": 37327209423680228,
+      "cumulative_difficulty_top64": 0,
+      "depth": 1167251,
+      "difficulty": 123123316915,
+      "difficulty_top64": 0,
+      "hash": "dc2ef85b049311814742f543469e3ec1b8d589e68434d9f220ce41072c69c39e",
+      "height": 2000000,
+      "long_term_weight": 103,
+      "major_version": 12,
+      "miner_tx_hash": "eae25672906c24ee26d95221476010854a936d50c8bdcd7e7935defc46306c8b",
+      "minor_version": 12,
+      "nonce": 37549,
+      "num_txes": 0,
+      "orphan_status": false,
+      "pow_hash": "",
+      "prev_hash": "5b0ad4da7bd13add13136552814aad6b4c32c95d29bf03968dd57f3de6131835",
+      "reward": 2040028039279,
+      "timestamp": 1577680194,
+      "wide_cumulative_difficulty": "0x849ce63227b2e4",
+      "wide_difficulty": "0x1caab8b8b3"
+    },
+    "credits": 0,
+    "json": "{\n  \"major_version\": 12, \n  \"minor_version\": 12, \n  \"timestamp\": 1577680194, \n  \"prev_id\": \"5b0ad4da7bd13add13136552814aad6b4c32c95d29bf03968dd57f3de6131835\", \n  \"nonce\": 37549, \n  \"miner_tx\": {\n    \"version\": 2, \n    \"unlock_time\": 2000060, \n    \"vin\": [ {\n        \"gen\": {\n          \"height\": 2000000\n        }\n      }\n    ], \n    \"vout\": [ {\n        \"amount\": 2040028039279, \n        \"target\": {\n          \"key\": \"2ee15ed05f71cc4d3dda3d1f3fe7724af90c3dd15e5d1d7886d42639d0cc7be7\"\n        }\n      }\n    ], \n    \"extra\": [ 1, 249, 185, 95, 79, 174, 126, 76, 231, 25, 43, 120, 249, 100, 90, 37, 48, 126, 147, 189, 197, 16, 190, 85, 128, 6, 207, 101, 25, 77, 35, 209, 140, 2, 17, 0, 0, 17, 235, 127, 89, 86, 19, 0, 0, 0, 0, 0, 0, 0, 0, 0\n    ], \n    \"rct_signatures\": {\n      \"type\": 0\n    }\n  }, \n  \"tx_hashes\": [ ]\n}",
+    "miner_tx_hash": "eae25672906c24ee26d95221476010854a936d50c8bdcd7e7935defc46306c8b",
+    "status": "OK",
+    "top_hash": "",
+    "untrusted": false
+  }
+}

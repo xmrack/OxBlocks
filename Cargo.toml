@@ -1,0 +1,45 @@
+[workspace]
+resolver = "3"
+members = ["crates/monerod-rpc", "crates/explorer-core", "crates/explorer-web"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/xmrack/oxblocks"
+rust-version = "1.88"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+hex = "0.4"
+tracing = "0.1"
+
+[workspace.lints.rust]
+# The premise of this project. See README.md.
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# A panic in a handler costs a response, not the process -- but a panic
+# reachable from untrusted input is still a bug.
+#
+# Denied rather than warned, so a local build fails the same way CI does. These
+# were "warn" while CI ran with -D warnings, which made the rule real only on
+# the machine nobody develops on. Test modules opt out individually, because
+# panicking is the correct failure mode in a test.
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+# Chain data is u64 throughout and every lossy narrowing should be a decision
+# with a comment, not an accident. Warn rather than deny: two casts here are
+# deliberate reproductions of upstream behaviour and carry `#[allow]` with a
+# reason.
+cast_possible_truncation = "warn"
+cast_precision_loss = "warn"
+cast_sign_loss = "warn"
+
+[profile.release]
+# Explorer arithmetic is all chain-derived u64s (amounts, offsets, heights).
+# A silent wrap here is a wrong number on a page, so pay for the checks.
+overflow-checks = true

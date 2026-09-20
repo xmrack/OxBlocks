@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Mempool &mdash; oxblocks{% endblock %}
+{% block content %}
+<h1>Mempool<span class="sub">{{ txs.len() }} transactions</span></h1>
+
+{% if txs.is_empty() %}
+<p class="empty">The mempool is empty.</p>
+{% else %}
+<div class="scroll">
+<table>
+  <thead>
+    <tr>
+      <th>Hash</th>
+      <th>Waiting [h:m:s]</th>
+      <th class="num">Fee</th>
+      <th class="num">Ring</th>
+      <th class="num">Size</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for t in txs %}
+    <tr>
+      <td><a class="hash" href="/tx/{{ t.hash }}">{{ t.hash }}</a></td>
+      <td>{{ t.age }}</td>
+      <td class="num">{{ t.fee }}</td>
+      <td class="num">{{ t.ring }}</td>
+      <td class="num">{{ t.size }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

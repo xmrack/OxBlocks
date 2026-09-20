@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Transaction {{ hash }} &mdash; oxblocks{% endblock %}
+{% block content %}
+<h1>Transaction{% if coinbase %} <span class="tag coinbase">coinbase</span>{% endif %}</h1>
+<p class="hash">{{ hash }}</p>
+
+<dl class="kv">
+  {% if in_pool %}
+  <dt>Status</dt><dd><span class="tag">in mempool</span> not yet mined</dd>
+  <dt>Received</dt><dd>{{ timestamp }} &mdash; {{ timestamp_utc }} UTC <span class="tag">waiting {{ age }}</span></dd>
+  {% else %}
+  <dt>Block</dt><dd><a href="/block/{{ block_height }}">{{ block_height }}</a> &mdash; {{ confirmations }} confirmations</dd>
+  <dt>Timestamp</dt><dd>{{ timestamp }} &mdash; {{ timestamp_utc }} UTC <span class="tag">{{ age }} ago</span></dd>
+  {% endif %}
+  <dt>Fee</dt><dd>{{ fee }} XMR</dd>
+  <dt>Size</dt><dd>{{ size }} bytes{% if pruned %} <span class="tag">prefix only</span>{% endif %}</dd>
+  <dt>Version</dt><dd>{{ version_no }}{% if rct_type > 0 %} &mdash; RingCT type {{ rct_type }}{% endif %}</dd>
+  <dt>Ring size</dt><dd>{% if coinbase %}&mdash;{% else %}{{ ring_size }}{% endif %}</dd>
+  <dt>Unlock time</dt><dd>{{ unlock_time }}</dd>
+  {% if payment_id != "" %}<dt>Payment ID</dt><dd class="hash">{{ payment_id }}</dd>{% endif %}
+  {% if payment_id8 != "" %}<dt>Payment ID</dt><dd class="hash">{{ payment_id8 }} <span class="tag">encrypted</span></dd>{% endif %}
+</dl>
+
+{% if pruned %}
+<div class="notice">
+  This node is pruned and no longer holds this transaction's prunable half, so
+  the size above counts the prefix only and the ring signatures are unavailable.
+  Ring members are still resolved in full, because the output table is never pruned.
+</div>
+{% endif %}
+
+<h2>Inputs {% if !coinbase %}<span class="sub">{{ inputs.len() }}</span>{% endif %}</h2>
+{% if coinbase %}
+<p class="empty">A coinbase transaction has no inputs; it creates new coins.</p>
+{% else %}
+  {% for i in inputs %}
+  <details class="input-card"{% if inputs.len() == 1 %} open{% endif %}>
+    <summary>
+      <span>Input {{ loop.index }}</span>
+      <span class="hash">{{ i.key_image }}</span>
+      <span class="tag">{{ i.ring.len() }} ring members</span>
+      {% if i.amount != "0" %}<span class="tag">{{ i.amount }} XMR</span>{% endif %}
+    </summary>
+    <div class="body">
+      {% if i.unavailable %}
+      <p class="empty" style="padding-left:0.6rem">
+        The daemon refused this ring lookup, so its members are not shown.
+        The other inputs on this page are unaffected.
+      </p>
+      {% else %}
+      <div class="scroll">
+      <table>
+        <thead><tr><th class="num">#</th><th class="num">Height</th><th>Output key</th><th>In transaction</th></tr></thead>
+        <tbody>
+        {% for m in i.ring %}
+          <tr>
+            <td class="num ring-index">{{ loop.index }}</td>
+            <td class="num"><a href="/block/{{ m.height }}">{{ m.height }}</a></td>
+            <td><span class="hash">{{ m.public_key }}</span></td>
+            <td><a class="hash" href="/tx/{{ m.tx_hash }}">{{ m.tx_hash }}</a></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% endif %}
+    </div>
+  </details>
+  {% endfor %}
+{% endif %}
+
+<h2>Outputs <span class="sub">{{ outputs.len() }}</span></h2>
+<div class="scroll">
+<table>
+  <thead><tr><th class="num">#</th><th>One-time key</th><th class="num">Amount</th>{% if has_view_tags %}<th>View tag</th>{% endif %}</tr></thead>
+  <tbody>
+  {% for o in outputs %}
+    <tr>
+      <td class="num ring-index">{{ loop.index }}</td>
+      <td><span class="hash">{{ o.public_key }}</span></td>
+      <td class="num">{% if o.amount == "0" %}<span class="tag">hidden</span>{% else %}{{ o.amount }}{% endif %}</td>
+      {% if has_view_tags %}<td><code>{{ o.view_tag }}</code></td>{% endif %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<h2>Extra</h2>
+{% if extra == "" %}
+<p class="empty">This transaction carries no extra field.</p>
+{% else %}
+<pre class="blob">{{ extra }}</pre>
+{% if !extra_fields.is_empty() %}
+<dl class="kv" style="margin-top:0.8rem">
+  {% for f in extra_fields %}<dt>{{ f.name }}</dt><dd class="hash">{{ f.value }}</dd>{% endfor %}
+</dl>
+{% endif %}
+{% if extra_undecoded %}
+<div class="notice">
+  monerod accepts a transaction whose extra field does not fully decode, and
+  such transactions are on the chain. The bytes above are shown whole; the
+  fields listed are those that parsed.
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

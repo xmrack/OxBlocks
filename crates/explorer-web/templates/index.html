@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Blocks &mdash; oxblocks{% endblock %}
+{% block content %}
+<h1>Recent blocks</h1>
+
+{% if blocks.is_empty() %}
+<p class="empty">No blocks to show.</p>
+{% else %}
+<div class="scroll">
+<table>
+  <thead>
+    <tr>
+      <th class="num">Height</th>
+      <th>Age [h:m:s]</th>
+      <th class="num">Size</th>
+      <th class="num">Txs</th>
+      <th class="num">Fees</th>
+      <th>Hash</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for b in blocks %}
+    <tr>
+      <td class="num"><a href="/block/{{ b.height }}">{{ b.height }}</a></td>
+      <td>{{ b.age }}</td>
+      <td class="num">{{ b.size }}</td>
+      <td class="num">{{ b.tx_count }}</td>
+      <td class="num">{{ b.fees }}</td>
+      <td><a class="hash" href="/block/{{ b.hash }}">{{ b.hash }}</a></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<div class="pager">
+  {% if page > 0 %}<a href="/page/{{ page - 1 }}">&larr; Newer</a>{% else %}<span>&larr; Newer</span>{% endif %}
+  <a href="/page/{{ page + 1 }}">Older &rarr;</a>
+  <span class="where">page {{ page }}</span>
+</div>
+{% endif %}
+{% endblock %}
