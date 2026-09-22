@@ -2183,6 +2183,31 @@ mod tests {
         }
     }
 
+    /// A heading counts what follows it, so it has to agree with it. Written
+    /// as a fixed plural it read "1 inputs" on the transactions that carry
+    /// one.
+    #[test]
+    fn the_input_and_output_headings_count_in_english() {
+        let many = tx_page().render().expect("renders");
+        assert!(many.contains("<h2>2 inputs</h2>"), "{many}");
+        assert!(many.contains("<h2>2 outputs</h2>"), "{many}");
+
+        let mut page = tx_page();
+        page.inputs.truncate(1);
+        page.outputs.truncate(1);
+        let one = page.render().expect("renders");
+        assert!(one.contains("<h2>1 input</h2>"), "{one}");
+        assert!(one.contains("<h2>1 output</h2>"), "{one}");
+
+        let mut page = tx_page();
+        page.coinbase = true;
+        let coinbase = page.render().expect("renders");
+        assert!(
+            coinbase.contains("<h2>Inputs</h2>"),
+            "a coinbase counts inputs it does not have:\n{coinbase}"
+        );
+    }
+
     /// The right edge of the age axis is the moment of this transaction.
     ///
     /// It was labelled "spent", which reads as a claim about the member

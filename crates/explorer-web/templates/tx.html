@@ -30,14 +30,15 @@
   <dt>Size</dt><dd>{{ size }} bytes{% if pruned %} <span class="tag">prefix only</span>{% endif %}</dd>
   <dt>Version</dt><dd>{{ version_no }}{% if rct_type > 0 %} &mdash; RingCT type {{ rct_type }}{% endif %}
     <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
-    <p>Two numbers. The first is the transaction format. Version 1 carried
-    plain amounts that anyone could read. Version 2 hides them with RingCT,
-    which proves the sums balance without showing them. The second number is
-    the RingCT scheme this transaction used. Types 1 and 2 are the original
-    one. Types 3 and 4 replaced its range proofs with Bulletproofs, 5 added
-    CLSAG signatures, and 6 uses Bulletproofs+. The later types are smaller
-    and faster to verify, not more private. A block reward is public, so a
-    coinbase shows no RingCT type.</p></details>
+    <p>The first number is the transaction format. Version 1 carried plain
+    amounts that anyone could read, and version 2 hides them with RingCT,
+    which proves that the sums balance without showing them. The second
+    number names the RingCT scheme that hid them. Types 1 and 2 are the
+    original scheme, types 3 and 4 replaced its range proofs with
+    Bulletproofs, type 5 added CLSAG signatures, and type 6 uses
+    Bulletproofs+. Each of these is smaller and faster to verify than the one
+    before it, and none of them is more private. A block reward is public, so
+    a coinbase shows no RingCT type at all.</p></details>
   </dd>
   <dt>Ring size</dt><dd>{% if coinbase %}&mdash;{% else %}{{ ring_size }}{% endif %}
     <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
@@ -80,7 +81,7 @@
 </div>
 {% endif %}
 
-<h2>Inputs {% if !coinbase %}<span class="sub">{{ inputs.len() }}</span>{% endif %}</h2>
+<h2>{% if coinbase %}Inputs{% else %}{{ inputs.len() }} input{% if inputs.len() != 1 %}s{% endif %}{% endif %}</h2>
 {% if coinbase %}
 <p class="empty">A coinbase transaction has no inputs; it creates new coins.</p>
 {% else %}
@@ -145,12 +146,13 @@
   {% endfor %}
 {% endif %}
 
-<h2>Outputs <span class="sub">{{ outputs.len() }}</span></h2>
+<h2>{{ outputs.len() }} output{% if outputs.len() != 1 %}s{% endif %}</h2>
 <div class="legend">
   <div>One-time key
     <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
-    <p>Every output is paid to a fresh address used only once. The sender derives
-    it from the recipient's address and a random secret, so the recipient's
+    <p>Every output is paid to a fresh address used only once, which is also
+    called a stealth address. The sender derives it from the recipient's
+    address and a random secret, so the recipient's
     real address never reaches the chain. Two payments to the same person
     share nothing an observer can link. The recipient finds the outputs that
     are theirs by scanning the chain with their view key.</p></details>
