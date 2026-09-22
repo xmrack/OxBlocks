@@ -333,6 +333,34 @@ struct ErrorPage {
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// The stylesheet's bytes, embedded at compile time.
+const STYLESHEET: &str = include_str!("../static/style.css");
+
+/// A cache key derived from the stylesheet's own contents.
+///
+/// The stylesheet is served with a day-long `max-age` and carries no `ETag`,
+/// so a returning browser reuses whatever it already has. At a fixed URL that
+/// means a CSS change is invisible for a day: the page renders new markup
+/// against an old stylesheet, which is how a `<details>` hint came out as a
+/// bare disclosure triangle and a black blob. Changing the *URL* whenever the
+/// bytes change makes the long cache lifetime correct instead of harmful.
+///
+/// FNV-1a, and deliberately not a cryptographic hash: this is a cache key, not
+/// a signature, and nothing is trusted on the strength of it.
+pub const STYLESHEET_VERSION: u64 = fnv1a(STYLESHEET.as_bytes());
+
+const fn fnv1a(mut bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    // Walked by slice pattern rather than by index: the workspace denies
+    // `indexing_slicing`, and this needs no bounds check to begin with.
+    while let [first, rest @ ..] = bytes {
+        hash ^= *first as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        bytes = rest;
+    }
+    hash
+}
+
 /// A rendered page, or a rendered explanation of why there is not one.
 pub struct Page(StatusCode, String);
 
@@ -940,7 +968,7 @@ pub async fn stylesheet() -> Response {
             (header::CONTENT_TYPE, "text/css; charset=utf-8"),
             (header::CACHE_CONTROL, "public, max-age=86400"),
         ],
-        include_str!("../static/style.css"),
+        STYLESHEET,
     )
         .into_response()
 }
@@ -1431,6 +1459,43 @@ mod tests {
             assert!(
                 !html.contains("style=\""),
                 "{name} carries an inline style, which the policy discards:\n{html}"
+            );
+        }
+    }
+
+    /// The stylesheet link carries a key derived from the stylesheet itself.
+    ///
+    /// Without it, the day-long `max-age` means a returning browser renders
+    /// new markup against an old stylesheet. That is not hypothetical: it is
+    /// how the `<details>` hints first appeared, as a bare disclosure triangle
+    /// beside a solid black circle, because the cached CSS predated the rules
+    /// that style them.
+    #[test]
+    fn the_stylesheet_url_changes_when_the_stylesheet_does() {
+        // The published FNV-1a 64-bit vectors. Pinned because the doc comment
+        // claims this *is* FNV-1a, and the first version of it was not: the
+        // multiplier was written 0x1000_0000_01b3, one digit longer than the
+        // real prime, which still hashed but was not the named algorithm.
+        assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a(b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a(b"foobar"), 0x8594_4171_f739_67e8);
+
+        // The key tracks content: two different stylesheets cannot share one.
+        assert_ne!(fnv1a(b"a { color: red }"), fnv1a(b"a { color: blue }"));
+        assert_ne!(fnv1a(b""), fnv1a(b" "));
+        assert_eq!(fnv1a(b"same"), fnv1a(b"same"));
+        assert_ne!(STYLESHEET_VERSION, 0);
+
+        let expected = format!("/static/style.css?v={STYLESHEET_VERSION}");
+        for (name, html) in [
+            ("index", index_page().render().expect("renders")),
+            ("block", block_page().render().expect("renders")),
+            ("tx", tx_page().render().expect("renders")),
+            ("api", api_page().render().expect("renders")),
+        ] {
+            assert!(
+                html.contains(&expected),
+                "{name} links the stylesheet without a cache key"
             );
         }
     }
