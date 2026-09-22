@@ -5,26 +5,6 @@ Oxide Blocks is a Monero block explorer for `monerod`, written in Rust.
 Server-rendered HTML plus a JSON API. No JavaScript, no cookies, no external assets,
 no database.
 
-## Why this exists
-
-The established explorer, [onion-monero-blockchain-explorer][onion], is not an RPC
-client — it is effectively a second Monero node. `src/MicroCore.h` embeds
-`cryptonote::Blockchain` and `tx_memory_pool` in-process, links the Monero C++ core,
-and opens monerod's LMDB directly. Several of its routes feed **user-supplied hex**
-into those C++ deserializers, in the same address space as the chain database.
-
-oxblocks takes the opposite position:
-
-```
-┌──────────────┐   HTTP/JSON   ┌──────────────┐   LMDB   ┌──────────┐
-│   oxblocks   │ ─────────────>│   monerod    │ ────────>│ data.mdb │
-│ axum+askama  │  loopback RPC │ (unmodified) │          └──────────┘
-└──────────────┘               └──────────────┘
-```
-
-The explorer holds no keys, opens no database, and links no C++. A bug in the web
-layer costs a response, not chain state.
-
 ## Design decisions
 
 These were chosen deliberately. Each has a cheaper alternative that was rejected.
@@ -55,45 +35,6 @@ it more carefully.
 where the endpoint exists in both, so existing consumers migrate without changes — and so
 the two can be differentially tested against the same chain.
 
-## Memory safety, stated honestly
-
-Every crate in this workspace sets `#![forbid(unsafe_code)]`, enforced at compile time
-rather than by review.
-
-That covers **our** code. It does not cover the dependency tree: transitive crates
-contain `unsafe`, and claiming otherwise would be false. What the project actually
-guarantees is narrower and worth stating plainly — no consensus code, no database
-handle, and no C++ in the web process, and no `unsafe` in the code we wrote.
-
-The tree is **108 third-party crates**, of which 6 are proc-macros. That is ordinary
-for an async HTTP service and it is not small in absolute terms; quoting the number
-is more useful than calling it lean. Count it yourself with `cargo tree --workspace
--e normal`, deduplicated by name and version. Three things hold it in place:
-
-* `deps-baseline.txt` lists every crate in the tree, and `tools/check-deps.sh` fails
-  in CI when one enters or leaves without that file being updated in the same commit.
-  It compares names rather than versions, so routine upgrades stay quiet.
-* `cargo deny` runs in CI over advisories, licences, duplicate versions and source
-  registries, and denies unmaintained crates outright.
-* `monerod-rpc` speaks to the daemon through `hyper` rather than `reqwest`. reqwest
-  enables `tower-http/follow-redirect`, which Cargo unifies across the workspace and
-  which pulls `url` &rarr; `idna` &rarr; ~25 ICU crates of Unicode tables &mdash; all
-  of it carried so the client could then set its redirect policy to `none`. Dropping
-  it removed 28 crates and added none.
-* `monerod-rpc` on its own builds without the `tls` feature, dropping 12 crates. The
-  `oxblocks` binary always links TLS: `explorer-web` depends on `monerod-rpc` with
-  default features and exposes no way to turn it off, which is deliberate — a
-  production explorer reaching a remote daemon should not need a flag to get
-  encryption.
-
-`.github/workflows/ci.yml` also runs `tools/check-unsafe.sh`, which fails if any
-crate stops inheriting the workspace lint. It is checked in a state where removing
-`workspace = true` from one crate makes it exit non-zero — a gate that cannot fail
-is not a gate.
-
-`release` builds keep `overflow-checks` on. Explorer arithmetic is chain-derived u64s
-(amounts, ring offsets, heights); a silent wrap is a wrong number on a page.
-
 ## Layout
 
 | Crate | Role |
@@ -123,26 +64,6 @@ bootstrap-daemon fields from `get_info` in `a01b4c2a3` (2026-05-31), and an expl
 that requires them cannot talk to a current daemon at all. Every `get_info` field
 oxblocks does not act on is optional for that reason.
 
-## Bandwidth
-
-**Transactions are never fetched pruned.** monerod will send the prefix and RingCT base
-alone, which is everything a *summary* needs and about 29% of the bytes — on mainnet
-block 3,708,864, 134 transactions are 2,175,016 bytes whole and 639,738 pruned. oxblocks
-asks for them whole anyway. What comes back pruned is not the transaction that was
-broadcast, its size is not the size anyone means, and an explorer that quietly served a
-shortened copy would be lying about what the chain holds. `get_transactions` here is
-always `prune: false`, and the flag is private with no way to set it.
-
-What is done instead is **compressing the response to the reader**. Negotiated per
-request — gzip, deflate and brotli, only for a client that sends `Accept-Encoding`. A
-thousand-transaction anonymity set goes from 615,010 bytes to 206,802 gzipped and
-189,703 brotli, **69% less**, and the whole transaction is still in it. zstd is
-deliberately absent: that crate wraps the C library.
-
-monerod itself never compresses — asked with `Accept-Encoding: gzip, deflate, br, zstd`
-it answers with the same uncompressed bytes — so there is nothing to negotiate on the
-daemon link.
-
 ## API
 
 ```
@@ -164,23 +85,6 @@ cannot state: which postfix lengths *this* chain currently accepts, and whether
 are interpolated from the constants the handlers enforce, and a test fails the
 build if a route is added without being documented or a cap is changed without
 the page following it.
-
-### Which upstream this tracks
-
-The C++ explorer's `devel` and `master` branches have genuinely diverged — 44
-commits each way — so "upstream compatible" needs saying precisely. oxblocks
-takes what is better from each:
-
-| from | what |
-| --- | --- |
-| devel | `unlock_time` on every transaction object |
-| devel | `/api/blocks/<start>/<end>`, `/api/transaction/private/<postfix>`, `/api/transactions/recent` |
-| master | `/api/feeestimate`, which devel does not have |
-
-Compatibility is verified by `tests/upstream_compat.rs` against captures from a
-real devel build **serving the same chain** as the daemon those captures came
-from. Because both sides are one chain at one moment, nothing is tip-relative:
-the comparison is exact, with no excused fields.
 
 ### k-anonymity
 
@@ -211,14 +115,7 @@ expected matches — and refuses four at 1,008. That four is only just outside
 the band, so a slightly smaller chain would have admitted it too; the rule is
 the expected count, not the length.
 
-**This endpoint needs a daemon with `get_txids_loose`**, which is in monerod
-`master` and `release-v0.19` but **in no release build** — v0.18.x answers
-`Method not found`. oxblocks probes for it at startup and says so in the log;
-where it is absent that one endpoint refuses and everything else, including
-`/api/blocks`, works normally.
-
-`/api/blocks` is capped at 100 blocks per request. Upstream imposes no cap
-because it reads its own database; every block here costs two RPC calls, so an
+`/api/blocks` is capped at 100 blocks per request. Every block here costs two RPC calls, so an
 uncapped range would let one request make millions of calls against the
 operator's daemon.
 
@@ -233,48 +130,7 @@ The view-key and pusher endpoints (`/api/outputs`, `/api/outputsblocks`) are
 deliberately absent; see above. `/api/emission` is out because it needs either a
 background scanner or a full-chain scan, and this explorer is stateless.
 
-### One known difference, on a pruned node
-
-`tx_size` under-reports for any transaction outside the node's kept stripe. A
-pruned daemon keeps only the transaction prefix, so we report 335 bytes where
-upstream reports 1970 — and 335 plus the discarded 1635-byte prunable half is
-exactly 1970. The bytes are not on the node; no rendering choice recovers them.
-
-This is accepted rather than worked around. Run against an unpruned daemon if
-`tx_size` must match upstream exactly for historical transactions. Every other
-field matches on a pruned node, because ring expansion reads the output table,
-which is never pruned.
-
-## Web interface
-
-Server-rendered pages at `/`, `/page/<n>`, `/block/<height|hash>`,
-`/tx/<hash>`, `/mempool`, `/altblocks`, `/search` and `/api`.
-
-No JavaScript, no cookies, no images, no web fonts, no external requests of any
-kind. One stylesheet, compiled into the binary, so there is no asset directory
-to deploy. The page follows the reader'''s light/dark preference through
-`prefers-color-scheme` and is usable on a phone.
-
-Markup is generated by [askama](https://github.com/askama-rs/askama), which
-escapes every interpolation at compile time. That is the structural answer to
-the class of bug that makes upstream'''s 7,178-line `page.h` risky: there,
-markup is assembled by string concatenation, so a missed escape is invisible.
-Here, emitting a value unescaped requires writing `|safe`, which greps.
-
-## Status
-
-The JSON API and the web interface are both complete. Alt-block and emission
-pages are out of scope, as described above.
-
 ## Testing
-
-Three layers:
-
-1. **Unit and property tests**, plus a fuzz target for `tx_extra` — the one parser this
-   project owns, and the one place attacker-influenced lengths meet our code.
-2. **Fixture replay** against captured real RPC responses (`fixtures/`), so CI needs no node.
-3. **Differential testing** against the C++ explorer on a shared chain, asserting the
-   `/api/*` responses agree.
 
 Live tests are `#[ignore]`d by default:
 
@@ -299,11 +155,3 @@ directory to mount.
 Put a TLS-terminating reverse proxy in front of it. oxblocks speaks plain HTTP by
 design; terminating TLS is a job with its own large attack surface and it does not
 belong in the same process as the explorer.
-
-## License
-
-MIT. See [LICENSE](LICENSE).
-
-Repository: <https://github.com/xmrack/oxblocks>
-
-[onion]: https://github.com/moneroexamples/onion-monero-blockchain-explorer
