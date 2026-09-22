@@ -1269,7 +1269,7 @@ pub async fn api_docs(State(state): Shared) -> Page {
 
     let lengths = info
         .as_ref()
-        .map(|i| crate::api::handlers::acceptable_postfix_lengths(i))
+        .map(|i| crate::api::handlers::acceptable_postfix_lengths(i, state.limits))
         .unwrap_or_default();
 
     render(
@@ -1284,12 +1284,12 @@ pub async fn api_docs(State(state): Shared) -> Page {
             postfix_lengths: describe_lengths(&lengths),
             max_transactions_limit: crate::api::handlers::MAX_TRANSACTIONS_LIMIT,
             max_mempool_limit: crate::api::handlers::MAX_MEMPOOL_LIMIT,
-            max_block_range: crate::api::handlers::MAX_BLOCK_RANGE,
-            min_postfix_len: crate::api::handlers::MIN_POSTFIX_LEN,
-            max_postfix_len: crate::api::handlers::MAX_POSTFIX_LEN,
+            max_block_range: state.limits.block_range,
+            min_postfix_len: state.limits.postfix_min,
+            max_postfix_len: state.limits.postfix_max,
             min_anonymity_set: crate::api::handlers::MIN_ANONYMITY_SET,
             max_private_tx_matches: crate::api::handlers::MAX_PRIVATE_TX_MATCHES,
-            recent_blocks: crate::api::handlers::RECENT_BLOCKS,
+            recent_blocks: state.limits.recent_blocks,
         },
     )
 }
@@ -1396,6 +1396,10 @@ mod tests {
     }
 
     fn api_page() -> ApiPage {
+        api_page_with(crate::config::Limits::default())
+    }
+
+    fn api_page_with(limits: crate::config::Limits) -> ApiPage {
         use crate::api::handlers as h;
         ApiPage {
             version: VERSION,
@@ -1407,12 +1411,12 @@ mod tests {
             postfix_lengths: describe_lengths(&[5]),
             max_transactions_limit: h::MAX_TRANSACTIONS_LIMIT,
             max_mempool_limit: h::MAX_MEMPOOL_LIMIT,
-            max_block_range: h::MAX_BLOCK_RANGE,
-            min_postfix_len: h::MIN_POSTFIX_LEN,
-            max_postfix_len: h::MAX_POSTFIX_LEN,
+            max_block_range: limits.block_range,
+            min_postfix_len: limits.postfix_min,
+            max_postfix_len: limits.postfix_max,
             min_anonymity_set: h::MIN_ANONYMITY_SET,
             max_private_tx_matches: h::MAX_PRIVATE_TX_MATCHES,
-            recent_blocks: h::RECENT_BLOCKS,
+            recent_blocks: limits.recent_blocks,
         }
     }
 
@@ -1495,11 +1499,12 @@ mod tests {
         use crate::api::handlers as h;
         let page = api_page().render().expect("renders");
 
+        let limits = crate::config::Limits::default();
         for value in [
             h::MAX_TRANSACTIONS_LIMIT,
             h::MAX_MEMPOOL_LIMIT,
-            h::MAX_BLOCK_RANGE,
-            h::RECENT_BLOCKS,
+            limits.block_range,
+            limits.recent_blocks,
         ] {
             assert!(
                 page.contains(&format!("<td class=\"num\">{value}</td>")),
@@ -1507,15 +1512,24 @@ mod tests {
             );
         }
 
-        // The anonymity band is one cell holding both ends of it.
-        assert!(
-            page.contains(&format!(
-                "<td class=\"num\">{}&ndash;{}</td>",
-                h::MIN_ANONYMITY_SET,
-                h::MAX_PRIVATE_TX_MATCHES
-            )),
-            "the limits table does not state the accepted anonymity band"
-        );
+        // A band is one cell holding both of its ends.
+        for (what, low, high) in [
+            (
+                "anonymity",
+                h::MIN_ANONYMITY_SET.to_string(),
+                h::MAX_PRIVATE_TX_MATCHES.to_string(),
+            ),
+            (
+                "postfix length",
+                limits.postfix_min.to_string(),
+                limits.postfix_max.to_string(),
+            ),
+        ] {
+            assert!(
+                page.contains(&format!("<td class=\"num\">{low}&ndash;{high}</td>")),
+                "the limits table does not state the accepted {what} band"
+            );
+        }
     }
 
     /// Every documented endpoint carries a runnable example, and the example

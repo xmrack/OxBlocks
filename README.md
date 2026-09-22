@@ -54,6 +54,10 @@ Each option also reads an environment variable. The command line wins.
 | `--max-concurrent` | `OXBLOCKS_MAX_CONCURRENT` | `128` | Requests handled at the same time. |
 | `--max-inflight-rpc` | `OXBLOCKS_MAX_INFLIGHT_RPC` | `24` | RPC calls open at the same time. |
 | `--max-body-bytes` | `OXBLOCKS_MAX_BODY` | `8192` | Largest accepted request body. |
+| `--postfix-min` | `OXBLOCKS_POSTFIX_MIN` | `2` | Shortest postfix the private lookup accepts. |
+| `--postfix-max` | `OXBLOCKS_POSTFIX_MAX` | `12` | Longest postfix the private lookup accepts. |
+| `--max-block-range` | `OXBLOCKS_MAX_BLOCK_RANGE` | `100` | Most blocks `/api/blocks` serves at once. |
+| `--recent-blocks` | `OXBLOCKS_RECENT_BLOCKS` | `30` | How far back `/api/transactions/recent` reaches. |
 | `--log` | `OXBLOCKS_LOG` | `info` | Log filter, such as `oxblocks=debug`. |
 
 Run `oxblocks --help` for the full text of each option.
@@ -191,15 +195,16 @@ the block you meant.
 
 `/api/transactions/recent` works differently: there is nothing to pick, because
 every caller who hits it gets the same window, the unconfirmed pool plus the
-last 30 blocks. A request for "the newest transaction" would otherwise name
-that transaction. A request for "whatever is recent" does not, because it is
-the same request no matter who sends it or which transaction they actually
-want.
+last 30 blocks (`--recent-blocks`). A request for "the newest transaction"
+would otherwise name that transaction. A request for "whatever is recent" does
+not, because it is the same request no matter who sends it or which transaction
+they actually want.
 
-A postfix is 2 to 12 hex characters. The explorer also checks the postfix
-against the size of the chain, and accepts it only when it expects 20 to 1000
-matches. Both bounds count transactions, not characters, so the lengths that
-qualify change as the chain grows. On mainnet today, 5 characters qualify.
+A postfix is 2 to 12 hex characters (`--postfix-min`, `--postfix-max`). The
+explorer also checks the postfix against the size of the chain, and accepts it
+only when it expects 20 to 1000 matches. Both of those bounds count
+transactions, not characters, so the lengths that qualify change as the chain
+grows. On mainnet today, 5 characters qualify.
 
 The lower bound is the privacy rule. Each added character divides the expected
 set by 16. Real match counts vary around the expected count, so a small set
@@ -209,7 +214,14 @@ The upper bound protects the daemon. The daemon walks its whole transaction
 index to answer, and a short postfix makes it return hundreds of thousands of
 hashes. The explorer refuses that before it makes the call.
 
-`/api/blocks` serves 100 blocks at most, because each block costs two RPC calls.
+`/api/blocks` serves 100 blocks at most (`--max-block-range`), because each
+block costs two RPC calls. The refusal is arithmetic on the two heights, so an
+over-wide range costs the daemon nothing.
+
+Every one of these four bounds trades how well a caller hides against what the
+request costs. Widening one widens both. A running explorer reports the bounds
+it was started with on its `/api` page, so they can be read rather than
+guessed.
 
 This lookup needs a daemon that has `get_txids_loose`. monerod `master` and
 `release-v0.19` have it. No released build has it, and v0.18.x answers

@@ -10,6 +10,7 @@ use serde::Serialize;
 
 use super::envelope::{ApiError, ApiOk};
 use super::shapes::{BlockDetail, TxDetail, TxSummary, normalise_hash};
+use crate::config::Limits;
 
 pub struct AppState {
     pub chain: RpcChainSource,
@@ -20,6 +21,8 @@ pub struct AppState {
     /// question whose answer cannot change while the daemon stays up. Set by
     /// `main` after the probe it already makes for the startup log.
     pub txids_loose: std::sync::atomic::AtomicBool,
+    /// The bounds on the k-anonymous endpoints, from the command line.
+    pub limits: Limits,
 }
 
 pub type Shared = State<Arc<AppState>>;
@@ -774,12 +777,6 @@ pub async fn network_info(State(state): Shared) -> Result<ApiOk<NetworkInfoData>
 // /api/transaction/private/<postfix>   — k-anonymous transaction lookup
 // ---------------------------------------------------------------------------
 
-/// Shortest postfix accepted. Below this the response is enormous.
-pub const MIN_POSTFIX_LEN: usize = 2;
-
-/// Longest postfix accepted, regardless of chain size.
-pub const MAX_POSTFIX_LEN: usize = 12;
-
 /// The fewest transactions a postfix must be *expected* to match before the
 /// lookup is worth serving.
 ///
@@ -862,8 +859,8 @@ enum PostfixRefusal {
 /// admits five characters and no others; on the local testnet it is two or
 /// three. Which lengths qualify moves as the chain grows, which is the point
 /// of stating the rule in matches.
-fn check_postfix(postfix: &str, tx_count: u64) -> Result<(), PostfixRefusal> {
-    if postfix.len() < MIN_POSTFIX_LEN || postfix.len() > MAX_POSTFIX_LEN {
+fn check_postfix(postfix: &str, tx_count: u64, limits: Limits) -> Result<(), PostfixRefusal> {
+    if postfix.len() < limits.postfix_min || postfix.len() > limits.postfix_max {
         return Err(PostfixRefusal::Length);
     }
     if !postfix.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -896,10 +893,16 @@ fn check_postfix(postfix: &str, tx_count: u64) -> Result<(), PostfixRefusal> {
 /// Which lengths qualify moves as the chain grows, which is why the rule is
 /// stated in expected matches and this is computed rather than written down.
 #[must_use]
-pub fn acceptable_postfix_lengths(info: &monerod_rpc::types::GetInfo) -> Vec<usize> {
-    let total = total_transactions(info);
-    (MIN_POSTFIX_LEN..=MAX_POSTFIX_LEN)
-        .filter(|n| check_postfix(&"a".repeat(*n), total).is_ok())
+pub fn acceptable_postfix_lengths(
+    info: &monerod_rpc::types::GetInfo,
+    limits: Limits,
+) -> Vec<usize> {
+    postfix_lengths_for(total_transactions(info), limits)
+}
+
+fn postfix_lengths_for(tx_count: u64, limits: Limits) -> Vec<usize> {
+    (limits.postfix_min..=limits.postfix_max)
+        .filter(|n| check_postfix(&"a".repeat(*n), tx_count, limits).is_ok())
         .collect()
 }
 
@@ -937,11 +940,12 @@ pub async fn transaction_private(
         .await
         .map_err(|e| on_chain_error(&e, "Cant get daemon info"))?;
 
-    if let Err(why) = check_postfix(&postfix, total_transactions(&info)) {
+    if let Err(why) = check_postfix(&postfix, total_transactions(&info), state.limits) {
         return Err(ApiError::bad_request(match why {
             PostfixRefusal::Length => format!(
-                "Tx hash postfix not between {MIN_POSTFIX_LEN} and {MAX_POSTFIX_LEN} \
-                 characters in length: {}",
+                "Tx hash postfix not between {} and {} characters in length: {}",
+                state.limits.postfix_min,
+                state.limits.postfix_max,
                 echo(&postfix)
             ),
             PostfixRefusal::NotHex => {
@@ -1054,8 +1058,6 @@ pub async fn transaction_private(
 /// default of 128 would want some five gigabytes — far past the 512 MiB the
 /// shipped systemd unit allows. An operator serving mainnet should size those
 /// two against each other; see `deploy/oxblocks.service`.
-pub const MAX_BLOCK_RANGE: u64 = 100;
-
 pub async fn blocks_range(
     State(state): Shared,
     Path((start_raw, end_raw)): Path<(String, String)>,
@@ -1073,6 +1075,17 @@ pub async fn blocks_range(
         ));
     }
 
+    // Before the daemon is asked anything: the span is arithmetic on the two
+    // arguments, so a range too wide to serve costs no round trip to refuse.
+    let span = end.saturating_sub(start).saturating_add(1);
+    if span > state.limits.block_range {
+        return Err(ApiError::bad_request(format!(
+            "Requested {span} blocks; this explorer serves at most {} \
+             per request because each one costs a call to the daemon.",
+            state.limits.block_range
+        )));
+    }
+
     let info = state
         .chain
         .info()
@@ -1083,14 +1096,6 @@ pub async fn blocks_range(
         return Err(ApiError::not_found(format!(
             "Requested end height is higher than blockchain: {end}, {}",
             info.height
-        )));
-    }
-
-    let span = end.saturating_sub(start).saturating_add(1);
-    if span > MAX_BLOCK_RANGE {
-        return Err(ApiError::bad_request(format!(
-            "Requested {span} blocks; this explorer serves at most {MAX_BLOCK_RANGE} \
-             per request because each one costs a call to the daemon."
         )));
     }
 
@@ -1143,7 +1148,14 @@ fn push_unexpanded(txs: &mut Vec<TxDetail>, entries: &[TxEntry], current_height:
 /// flood this is the most expensive endpoint here; see
 /// `deploy/oxblocks.service`, which sizes `MemoryMax` against
 /// `--max-concurrent` for exactly this family of requests.
-pub const RECENT_BLOCKS: u64 = 30;
+/// The block range `/api/transactions/recent` covers, given the tip.
+///
+/// Inclusive at both ends and counted back from the newest *mined* block, so a
+/// window of one is that block alone.
+fn recent_window(height: u64, blocks: u64) -> (u64, u64) {
+    let to = height.saturating_sub(1);
+    (to.saturating_sub(blocks.saturating_sub(1)), to)
+}
 
 #[derive(Serialize)]
 pub struct RecentData {
@@ -1161,8 +1173,7 @@ pub async fn transactions_recent(State(state): Shared) -> Result<ApiOk<RecentDat
         .await
         .map_err(|e| on_chain_error(&e, "Cant get daemon info"))?;
 
-    let to_height = info.height.saturating_sub(1);
-    let from_height = to_height.saturating_sub(RECENT_BLOCKS.saturating_sub(1));
+    let (from_height, to_height) = recent_window(info.height, state.limits.recent_blocks);
 
     // The pool first: those are more recent than any mined transaction, and a
     // caller reaching for this endpoint is reaching for a recent one. Counting
@@ -1258,20 +1269,20 @@ mod tests {
     fn the_anonymity_rule_matches_upstream() {
         // The local testnet: 134,875 transactions.
         const CHAIN: u64 = 134_875;
-        assert!(check_postfix("00", CHAIN).is_ok());
-        assert!(check_postfix("abc", CHAIN).is_ok());
+        assert!(check_postfix("00", CHAIN, Limits::default()).is_ok());
+        assert!(check_postfix("abc", CHAIN, Limits::default()).is_ok());
         // 134875 >> 16 == 2, below the floor of 20, so four characters would
         // identify the transaction rather than hide it.
         assert!(matches!(
-            check_postfix("abcd", CHAIN),
+            check_postfix("abcd", CHAIN, Limits::default()),
             Err(PostfixRefusal::TooLongToBeAnonymous { .. })
         ));
 
         // Mainnet-scale: upstream's comment says this permits 5 and refuses 6.
         const MAINNET: u64 = 67_000_000;
-        assert!(check_postfix("abcde", MAINNET).is_ok());
+        assert!(check_postfix("abcde", MAINNET, Limits::default()).is_ok());
         assert!(matches!(
-            check_postfix("abcdef", MAINNET),
+            check_postfix("abcdef", MAINNET, Limits::default()),
             Err(PostfixRefusal::TooLongToBeAnonymous { .. })
         ));
     }
@@ -1280,20 +1291,20 @@ mod tests {
     fn postfix_length_and_alphabet_are_enforced() {
         const CHAIN: u64 = 134_875;
         assert!(matches!(
-            check_postfix("0", CHAIN),
+            check_postfix("0", CHAIN, Limits::default()),
             Err(PostfixRefusal::Length)
         ));
         assert!(matches!(
-            check_postfix(&"0".repeat(13), CHAIN),
+            check_postfix(&"0".repeat(13), CHAIN, Limits::default()),
             Err(PostfixRefusal::Length)
         ));
         assert!(matches!(
-            check_postfix("zz", CHAIN),
+            check_postfix("zz", CHAIN, Limits::default()),
             Err(PostfixRefusal::NotHex)
         ));
     }
 
-    /// The shift is bounded by MAX_POSTFIX_LEN, so it can never reach the
+    /// The shift is bounded by the postfix ceiling, so it can never reach the
     /// width of the integer -- 12 characters is 48 bits. On an absurdly large
     /// chain the arithmetic must reach an answer rather than panicking on the
     /// way, and the answer is that even the longest postfix this explorer
@@ -1301,9 +1312,9 @@ mod tests {
     /// than it will expand.
     #[test]
     fn the_arithmetic_survives_an_enormous_chain() {
-        assert!(u32::try_from(MAX_POSTFIX_LEN * 4).is_ok_and(|b| b < 64));
+        assert!(u32::try_from(Limits::default().postfix_max * 4).is_ok_and(|b| b < 64));
         assert!(matches!(
-            check_postfix(&"a".repeat(MAX_POSTFIX_LEN), u64::MAX),
+            check_postfix(&"a".repeat(Limits::default().postfix_max), u64::MAX, Limits::default()),
             Err(PostfixRefusal::TooShortToServe { expected }) if expected == u64::MAX >> 48
         ));
     }
@@ -1318,24 +1329,102 @@ mod tests {
     fn a_postfix_whose_set_is_too_large_to_serve_is_refused_before_the_daemon() {
         const MAINNET: u64 = 67_000_000;
         assert!(matches!(
-            check_postfix("ab", MAINNET),
+            check_postfix("ab", MAINNET, Limits::default()),
             Err(PostfixRefusal::TooShortToServe { expected }) if expected == MAINNET >> 8
         ));
         assert!(matches!(
-            check_postfix("abcd", MAINNET),
+            check_postfix("abcd", MAINNET, Limits::default()),
             Err(PostfixRefusal::TooShortToServe { .. })
         ));
         // And the band is not empty: exactly one length fits mainnet.
-        assert!(check_postfix("abcde", MAINNET).is_ok());
+        assert!(check_postfix("abcde", MAINNET, Limits::default()).is_ok());
+    }
+
+    /// The postfix bounds are the configured ones, not the built-in ones.
+    #[test]
+    fn the_postfix_band_follows_the_configured_bounds() {
+        const CHAIN: u64 = 134_875;
+        let wide = Limits {
+            postfix_min: 1,
+            postfix_max: 3,
+            ..Limits::default()
+        };
+
+        // One character is refused by default and accepted here.
+        assert!(matches!(
+            check_postfix("0", CHAIN, Limits::default()),
+            Err(PostfixRefusal::Length)
+        ));
+        assert!(matches!(
+            check_postfix("0", CHAIN, wide),
+            Err(PostfixRefusal::TooShortToServe { .. })
+        ));
+
+        // Four is accepted by default and refused here, on length rather than
+        // on the match band.
+        assert!(matches!(
+            check_postfix("abcd", CHAIN, wide),
+            Err(PostfixRefusal::Length)
+        ));
+    }
+
+    /// The lengths the page advertises come from the same bounds the endpoint
+    /// enforces, so narrowing the band narrows what is offered.
+    #[test]
+    fn the_advertised_lengths_follow_the_configured_bounds() {
+        const MAINNET: u64 = 67_000_000;
+
+        assert_eq!(postfix_lengths_for(MAINNET, Limits::default()), vec![5]);
+        assert!(
+            postfix_lengths_for(
+                MAINNET,
+                Limits {
+                    postfix_min: 1,
+                    postfix_max: 4,
+                    ..Limits::default()
+                }
+            )
+            .is_empty(),
+            "a band that excludes the only workable length must advertise none"
+        );
+
+        // A band raised past the default ceiling, on a chain large enough that
+        // a thirteen-character postfix still hides a transaction. Nothing
+        // inside the default band qualifies here, so this can only pass if the
+        // configured bounds are the ones being walked.
+        const VAST: u64 = 1 << 57;
+        assert_eq!(
+            postfix_lengths_for(
+                VAST,
+                Limits {
+                    postfix_min: 13,
+                    postfix_max: 14,
+                    ..Limits::default()
+                }
+            ),
+            vec![13]
+        );
+    }
+
+    /// The window is inclusive at both ends and counted back from the newest
+    /// mined block, so a window of one block is that block alone.
+    #[test]
+    fn the_recent_window_is_as_wide_as_it_is_configured_to_be() {
+        assert_eq!(recent_window(1000, 30), (970, 999));
+        assert_eq!(recent_window(1000, 1), (999, 999));
+        assert_eq!(recent_window(1000, 100), (900, 999));
+        // A chain shorter than the window gives what there is, not an underflow.
+        assert_eq!(recent_window(5, 30), (0, 4));
+        assert_eq!(recent_window(0, 30), (0, 0));
     }
 
     /// An empty chain must refuse everything rather than divide its way into
     /// permitting a postfix that identifies the only transaction there is.
     #[test]
     fn an_empty_chain_refuses_every_postfix() {
-        for len in MIN_POSTFIX_LEN..=MAX_POSTFIX_LEN {
+        for len in Limits::default().postfix_min..=Limits::default().postfix_max {
             assert!(matches!(
-                check_postfix(&"a".repeat(len), 0),
+                check_postfix(&"a".repeat(len), 0, Limits::default()),
                 Err(PostfixRefusal::TooLongToBeAnonymous { .. })
             ));
         }

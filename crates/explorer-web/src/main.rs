@@ -236,6 +236,9 @@ async fn shutdown_signal() {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::parse();
+    // Before anything is served, because a pair of bounds that refuses every
+    // request is better found here than by the first caller.
+    let limits = config.limits()?;
 
     // Before the first request: the stylesheet is built once and cached by
     // browsers for a day.
@@ -258,6 +261,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         chain: explorer_core::RpcChainSource::new(node)
             .with_max_inflight_rpc(config.max_inflight_rpc),
         txids_loose: std::sync::atomic::AtomicBool::new(false),
+        limits,
     });
     match state.chain.info().await {
         Ok(info) => {
@@ -327,11 +331,16 @@ mod tests {
     /// Points at a closed port: these tests exercise routing and headers, not
     /// the daemon.
     fn test_state() -> Arc<AppState> {
+        state_with(crate::config::Limits::default())
+    }
+
+    fn state_with(limits: crate::config::Limits) -> Arc<AppState> {
         Arc::new(AppState {
             chain: explorer_core::RpcChainSource::new(
                 monerod_rpc::Client::new("http://127.0.0.1:1").expect("valid url"),
             ),
             txids_loose: std::sync::atomic::AtomicBool::new(false),
+            limits,
         })
     }
 
@@ -482,12 +491,16 @@ mod tests {
     }
 
     async fn get(uri: &str) -> (StatusCode, String) {
+        get_with(test_state(), uri).await
+    }
+
+    async fn get_with(state: Arc<AppState>, uri: &str) -> (StatusCode, String) {
         use axum::body::Body;
         use axum::http::Request;
         use tower::ServiceExt;
 
         let config = Config::parse_from(["oxblocks"]);
-        let response = router(&config, test_state())
+        let response = router(&config, state)
             .oneshot(
                 Request::builder()
                     .uri(uri)
@@ -597,6 +610,66 @@ mod tests {
             body.len() < 200,
             "the whole argument came back in the message: {body}"
         );
+    }
+
+    /// The configured range cap is the one the endpoint enforces, and it is
+    /// enforced on the arithmetic alone: the daemon here is unreachable, so a
+    /// refusal proves no round trip was made, and a 502 proves one was.
+    #[tokio::test]
+    async fn the_block_range_cap_is_the_configured_one() {
+        let narrow = state_with(crate::config::Limits {
+            block_range: 5,
+            ..Default::default()
+        });
+
+        let (status, body) = get_with(Arc::clone(&narrow), "/api/blocks/10/20").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body.contains("at most 5"), "{body}");
+
+        // The cap counts blocks, and a range is inclusive at both ends, so
+        // 10 to 14 is exactly five and 10 to 15 is one too many.
+        let (status, _) = get_with(Arc::clone(&narrow), "/api/blocks/10/14").await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_GATEWAY,
+            "a range inside the cap should have reached the daemon"
+        );
+        let (status, body) = get_with(narrow, "/api/blocks/10/15").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body.contains("Requested 6 blocks"), "{body}");
+
+        // The default cap admits the range the narrow one refused.
+        let (status, _) = get("/api/blocks/10/20").await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+    }
+
+    /// The documentation page describes this deployment, not the defaults.
+    #[tokio::test]
+    async fn the_api_page_reports_the_configured_bounds() {
+        let (_, page) = get_with(
+            state_with(crate::config::Limits {
+                postfix_min: 3,
+                postfix_max: 7,
+                block_range: 42,
+                recent_blocks: 9,
+            }),
+            "/api",
+        )
+        .await;
+
+        for shown in ["3&ndash;7", "42", "9"] {
+            assert!(
+                page.contains(&format!("<td class=\"num\">{shown}</td>")),
+                "the page does not report {shown}"
+            );
+        }
+        // And not the numbers it was compiled with.
+        for stale in ["2&ndash;12", "100", "30"] {
+            assert!(
+                !page.contains(&format!("<td class=\"num\">{stale}</td>")),
+                "the page still reports the built-in {stale}"
+            );
+        }
     }
 
     #[tokio::test]
