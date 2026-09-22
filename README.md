@@ -223,11 +223,9 @@ request costs. Widening one widens both. A running explorer reports the bounds
 it was started with on its `/api` page, so they can be read rather than
 guessed.
 
-This lookup needs a daemon that has `get_txids_loose`. monerod `master` and
-`release-v0.19` have it. No released build has it, and v0.18.x answers
-`Method not found`. The explorer tests for it at startup and writes the result
-to the log. When the call is missing, this one endpoint refuses and everything
-else works.
+This lookup needs a daemon that has `get_txids_loose`. A daemon without it
+answers `Method not found`, and this one endpoint returns that as its error.
+Every other endpoint works either way.
 
 ## Architecture
 

@@ -14,13 +14,6 @@ use crate::config::Limits;
 
 pub struct AppState {
     pub chain: RpcChainSource,
-    /// Whether the daemon answered the `get_txids_loose` probe at startup.
-    ///
-    /// Probed once rather than per request. The documentation page reports it,
-    /// and rendering a page of prose should not cost a round trip to answer a
-    /// question whose answer cannot change while the daemon stays up. Set by
-    /// `main` after the probe it already makes for the startup log.
-    pub txids_loose: std::sync::atomic::AtomicBool,
     /// The bounds on the k-anonymous endpoints, from the command line.
     pub limits: Limits,
 }
@@ -771,6 +764,14 @@ pub const MIN_ANONYMITY_SET: u64 = 20;
 /// back, because how many transactions share a postfix is Poisson around the
 /// expectation rather than equal to it.
 ///
+/// Refuses the k-anonymous lookup on a daemon that has no `get_txids_loose`.
+fn no_txids_loose() -> ApiError {
+    ApiError::unsupported(
+        "This daemon does not provide get_txids_loose, which the k-anonymous \
+         lookup needs. Run a daemon that has the call to serve this endpoint.",
+    )
+}
+
 /// The first check is the one that matters for load. `get_txids_loose` walks
 /// the whole transaction index, so a two-character postfix on mainnet is a
 /// full-index scan answering with something like a quarter of a million hashes
@@ -951,12 +952,7 @@ pub async fn transaction_private(
         .await
         .map_err(|e| on_chain_error(&e, "Cant search for matching transactions"))?
     else {
-        return Err(ApiError::unsupported(
-            "This daemon does not provide get_txids_loose, which the k-anonymous \
-             lookup needs. It is in monerod master and release-v0.19 but in no \
-             release build."
-                .to_owned(),
-        ));
+        return Err(no_txids_loose());
     };
 
     // Filter the surplus an odd-length postfix pulled in, then cap.
@@ -1183,6 +1179,7 @@ mod tests {
     )]
 
     use super::*;
+    use axum::http::StatusCode;
 
     // Both bugs below were found by comparing live output on a real chain,
     // not by reading the code.
@@ -1284,6 +1281,23 @@ mod tests {
             check_postfix(&"a".repeat(Limits::default().postfix_max), u64::MAX, Limits::default()),
             Err(PostfixRefusal::TooShortToServe { expected }) if expected == u64::MAX >> 48
         ));
+    }
+
+    /// The answer to a request this deployment's daemon cannot serve.
+    ///
+    /// Nothing announces the call in advance any more, so this message is
+    /// where a caller finds out. It has to name the method, and it is the
+    /// deployment's shortcoming rather than the caller's, so it is a 503 and
+    /// not a 400.
+    #[test]
+    fn a_daemon_without_the_call_says_which_call_it_lacks() {
+        let refused = no_txids_loose();
+        assert_eq!(refused.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            refused.message.contains("get_txids_loose"),
+            "the answer does not name the missing call: {}",
+            refused.message
+        );
     }
 
     /// The guard that keeps a cheap request from becoming an expensive scan.

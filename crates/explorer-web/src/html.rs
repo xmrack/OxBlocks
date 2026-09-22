@@ -409,8 +409,8 @@ impl SortDir {
     }
 }
 
-/// A column header's link: where clicking it goes, and whether an arrow
-/// shows it is the column currently in effect.
+/// A column header's link: where clicking it goes, and the arrow that says
+/// how it is sorted, or that it can be.
 ///
 /// No JavaScript runs on this page, so "clicking a header to sort" has to be
 /// an ordinary link to a URL that already carries the answer.
@@ -424,7 +424,11 @@ struct ColumnSort {
 /// A column not currently sorted links to itself descending, largest or
 /// longest-waiting first, which is normally the more interesting read. The
 /// active column instead links to its own reverse, so a second click flips
-/// it, and carries an arrow showing which way it is sorted now.
+/// it.
+///
+/// Every sortable column carries an arrow. The active one points the way it
+/// is sorted now, and the rest carry an up and down arrow, because a header
+/// that looks like every other header does not say that it can be clicked.
 fn column_sort(key: SortKey, active: Option<(SortKey, SortDir)>) -> ColumnSort {
     let dir = match active {
         Some((k, d)) if k == key => d.flipped(),
@@ -433,7 +437,7 @@ fn column_sort(key: SortKey, active: Option<(SortKey, SortDir)>) -> ColumnSort {
     let arrow = match active {
         Some((k, SortDir::Asc)) if k == key => " \u{25b2}",
         Some((k, SortDir::Desc)) if k == key => " \u{25bc}",
-        _ => "",
+        _ => " \u{2195}",
     };
     ColumnSort {
         href: format!("/mempool?sort={}&dir={}", key.as_str(), dir.as_str()),
@@ -491,8 +495,6 @@ struct ApiPage {
     version: &'static str,
     query: Option<String>,
     chain: Option<ChainStatus>,
-    /// Whether this daemon answered the `get_txids_loose` probe at startup.
-    txids_loose: bool,
     /// Real heights, so the example links are clickable rather than
     /// illustrative.
     sample_height: u64,
@@ -1356,7 +1358,6 @@ pub async fn api_docs(State(state): Shared) -> Page {
             version: VERSION,
             query: None,
             chain,
-            txids_loose: state.txids_loose.load(std::sync::atomic::Ordering::Relaxed),
             sample_height,
             sample_range_start: sample_height.saturating_sub(9),
             postfix_lengths: describe_lengths(&lengths),
@@ -1495,7 +1496,6 @@ mod tests {
             version: VERSION,
             query: None,
             chain: status(),
-            txids_loose: true,
             sample_height: 3_185_430,
             sample_range_start: 3_185_421,
             postfix_lengths: describe_lengths(&[5]),
@@ -2432,20 +2432,18 @@ mod tests {
         assert_eq!(html.matches("/static/style.css").count(), 1);
     }
 
-    /// The daemon-specific notice: a deployment whose daemon cannot serve the
-    /// k-anonymous lookup must say so on the page rather than documenting an
-    /// endpoint that will refuse.
+    /// The page documents the endpoint, not the daemon behind it.
+    ///
+    /// It used to carry a notice saying whether a startup probe had found
+    /// `get_txids_loose`. A daemon that lacks the call says so in the answer
+    /// to the request that needed it, which is where a caller is looking.
     #[test]
-    fn the_page_reports_whether_this_daemon_serves_the_private_lookup() {
-        let available = api_page().render().expect("renders");
-        assert!(available.contains("available"));
-        assert!(!available.contains("Unavailable on this deployment"));
-
-        let mut page = api_page();
-        page.txids_loose = false;
-        let missing = page.render().expect("renders");
-        assert!(missing.contains("Unavailable on this deployment"));
-        assert!(missing.contains("get_txids_loose"));
+    fn the_page_does_not_report_on_the_daemon_behind_it() {
+        let html = api_page().render().expect("renders");
+        assert!(
+            !html.contains("Unavailable on this deployment"),
+            "the page is probing the daemon again:\n{html}"
+        );
     }
 
     #[test]
@@ -2609,20 +2607,19 @@ mod tests {
     }
 
     /// An unsorted column links to itself descending -- largest, or
-    /// longest-waiting, first -- and carries no arrow, because nothing is
-    /// active yet to point in a direction.
+    /// longest-waiting, first -- and says it can be sorted at all.
     #[test]
-    fn an_unsorted_column_links_to_itself_descending_with_no_arrow() {
+    fn an_unsorted_column_links_to_itself_descending_and_offers_both_directions() {
         let c = column_sort(SortKey::Fee, None);
         assert_eq!(c.href, "/mempool?sort=fee&dir=desc");
-        assert_eq!(c.arrow, "");
+        assert_eq!(c.arrow, " \u{2195}", "the column does not say it sorts");
 
         let c = column_sort(SortKey::Size, Some((SortKey::Fee, SortDir::Asc)));
         assert_eq!(
             c.href, "/mempool?sort=size&dir=desc",
             "a column sorted by something else is still unsorted itself"
         );
-        assert_eq!(c.arrow, "");
+        assert_eq!(c.arrow, " \u{2195}");
     }
 
     /// The active column links to its own reverse, so a second click flips
@@ -2701,7 +2698,17 @@ mod tests {
         assert!(
             !html.contains("Waiting [h:m:s] \u{25b2}")
                 && !html.contains("Waiting [h:m:s] \u{25bc}"),
-            "an inactive column must not carry an arrow:\n{html}"
+            "an inactive column must not claim a direction:\n{html}"
+        );
+        assert_eq!(
+            html.matches(" \u{2195}").count(),
+            2,
+            "every sortable column but the active one should offer both \
+             directions:\n{html}"
+        );
+        assert!(
+            !html.contains("Ring \u{2195}") && !html.contains("Hash \u{2195}"),
+            "a column that cannot be sorted must not offer to:\n{html}"
         );
     }
 

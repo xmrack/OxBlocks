@@ -283,22 +283,6 @@
     qualify move with the size of the chain. On this chain that is
     {% if postfix_lengths.is_empty() %}no length at all{% else %}{{ postfix_lengths }}{% endif %}.
   </p>
-  {% if txids_loose %}
-  <p>
-    This daemon answers <code class="lit">get_txids_loose</code>, so the
-    endpoint is <strong>available</strong>.
-  </p>
-  {% else %}
-  <div class="notice">
-    <strong>Unavailable on this deployment.</strong> The lookup needs a daemon
-    that answers <code class="lit">get_txids_loose</code>. monerod
-    <code class="lit">master</code> and <code class="lit">release-v0.19</code>
-    have the call. No released build has it, and v0.18.x answers
-    <em>Method not found</em>. This daemon did not answer the probe at startup,
-    so this one endpoint refuses. Everything else here works, including
-    <a href="#blocks">/api/blocks</a>.
-  </div>
-  {% endif %}
   <pre class="blob">curl -s "$OXBLOCKS/api/transaction/private/&lt;postfix&gt;"</pre>
   <details class="response">
     <summary>Example response</summary>
@@ -527,19 +511,20 @@
   Each request costs the operator's daemon network calls. These bounds stop one
   request from making thousands of them. The numbers below are the ones this
   deployment enforces. The operator sets the postfix length, the block span and
-  the recent window at startup.
+  the recent window at startup. A request that asks for more than a bound
+  allows gets a 400 that names the bound it crossed.
 </p>
 
 <div class="scroll">
 <table>
-  <thead><tr><th>Where</th><th class="num">Limit</th><th>Behaviour</th></tr></thead>
+  <thead><tr><th>Where</th><th class="num">Limit</th><th>Asking for more</th></tr></thead>
   <tbody>
-    <tr><td><code class="lit">/api/transactions</code> limit</td><td class="num">{{ max_transactions_limit }}</td><td>refused</td></tr>
-    <tr><td><code class="lit">/api/mempool</code> limit</td><td class="num">{{ max_mempool_limit }}</td><td>refused</td></tr>
-    <tr><td><code class="lit">/api/blocks</code> span</td><td class="num">{{ max_block_range }}</td><td>refused</td></tr>
-    <tr><td>private lookup, postfix length</td><td class="num">{{ min_postfix_len }}&ndash;{{ max_postfix_len }}</td><td>refused</td></tr>
-    <tr><td>private lookup, expected matches</td><td class="num">{{ min_anonymity_set }}&ndash;{{ max_private_tx_matches }}</td><td>refused</td></tr>
-    <tr><td><code class="lit">/api/transactions/recent</code> window</td><td class="num">{{ recent_blocks }}</td><td>fixed</td></tr>
+    <tr><td><code class="lit">/api/transactions</code> limit</td><td class="num">{{ max_transactions_limit }}</td><td>400</td></tr>
+    <tr><td><code class="lit">/api/mempool</code> limit</td><td class="num">{{ max_mempool_limit }}</td><td>400</td></tr>
+    <tr><td><code class="lit">/api/blocks</code> span</td><td class="num">{{ max_block_range }}</td><td>400</td></tr>
+    <tr><td>private lookup, postfix length</td><td class="num">{{ min_postfix_len }}&ndash;{{ max_postfix_len }}</td><td>400</td></tr>
+    <tr><td>private lookup, expected matches</td><td class="num">{{ min_anonymity_set }}&ndash;{{ max_private_tx_matches }}</td><td>400</td></tr>
+    <tr><td><code class="lit">/api/transactions/recent</code> window</td><td class="num">{{ recent_blocks }}</td><td>no parameter to set</td></tr>
   </tbody>
 </table>
 </div>

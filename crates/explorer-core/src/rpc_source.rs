@@ -458,22 +458,6 @@ impl RpcChainSource {
         }
     }
 
-    /// Whether this daemon offers `get_txids_loose`.
-    ///
-    /// Probed with a request that is cheap and certain to be rejected on
-    /// substance if the method exists at all, so the answer distinguishes
-    /// "absent" from "present but declined".
-    pub async fn supports_txids_loose(&self) -> bool {
-        let Some(probe) = GetTxidsLooseRequest::from_hex_suffix(&"0".repeat(64)) else {
-            return false;
-        };
-        !matches!(
-            self.rpc::<_, GetTxidsLooseResponse>("get_txids_loose", Some(&probe))
-                .await,
-            Err(RpcError::JsonRpc { code, .. }) if code == error_code::METHOD_NOT_FOUND
-        )
-    }
-
     /// Alternative chains this node is tracking.
     ///
     /// Blocked under `--restricted-rpc`, like the mempool.

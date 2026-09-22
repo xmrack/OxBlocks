@@ -260,7 +260,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(AppState {
         chain: explorer_core::RpcChainSource::new(node)
             .with_max_inflight_rpc(config.max_inflight_rpc),
-        txids_loose: std::sync::atomic::AtomicBool::new(false),
         limits,
     });
     match state.chain.info().await {
@@ -272,28 +271,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "connected to monerod {}",
                 info.version
             );
-            // The k-anonymous lookup needs get_txids_loose, which is in
-            // monerod master and release-v0.19 but in no release build. Say so
-            // at startup rather than letting the first caller discover it.
-            let loose = state.chain.supports_txids_loose().await;
-            // Recorded so /api can say whether *this* deployment serves the
-            // k-anonymous lookup, without probing again on every page view.
-            state
-                .txids_loose
-                .store(loose, std::sync::atomic::Ordering::Relaxed);
-            if loose {
-                tracing::info!(
-                    "daemon provides get_txids_loose: /api/transaction/private is available"
-                );
-            } else {
-                tracing::warn!(
-                    "this daemon has no get_txids_loose, so /api/transaction/private \
-                     will refuse requests. It is in monerod master and release-v0.19 \
-                     but in no release build; v0.18.x does not have it. Every other \
-                     endpoint, including /api/blocks, works normally."
-                );
-            }
-
             if info.restricted {
                 tracing::warn!(
                     "this daemon is restricted: /get_transaction_pool, \
@@ -339,7 +316,6 @@ mod tests {
             chain: explorer_core::RpcChainSource::new(
                 monerod_rpc::Client::new("http://127.0.0.1:1").expect("valid url"),
             ),
-            txids_loose: std::sync::atomic::AtomicBool::new(false),
             limits,
         })
     }
