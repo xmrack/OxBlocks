@@ -1930,6 +1930,37 @@ mod tests {
         }
     }
 
+    /// Every `<table>` must scroll on its own rather than widen the page.
+    ///
+    /// `td`/`th` are `white-space: nowrap` so numeric columns line up, which
+    /// means a table with a long text column pushes the whole page wider than
+    /// a narrow screen unless it sits inside `<div class="scroll">`. The API
+    /// page's status code table shipped without that wrapper once, while
+    /// every other table on the site already had it.
+    #[test]
+    fn every_table_scrolls_on_its_own() {
+        for (name, html) in [
+            ("index", index_page().render().expect("renders")),
+            ("block", block_page().render().expect("renders")),
+            ("tx", tx_page().render().expect("renders")),
+            ("api", api_page().render().expect("renders")),
+            (
+                "mempool",
+                mempool_page(Some((SortKey::Size, SortDir::Desc)))
+                    .render()
+                    .expect("renders"),
+            ),
+        ] {
+            for (at, _) in html.match_indices("<table>") {
+                let before = html.get(..at).unwrap_or_default().trim_end();
+                assert!(
+                    before.ends_with(r#"<div class="scroll">"#),
+                    "{name} has a <table> not wrapped in <div class=\"scroll\">"
+                );
+            }
+        }
+    }
+
     /// Every colour name the rules use has to exist in whichever palette is
     /// served with them, or that theme renders a page of `initial` colours --
     /// black text on transparent, with no error anywhere.
