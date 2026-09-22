@@ -148,15 +148,10 @@ The HTTP status says the same thing.
 
 Arguments are read as given. A height is decimal digits, a hash is 64 hex
 characters of either case, and a postfix is hex. Anything else is a 400, and so
-is a `page` or `limit` that is not a plain number. Nothing is stripped or
-repaired first, so `/api/block/1,23` is refused rather than answered as block
-123.
+is a `page` or `limit` that is not a plain number.
 
 Those two points are where the API departs from xmrblocks, which answers 200 to
 everything and deletes the characters it does not recognise before it parses.
-Both were changed on purpose. A refused request that reports success misleads
-every proxy, cache and monitor in the path, and a mistyped height that returns a
-different block is worse than an error.
 
 | Endpoint | Returns |
 | --- | --- |
