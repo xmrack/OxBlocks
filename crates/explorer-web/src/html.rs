@@ -2024,12 +2024,18 @@ mod tests {
             "the hint carries no icon"
         );
         assert!(
-            html.contains("hard fork"),
+            html.contains("network upgrade"),
             "the hint does not say what a major version is"
         );
         assert!(
-            html.contains("miner"),
+            html.contains("signals"),
             "the hint does not say what a minor version is"
+        );
+        // The upgrade cadence this used to claim stopped being true in 2022,
+        // and a page that dates itself is worse than one that does not.
+        assert!(
+            !html.contains("every six months"),
+            "the hint is claiming a fork schedule again"
         );
     }
 
