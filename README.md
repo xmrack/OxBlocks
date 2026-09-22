@@ -232,8 +232,7 @@ Every other endpoint works either way.
 ```
 ┌──────────────┐   HTTP/JSON   ┌──────────────┐   LMDB   ┌──────────┐
 │   oxblocks   │ ────────────> │   monerod    │ ───────> │ data.mdb │
-│              │      RPC      │ (unmodified) │          └──────────┘
-└──────────────┘               └──────────────┘
+└──────────────┘      RPC      └──────────────┘          └──────────┘
 ```
 
 | Crate | Role |
