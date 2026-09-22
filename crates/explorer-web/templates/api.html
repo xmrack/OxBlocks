@@ -131,6 +131,10 @@
   </p>
   <p><a href="/api/version">/api/version</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/api/version"</pre>
+  <details class="response">
+    <summary>Example response</summary>
+    <pre class="blob">{{ example_version }}</pre>
+  </details>
 </section>
 
 <section class="endpoint" id="networkinfo">
@@ -164,6 +168,10 @@
   </p>
   <p><a href="/api/networkinfo">/api/networkinfo</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/api/networkinfo"</pre>
+  <details class="response">
+    <summary>Example response</summary>
+    <pre class="blob">{{ example_network_info }}</pre>
+  </details>
 </section>
 
 <section class="endpoint" id="block">
@@ -182,6 +190,10 @@
   </p>
   <p><a href="/api/block/{{ sample_height }}">/api/block/{{ sample_height }}</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/api/block/{{ sample_height }}"</pre>
+  <details class="response">
+    <summary>Example response</summary>
+    <pre class="blob">{{ example_block }}</pre>
+  </details>
 </section>
 
 <section class="endpoint" id="rawblock">
@@ -210,6 +222,10 @@
   </p>
   <p><a href="/api/blocks/{{ sample_range_start }}/{{ sample_height }}">/api/blocks/{{ sample_range_start }}/{{ sample_height }}</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/api/blocks/{{ sample_range_start }}/{{ sample_height }}"</pre>
+  <details class="response">
+    <summary>Example response</summary>
+    <pre class="blob">{{ example_blocks_range }}</pre>
+  </details>
 </section>
 
 <section class="endpoint" id="transaction">
@@ -228,6 +244,10 @@
     of a block timestamp.
   </p>
   <pre class="blob">curl -s "$OXBLOCKS/api/transaction/&lt;hash&gt;"</pre>
+  <details class="response">
+    <summary>Example response</summary>
+    <pre class="blob">{{ example_transaction }}</pre>
+  </details>
 </section>
 
 <section class="endpoint" id="rawtransaction">
@@ -280,6 +300,10 @@
   </div>
   {% endif %}
   <pre class="blob">curl -s "$OXBLOCKS/api/transaction/private/&lt;postfix&gt;"</pre>
+  <details class="response">
+    <summary>Example response</summary>
+    <pre class="blob">{{ example_transaction_private }}</pre>
+  </details>
 </section>
 
 <section class="endpoint" id="transactions">
@@ -307,6 +331,10 @@
   </p>
   <p><a href="/api/transactions?page=0&amp;limit=5">/api/transactions?page=0&amp;limit=5</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/api/transactions?page=0&amp;limit=5"</pre>
+  <details class="response">
+    <summary>Example response</summary>
+    <pre class="blob">{{ example_transactions }}</pre>
+  </details>
 </section>
 
 <section class="endpoint" id="mempool">
@@ -334,6 +362,10 @@
   </p>
   <p><a href="/api/mempool">/api/mempool</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/api/mempool"</pre>
+  <details class="response">
+    <summary>Example response</summary>
+    <pre class="blob">{{ example_mempool }}</pre>
+  </details>
 </section>
 
 <section class="endpoint" id="recent">
@@ -351,6 +383,10 @@
   </p>
   <p><a href="/api/transactions/recent">/api/transactions/recent</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/api/transactions/recent"</pre>
+  <details class="response">
+    <summary>Example response</summary>
+    <pre class="blob">{{ example_transactions_recent }}</pre>
+  </details>
 </section>
 
 <section class="endpoint" id="search">
@@ -368,6 +404,14 @@
     Building one needs a secret view key, which this explorer never asks for.
   </p>
   <pre class="blob">curl -s "$OXBLOCKS/api/search/&lt;height|hash&gt;"</pre>
+  <details class="response">
+    <summary>Example response, a block match</summary>
+    <pre class="blob">{{ example_search_block }}</pre>
+  </details>
+  <details class="response">
+    <summary>Example response, a transaction match</summary>
+    <pre class="blob">{{ example_search_tx }}</pre>
+  </details>
 </section>
 
 <section class="endpoint" id="feeestimate">
@@ -381,6 +425,10 @@
   </p>
   <p><a href="/api/feeestimate">/api/feeestimate</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/api/feeestimate"</pre>
+  <details class="response">
+    <summary>Example response</summary>
+    <pre class="blob">{{ example_feeestimate }}</pre>
+  </details>
 </section>
 
 <section class="endpoint" id="health">
@@ -398,6 +446,10 @@
   </p>
   <p><a href="/health">/health</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/health"</pre>
+  <details class="response">
+    <summary>Example response</summary>
+    <pre class="blob">{{ example_health }}</pre>
+  </details>
 </section>
 
 <h2>Shared shapes</h2>

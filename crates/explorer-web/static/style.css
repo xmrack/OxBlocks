@@ -317,6 +317,22 @@ details.hint > summary::-webkit-details-marker { display: none; }
 details.hint > summary:hover { color: var(--fg); }
 details.hint[open] > summary { color: var(--accent); }
 
+/* A native disclosure needs no script and works on touch, so an example
+   response can default to collapsed without hiding it from anyone. */
+details.response { margin-top: 0.5rem; }
+details.response > summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.82rem;
+  color: var(--fg-muted);
+  user-select: none;
+}
+details.response > summary::-webkit-details-marker { display: none; }
+details.response > summary::before { content: "\25b8"; margin-right: 0.35em; }
+details.response[open] > summary::before { content: "\25be"; }
+details.response > summary:hover { color: var(--fg); }
+details.response pre.blob { margin-top: 0.4rem; }
+
 /* The icon draws its own circle, so the summary carries no border. Strokes
    follow `currentColor`, which is what makes hover and open states work. */
 details.hint .icon {

@@ -309,6 +309,125 @@ pub fn normalise_hash(raw: &str) -> String {
         .map_or_else(|_| raw.to_lowercase(), |h| h.to_hex())
 }
 
+/// Illustrative values for the `/api` documentation page.
+///
+/// Built from the real structs, so a renamed or removed field breaks the
+/// build here rather than only showing up as documentation drift. Nothing
+/// here is live: the values are fabricated and no daemon call is made.
+pub mod example {
+    use explorer_core::fmt::timestamp_utc;
+
+    use super::{ApiInput, ApiMixin, ApiOutput, BlockDetail, TxDetail, TxSummary};
+
+    /// A ring-signed transaction, the kind most blocks carry.
+    #[must_use]
+    pub fn tx_summary() -> TxSummary {
+        TxSummary {
+            coinbase: false,
+            extra: format!("01{}", "a1".repeat(32)),
+            mixin: 16,
+            payment_id: String::new(),
+            payment_id8: String::new(),
+            rct_type: 6,
+            tx_fee: 30_660_000,
+            tx_hash: "b2".repeat(32),
+            tx_size: 1_533,
+            tx_version: 2,
+            unlock_time: 0,
+            xmr_inputs: 0,
+            xmr_outputs: 0,
+        }
+    }
+
+    /// The one coinbase every block carries. Its amount is public by
+    /// construction, unlike a ring-signed spend.
+    #[must_use]
+    pub fn coinbase_summary() -> TxSummary {
+        TxSummary {
+            coinbase: true,
+            mixin: 0,
+            tx_fee: 0,
+            tx_hash: "c0".repeat(32),
+            tx_size: 267,
+            tx_version: 2,
+            xmr_outputs: 600_000_000_000,
+            ..tx_summary()
+        }
+    }
+
+    #[must_use]
+    pub fn block() -> BlockDetail {
+        BlockDetail {
+            block_height: 3_185_430,
+            current_height: 3_185_431,
+            hash: "a1".repeat(32),
+            size: 95_511,
+            timestamp: 1_735_689_600,
+            timestamp_utc: timestamp_utc(1_735_689_600),
+            txs: vec![coinbase_summary(), tx_summary()],
+        }
+    }
+
+    /// One resolved ring member, as `/api/transaction` reports it.
+    fn mixin(block_no: u64) -> ApiMixin {
+        ApiMixin {
+            block_no,
+            public_key: "e4".repeat(32),
+            tx_hash: "f5".repeat(32),
+        }
+    }
+
+    /// A transaction with its ring resolved, the shape `/api/transaction`
+    /// returns.
+    #[must_use]
+    pub fn tx_detail() -> TxDetail {
+        TxDetail {
+            block_height: 3_185_430,
+            coinbase: false,
+            confirmations: 12,
+            current_height: 3_185_442,
+            extra: format!("01{}", "a1".repeat(32)),
+            inputs: Some(vec![ApiInput {
+                amount: 0,
+                key_image: "d3".repeat(32),
+                mixins: Some(vec![mixin(3_100_055), mixin(3_150_612)]),
+            }]),
+            mixin: 16,
+            outputs: vec![ApiOutput {
+                amount: 0,
+                public_key: "08".repeat(32),
+            }],
+            payment_id: String::new(),
+            payment_id8: String::new(),
+            rct_type: 6,
+            timestamp: 1_735_689_612,
+            timestamp_utc: timestamp_utc(1_735_689_612),
+            tx_fee: 30_660_000,
+            tx_hash: "b2".repeat(32),
+            tx_size: 1_533,
+            tx_version: 2,
+            unlock_time: 0,
+            xmr_inputs: 0,
+            xmr_outputs: 0,
+        }
+    }
+
+    /// A transaction whose ring was never asked for, the shape
+    /// `/api/transaction/private` and `/api/transactions/recent` return.
+    /// `mixins` is `null`, not `[]`: see [`ApiInput::mixins`].
+    #[must_use]
+    pub fn tx_detail_unresolved() -> TxDetail {
+        TxDetail {
+            inputs: Some(vec![ApiInput {
+                amount: 0,
+                key_image: "d3".repeat(32),
+                mixins: None,
+            }]),
+            ..tx_detail()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(

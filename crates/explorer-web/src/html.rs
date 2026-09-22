@@ -501,6 +501,22 @@ struct ApiPage {
     min_anonymity_set: u64,
     max_private_tx_matches: u64,
     recent_blocks: u64,
+    /// Illustrative response bodies, shown collapsed under each endpoint.
+    /// Fabricated rather than fetched: an unreachable daemon should not blank
+    /// the documentation for the endpoint that would have called it.
+    example_version: String,
+    example_network_info: String,
+    example_block: String,
+    example_blocks_range: String,
+    example_transaction: String,
+    example_transaction_private: String,
+    example_transactions: String,
+    example_mempool: String,
+    example_transactions_recent: String,
+    example_search_block: String,
+    example_search_tx: String,
+    example_feeestimate: String,
+    example_health: String,
 }
 
 #[derive(Template)]
@@ -1251,6 +1267,40 @@ fn describe_lengths(lengths: &[usize]) -> String {
     }
 }
 
+/// An illustrative `/health` body, not a live one.
+///
+/// `/health` carries no daemon data to fabricate, but the cache names and
+/// their capacities are real: read from the running cache rather than typed
+/// out a second time, so a renamed or resized cache shows up here too. Only
+/// the occupancy and hit counts, which change on every request, are made up.
+///
+/// Takes the stats array rather than `&AppState`, so a test can supply its
+/// own without building a whole application state around it.
+fn health_example(stats: [(&'static str, explorer_core::cache::Stats); 5]) -> String {
+    let caches: serde_json::Map<String, serde_json::Value> = stats
+        .into_iter()
+        .map(|(name, s)| {
+            (
+                name.to_owned(),
+                serde_json::json!({
+                    "len": s.capacity.min(2),
+                    "capacity": s.capacity,
+                    "hits": 5,
+                    "misses": 7,
+                }),
+            )
+        })
+        .collect();
+
+    serde_json::to_string_pretty(&serde_json::json!({
+        "status": "ok",
+        "version": VERSION,
+        "rpc_calls": 18,
+        "caches": caches,
+    }))
+    .unwrap_or_default()
+}
+
 /// The API documentation, which is what the `API` link in the header points at.
 ///
 /// It used to point at `/api/networkinfo`, which answered a reader looking for
@@ -1287,6 +1337,19 @@ pub async fn api_docs(State(state): Shared) -> Page {
             min_anonymity_set: crate::api::handlers::MIN_ANONYMITY_SET,
             max_private_tx_matches: crate::api::handlers::MAX_PRIVATE_TX_MATCHES,
             recent_blocks: state.limits.recent_blocks,
+            example_version: crate::api::handlers::example::version(),
+            example_network_info: crate::api::handlers::example::network_info(),
+            example_block: crate::api::handlers::example::block(),
+            example_blocks_range: crate::api::handlers::example::blocks_range(),
+            example_transaction: crate::api::handlers::example::transaction(),
+            example_transaction_private: crate::api::handlers::example::transaction_private(),
+            example_transactions: crate::api::handlers::example::transactions(),
+            example_mempool: crate::api::handlers::example::mempool(),
+            example_transactions_recent: crate::api::handlers::example::transactions_recent(),
+            example_search_block: crate::api::handlers::example::search_block(),
+            example_search_tx: crate::api::handlers::example::search_tx(),
+            example_feeestimate: crate::api::handlers::example::fee_estimate(),
+            example_health: health_example(state.chain.cache_stats()),
         },
     )
 }
@@ -1413,6 +1476,33 @@ mod tests {
             min_anonymity_set: h::MIN_ANONYMITY_SET,
             max_private_tx_matches: h::MAX_PRIVATE_TX_MATCHES,
             recent_blocks: limits.recent_blocks,
+            example_version: h::example::version(),
+            example_network_info: h::example::network_info(),
+            example_block: h::example::block(),
+            example_blocks_range: h::example::blocks_range(),
+            example_transaction: h::example::transaction(),
+            example_transaction_private: h::example::transaction_private(),
+            example_transactions: h::example::transactions(),
+            example_mempool: h::example::mempool(),
+            example_transactions_recent: h::example::transactions_recent(),
+            example_search_block: h::example::search_block(),
+            example_search_tx: h::example::search_tx(),
+            example_feeestimate: h::example::fee_estimate(),
+            example_health: health_example({
+                let s = explorer_core::cache::Stats {
+                    len: 0,
+                    capacity: 1,
+                    hits: 0,
+                    misses: 0,
+                };
+                [
+                    ("blocks_by_hash", s),
+                    ("blocks_by_height", s),
+                    ("info", s),
+                    ("outs", s),
+                    ("txs", s),
+                ]
+            }),
         }
     }
 
@@ -1592,6 +1682,55 @@ mod tests {
             checked >= 13,
             "only {checked} endpoint sections were examined, so this test is \
              not reading the page"
+        );
+    }
+
+    /// Every example response is valid JSON, and every one starts collapsed.
+    ///
+    /// A native `<details>` with no `open` attribute renders closed without
+    /// any script, which is what "default minimized" means here.
+    #[test]
+    fn every_example_response_is_valid_json_and_starts_collapsed() {
+        let page = api_page().render().expect("renders");
+        let mut checked = 0;
+
+        for (at, _) in page.match_indices(r#"<details class="response">"#) {
+            let rest = page.get(at..).unwrap_or_default();
+            let tag_end = rest.find('>').unwrap_or(0);
+            assert!(
+                !rest.get(..tag_end).unwrap_or_default().contains("open"),
+                "an example response is expanded by default at byte {at}"
+            );
+
+            let body_end = rest.find("</details>").unwrap_or_else(|| {
+                panic!("unterminated <details class=\"response\"> at byte {at}")
+            });
+            let block = rest.get(..body_end).unwrap_or_default();
+            let json = block
+                .split_once(r#"<pre class="blob">"#)
+                .and_then(|(_, r)| r.split_once("</pre>"))
+                .map(|(json, _)| json)
+                .unwrap_or_else(|| panic!("example response at byte {at} holds no <pre>"));
+
+            // Escaped by askama like any other interpolated value; undo that
+            // before parsing, the same four entities `render()` can produce.
+            let unescaped = json
+                .replace("&quot;", "\"")
+                .replace("&#34;", "\"")
+                .replace("&#39;", "'")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&amp;", "&");
+            serde_json::from_str::<serde_json::Value>(&unescaped).unwrap_or_else(|e| {
+                panic!("example response at byte {at} is not JSON: {e}\n{unescaped}")
+            });
+            checked += 1;
+        }
+
+        assert_eq!(
+            checked, 13,
+            "expected 13 example responses (one per endpoint, two for \
+             /api/search), found {checked}"
         );
     }
 

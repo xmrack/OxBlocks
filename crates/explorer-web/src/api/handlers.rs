@@ -1171,6 +1171,154 @@ pub async fn transactions_recent(State(state): Shared) -> Result<ApiOk<RecentDat
     }))
 }
 
+// ---------------------------------------------------------------------------
+// Documentation examples
+// ---------------------------------------------------------------------------
+
+/// Illustrative example responses for the `/api` documentation page.
+///
+/// Built from the real structs, so a renamed or removed field breaks the
+/// build here rather than only showing up as documentation drift. Nothing
+/// here is live: no daemon call is made, and the values are fabricated.
+pub mod example {
+    use explorer_core::fmt::timestamp_utc;
+
+    use super::{
+        BlockRow, FeeData, MempoolData, NetworkInfoData, PrivateTxData, RecentData,
+        TransactionsData, VersionData, titled,
+    };
+    use crate::api::envelope::example_envelope;
+    use crate::api::shapes::example as tx;
+
+    pub fn version() -> String {
+        example_envelope(VersionData {
+            api: 65_539,
+            blockchain_height: 3_185_431,
+            git_branch_name: String::new(),
+            last_git_commit_date: String::new(),
+            last_git_commit_hash: String::new(),
+            monero_version_full: "0.18.5.1-release".to_owned(),
+            oxblocks_version: env!("CARGO_PKG_VERSION").to_owned(),
+        })
+    }
+
+    pub fn network_info() -> String {
+        example_envelope(NetworkInfoData {
+            alt_blocks_count: 2,
+            block_size_limit: 600_000,
+            block_size_median: 90_000,
+            cumulative_difficulty: "406809688931725560".to_owned(),
+            current: true,
+            current_hf_version: 16,
+            difficulty: "312790018742".to_owned(),
+            fee_estimate: 20_000,
+            fee_estimate_grace_blocks: 10,
+            fee_per_kb: 20_000,
+            grey_peerlist_size: 4_803,
+            hash_rate: 2_601_583_489_290,
+            height: 3_185_431,
+            incoming_connections_count: 12,
+            outgoing_connections_count: 8,
+            stagenet: false,
+            start_time: 1_735_600_000,
+            status: true,
+            target: 120,
+            target_height: 0,
+            testnet: false,
+            top_block_hash: "a1".repeat(32),
+            tx_count: 47_291_336,
+            tx_pool_size: 14,
+            tx_pool_size_kbytes: 21,
+            white_peerlist_size: 3_912,
+        })
+    }
+
+    pub fn fee_estimate() -> String {
+        example_envelope(FeeData {
+            fee: 20_000,
+            fee_per_kb: 20_000,
+            grace_blocks: 10,
+        })
+    }
+
+    pub fn block() -> String {
+        example_envelope(tx::block())
+    }
+
+    pub fn blocks_range() -> String {
+        example_envelope(vec![tx::block()])
+    }
+
+    pub fn transaction() -> String {
+        example_envelope(tx::tx_detail())
+    }
+
+    fn block_row() -> BlockRow {
+        BlockRow {
+            age: "00:12:34".to_owned(),
+            hash: "a1".repeat(32),
+            height: 3_185_430,
+            size: 95_511.0,
+            timestamp: 1_735_689_600,
+            timestamp_utc: timestamp_utc(1_735_689_600),
+            txs: vec![tx::coinbase_summary(), tx::tx_summary()],
+        }
+    }
+
+    pub fn transactions() -> String {
+        example_envelope(TransactionsData {
+            blocks: vec![block_row()],
+            current_height: 3_185_431,
+            limit: 25,
+            page: 0,
+            total_page_no: 127_418,
+        })
+    }
+
+    pub fn mempool() -> String {
+        let mut entry = serde_json::to_value(tx::tx_summary()).unwrap_or_default();
+        if let Some(map) = entry.as_object_mut() {
+            map.insert("timestamp".to_owned(), serde_json::json!(1_735_689_712));
+            map.insert(
+                "timestamp_utc".to_owned(),
+                serde_json::json!(timestamp_utc(1_735_689_712)),
+            );
+        }
+        example_envelope(MempoolData {
+            limit: 500,
+            page: 0,
+            total_page_no: 1,
+            txs: vec![entry],
+            txs_no: 14,
+        })
+    }
+
+    pub fn transaction_private() -> String {
+        example_envelope(PrivateTxData {
+            missed_txs: vec![],
+            txs: vec![tx::tx_detail_unresolved()],
+        })
+    }
+
+    pub fn transactions_recent() -> String {
+        example_envelope(RecentData {
+            current_height: 3_185_431,
+            from_height: 3_185_401,
+            mempool_txs_no: 14,
+            to_height: 3_185_430,
+            txs: vec![tx::tx_detail_unresolved()],
+        })
+    }
+
+    pub fn search_block() -> String {
+        example_envelope(titled(tx::block(), "block"))
+    }
+
+    pub fn search_tx() -> String {
+        example_envelope(titled(tx::tx_detail(), "tx"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
