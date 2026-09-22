@@ -1829,6 +1829,33 @@ mod tests {
         );
     }
 
+    /// The block header's Version field is two numbers with no context; a
+    /// reader has no way to tell a hard fork from a signalling bit without
+    /// this.
+    #[test]
+    fn the_block_version_is_explained() {
+        let html = block_page().render().expect("renders");
+
+        assert_eq!(
+            html.matches("<details class=\"hint\">").count(),
+            1,
+            "the version field carries no explanatory hint:\n{html}"
+        );
+        assert_eq!(
+            html.matches(r#"<svg class="icon""#).count(),
+            1,
+            "the hint carries no icon"
+        );
+        assert!(
+            html.contains("hard fork"),
+            "the hint does not say what a major version is"
+        );
+        assert!(
+            html.contains("miner"),
+            "the hint does not say what a minor version is"
+        );
+    }
+
     /// No page may carry a `style=` attribute.
     ///
     /// The policy is `style-src 'self'` with no `'unsafe-inline'`, so a
