@@ -48,8 +48,11 @@ struct BlockRow {
     height: u64,
     age: String,
     size: u64,
+    /// Every transaction in the block, coinbase included, matching the block
+    /// page's own count and the number of rows in its table. `num_txes`
+    /// counts non-coinbase transactions only; see `total_tx_count`.
     tx_count: u64,
-    fees: String,
+    reward: String,
     hash: String,
 }
 
@@ -68,6 +71,9 @@ struct BlockPage {
     age: String,
     size: u64,
     weight: u64,
+    /// Every transaction rendered in the table below, coinbase included.
+    /// Agrees with the index row's `total_tx_count(num_txes)` because every
+    /// valid block carries exactly one coinbase.
     tx_count: usize,
     reward: String,
     difficulty: String,
@@ -119,7 +125,7 @@ struct TxPage {
 
 struct InputView {
     key_image: String,
-    amount: String,
+    amount: Option<String>,
     unavailable: bool,
     ring: Vec<RingView>,
 }
@@ -132,7 +138,7 @@ struct RingView {
 
 struct OutputView {
     public_key: String,
-    amount: String,
+    amount: Option<String>,
     view_tag: String,
 }
 
@@ -295,6 +301,41 @@ fn xmr(atomic: u64) -> String {
     Amount::from_atomic(atomic).to_trimmed_xmr_string()
 }
 
+/// The XMR value of an input or output, when there is one to show.
+///
+/// A RingCT amount is committed, not published: the cleartext field is zero
+/// and means "hidden", not "nothing". `None` is that state, so the templates
+/// cannot render it as a number.
+///
+/// This was a string comparison against `"0"` in two places. The output path
+/// built that sentinel and matched; the input path formatted through `xmr`,
+/// which yields `"0.0"`, so its guard never fired and every RingCT input was
+/// labelled `0.0 XMR`. One function, no sentinel, no second copy to drift.
+fn visible_amount(atomic: u64) -> Option<String> {
+    (atomic != 0).then(|| xmr(atomic))
+}
+
+/// The index shows this so it agrees with the block page's own count.
+///
+/// `num_txes` is upstream's count of non-coinbase transactions -- see
+/// `BlockHeader::num_txes` -- and every valid block carries exactly one
+/// coinbase besides those, a consensus rule this crate does not itself
+/// enforce but can rely on. The block page counts every row it renders
+/// instead of applying this arithmetic a second time, so the two derivations
+/// cannot silently drift apart the way `num_txes` alone once did: the index
+/// showed 16, the block page (which folded the coinbase in) showed 17.
+fn total_tx_count(num_txes: u64) -> u64 {
+    num_txes.saturating_add(1)
+}
+
+/// The block page's half of the same total: every row it renders, coinbase
+/// included. Named so a test can call the block handler's own arithmetic
+/// directly, rather than recomputing `txs.len()` a second time and only
+/// proving the two copies agree with each other.
+fn table_tx_count(txs: &[BlockTxRow]) -> usize {
+    txs.len()
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -360,11 +401,13 @@ async fn render_page(State(state): Shared, page: u64) -> Page {
             height: h.height,
             age: age(now(), h.timestamp),
             size: h.block_size,
-            tx_count: h.num_txes,
-            // The miner reward less the base emission is the fee total, but the
-            // base is not exposed per block; show the reward, which is what a
-            // reader can act on.
-            fees: xmr(h.reward),
+            tx_count: total_tx_count(h.num_txes),
+            // The reward, not the fee total. Fees are the reward less the base
+            // emission, and no header field carries the base, so this column
+            // cannot be a fee column without inventing the number. It was
+            // headed "Fees" and showed this value, which read as a plausible
+            // fee and was not one.
+            reward: xmr(h.reward),
             hash: h.hash.to_lowercase(),
         })
         .collect();
@@ -433,6 +476,7 @@ pub async fn block(State(state): Shared, Path(raw): Path<String>) -> Page {
             })
         })
         .collect::<Vec<_>>();
+    let tx_count = table_tx_count(&txs);
 
     render(
         StatusCode::OK,
@@ -449,7 +493,7 @@ pub async fn block(State(state): Shared, Path(raw): Path<String>) -> Page {
             age: age(now(), header.timestamp),
             size: header.block_size,
             weight: header.block_weight,
-            tx_count: txs.len(),
+            tx_count,
             reward: xmr(header.reward),
             difficulty: header.difficulty().to_string(),
             nonce: header.nonce,
@@ -530,7 +574,7 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
         .iter()
         .map(|r| InputView {
             key_image: r.key_image.to_hex(),
-            amount: xmr(r.amount),
+            amount: visible_amount(r.amount),
             unavailable: r.ring_unavailable,
             ring: r
                 .ring
@@ -559,11 +603,7 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
             };
             OutputView {
                 public_key: key,
-                amount: if o.amount == 0 {
-                    "0".to_owned()
-                } else {
-                    xmr(o.amount)
-                },
+                amount: visible_amount(o.amount),
                 view_tag,
             }
         })
@@ -1065,6 +1105,280 @@ mod tests {
         assert_eq!(describe_lengths(&[5]), "5 characters");
         assert_eq!(describe_lengths(&[2, 3]), "2 or 3 characters");
         assert_eq!(describe_lengths(&[2, 3, 4]), "2, 3 or 4 characters");
+    }
+
+    // -----------------------------------------------------------------------
+    // The three pages a reader actually spends time on.
+    //
+    // Every compatibility test in this repository compares `/api/*` output, so
+    // nothing above this line ever rendered an index, block or transaction
+    // page. Three wrong figures shipped behind that gap: a column headed
+    // "Fees" that held the block reward, a block page that counted its own
+    // coinbase and so read one higher than the index row linking to it, and a
+    // `0.0 XMR` label on every RingCT input. All three are template-and-
+    // mapping bugs, invisible to a JSON differential by construction.
+    // -----------------------------------------------------------------------
+
+    fn index_page() -> IndexPage {
+        IndexPage {
+            version: VERSION,
+            query: None,
+            chain: status(),
+            blocks: vec![BlockRow {
+                height: 3_185_430,
+                age: "00:01:12".to_owned(),
+                size: 40_490,
+                tx_count: 16,
+                reward: "0.60160672".to_owned(),
+                hash: "a".repeat(64),
+            }],
+            page: 0,
+        }
+    }
+
+    fn block_tx(coinbase: bool) -> BlockTxRow {
+        BlockTxRow {
+            hash: if coinbase { "c" } else { "d" }.repeat(64),
+            coinbase,
+            outputs: 2,
+            fee: if coinbase { "0.0" } else { "0.00071136" }.to_owned(),
+            ring: if coinbase { 0 } else { 16 },
+            size: 2_223,
+        }
+    }
+
+    fn block_page() -> BlockPage {
+        let txs = vec![block_tx(true), block_tx(false), block_tx(false)];
+        BlockPage {
+            version: VERSION,
+            query: None,
+            chain: status(),
+            height: 3_185_430,
+            depth: 1,
+            hash: "a".repeat(64),
+            prev_hash: "b".repeat(64),
+            timestamp: 1_790_038_920,
+            timestamp_utc: "2026-09-22 01:02:00".to_owned(),
+            age: "00:01:12".to_owned(),
+            size: 40_490,
+            weight: 40_490,
+            tx_count: table_tx_count(&txs),
+            reward: "0.60160672".to_owned(),
+            difficulty: "691253322598".to_owned(),
+            nonce: 7,
+            major_version: 16,
+            minor_version: 16,
+            txs,
+        }
+    }
+
+    /// One RingCT input and output, one pre-RingCT input and output. Both
+    /// states have to be present or the distinction is unobservable.
+    fn tx_page() -> TxPage {
+        TxPage {
+            version: VERSION,
+            query: None,
+            chain: status(),
+            hash: "e".repeat(64),
+            coinbase: false,
+            in_pool: false,
+            pruned: false,
+            block_height: 3_185_430,
+            confirmations: 1,
+            timestamp: 1_790_038_920,
+            timestamp_utc: "2026-09-22 01:02:00".to_owned(),
+            age: "00:01:12".to_owned(),
+            fee: "0.00071136".to_owned(),
+            size: 2_223,
+            version_no: 2,
+            rct_type: 6,
+            ring_size: 16,
+            unlock_time: 0,
+            payment_id: String::new(),
+            payment_id8: String::new(),
+            inputs: vec![
+                InputView {
+                    key_image: "1".repeat(64),
+                    amount: visible_amount(0),
+                    unavailable: false,
+                    ring: vec![RingView {
+                        height: 3_100_000,
+                        public_key: "2".repeat(64),
+                        tx_hash: "3".repeat(64),
+                    }],
+                },
+                InputView {
+                    key_image: "4".repeat(64),
+                    amount: visible_amount(2_000_000_000_000),
+                    unavailable: false,
+                    ring: Vec::new(),
+                },
+            ],
+            outputs: vec![
+                OutputView {
+                    public_key: "5".repeat(64),
+                    amount: visible_amount(0),
+                    view_tag: "94".to_owned(),
+                },
+                OutputView {
+                    public_key: "6".repeat(64),
+                    amount: visible_amount(3_000_000_000_000),
+                    view_tag: "d6".to_owned(),
+                },
+            ],
+            has_view_tags: true,
+            extra: "01aa".to_owned(),
+            extra_fields: Vec::new(),
+            extra_undecoded: false,
+        }
+    }
+
+    /// A RingCT amount is hidden, not zero, and the two must not render alike.
+    ///
+    /// The whole rule lives here because it used to live in two places written
+    /// two different ways: the output path compared against a `"0"` sentinel it
+    /// built itself, the input path compared against `"0"` but formatted
+    /// through `xmr`, which never produces `"0"` -- it produces `"0.0"`.
+    #[test]
+    fn a_hidden_amount_has_no_string_form() {
+        assert_eq!(visible_amount(0), None);
+        assert_eq!(
+            visible_amount(2_000_000_000_000),
+            Some("2.0".to_owned()),
+            "a pre-RingCT amount is public and must still be shown"
+        );
+        assert_eq!(visible_amount(1), Some("0.000000000001".to_owned()));
+        // The trap: the formatter's rendering of zero is not the digit zero.
+        assert_eq!(xmr(0), "0.0");
+    }
+
+    /// Bulletproofs hide the amount; the page must not print a figure for it.
+    #[test]
+    fn a_ringct_input_or_output_shows_no_number() {
+        let html = tx_page().render().expect("renders");
+
+        assert!(
+            !html.contains("0.0 XMR"),
+            "a RingCT input was labelled with an amount:\n{html}"
+        );
+        assert!(
+            html.contains("2.0 XMR"),
+            "the pre-RingCT input's visible amount was dropped"
+        );
+        // The output column says so in words rather than printing a zero.
+        assert_eq!(
+            html.matches(r#"<span class="tag">hidden</span>"#).count(),
+            1,
+            "exactly one of the two outputs is a hidden RingCT amount"
+        );
+        assert!(
+            html.contains("3.0"),
+            "the pre-RingCT output amount is shown"
+        );
+    }
+
+    /// `num_txes` counts non-coinbase transactions only, but the block page
+    /// counts every rendered row. A block reading 16 on the index used to
+    /// read 17 once opened, because the two pages counted differently and
+    /// nothing tied them together. They now agree because both mean "every
+    /// transaction, coinbase included" -- the index computes that total from
+    /// `num_txes` since it never fetches the block body, and the block page
+    /// simply counts what it renders. The coinbase is not called out a
+    /// second time in the count: the table directly beneath it already
+    /// tags which row is the coinbase.
+    #[test]
+    fn the_index_and_the_block_page_count_transactions_the_same_way() {
+        assert_eq!(total_tx_count(29), 30, "num_txes plus the one coinbase");
+        assert_eq!(total_tx_count(0), 1, "a coinbase-only block is still one");
+        assert_eq!(
+            total_tx_count(u64::MAX),
+            u64::MAX,
+            "saturates rather than wrapping past the header's own type"
+        );
+
+        // 29 non-coinbase transactions plus the coinbase itself, counted
+        // through the block handler's own `table_tx_count` rather than
+        // recomputed here -- recomputing `txs.len()` a second time would
+        // pass even if the handler's copy silently excluded the coinbase
+        // again, since both copies would agree with each other and with
+        // nothing else.
+        let mut txs = vec![block_tx(true)];
+        txs.extend((0..29).map(|_| block_tx(false)));
+        assert_eq!(txs.len(), 30, "fixture is 1 coinbase + 29 others");
+
+        let mut page = block_page();
+        page.tx_count = table_tx_count(&txs);
+        page.txs = txs;
+
+        assert_eq!(
+            u64::try_from(page.tx_count).expect("small count"),
+            total_tx_count(29),
+            "the block page's own total disagrees with the index's"
+        );
+
+        let html = page.render().expect("renders");
+        assert!(
+            html.contains("<dt>Transactions</dt><dd>30</dd>"),
+            "the page does not show the plain total:\n{html}"
+        );
+        assert!(
+            !html.contains("coinbase</dd>"),
+            "the count restates the coinbase, which the table below it \
+             already tags:\n{html}"
+        );
+    }
+
+    /// No header field carries the base emission, so the fee total of a block
+    /// cannot be computed from one. A column headed "Fees" on this page is
+    /// therefore always either the reward under a wrong name -- which is what
+    /// it was -- or a number that was invented.
+    #[test]
+    fn the_front_page_does_not_claim_to_show_fees() {
+        let html = index_page().render().expect("renders");
+        assert!(html.contains(r#"<th class="num">Reward</th>"#));
+        assert!(
+            !html.to_lowercase().contains("fee"),
+            "the front page names a fee it cannot compute:\n{html}"
+        );
+        assert!(html.contains("0.60160672"), "the reward value is shown");
+    }
+
+    /// Escaping and the content policy, checked on the pages that carry chain
+    /// data rather than only on the error page.
+    #[test]
+    fn the_data_pages_escape_their_input_and_reference_nothing_external() {
+        let hostile = r#"<script>alert(1)</script>"#.to_owned();
+
+        let mut index = index_page();
+        index.query = Some(hostile.clone());
+        let mut block = block_page();
+        block.query = Some(hostile.clone());
+        let mut tx = tx_page();
+        tx.query = Some(hostile.clone());
+        tx.payment_id = hostile.clone();
+
+        for (name, html) in [
+            ("index", index.render().expect("renders")),
+            ("block", block.render().expect("renders")),
+            ("tx", tx.render().expect("renders")),
+        ] {
+            let lower = html.to_lowercase();
+            assert!(!lower.contains("<script"), "{name} emitted a script tag");
+            assert!(!lower.contains("javascript:"), "{name} emitted a js url");
+            assert!(!lower.contains("<img"), "{name} emitted an image");
+            assert!(!lower.contains("http://"), "{name} left the origin");
+            assert!(!lower.contains("https://"), "{name} left the origin");
+            assert_eq!(
+                lower.matches("/static/style.css").count(),
+                1,
+                "{name} does not load exactly one stylesheet"
+            );
+            assert!(
+                html.contains("&#60;script&#62;"),
+                "{name} did not render the escaped form, so this test is not \
+                 seeing the hostile value at all"
+            );
+        }
     }
 
     /// A page must still render when the daemon could not be reached, because

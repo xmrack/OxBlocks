@@ -39,7 +39,7 @@
       <span>Input {{ loop.index }}</span>
       <span class="hash">{{ i.key_image }}</span>
       <span class="tag">{{ i.ring.len() }} ring members</span>
-      {% if i.amount != "0" %}<span class="tag">{{ i.amount }} XMR</span>{% endif %}
+      {% if let Some(amount) = i.amount %}<span class="tag">{{ amount }} XMR</span>{% endif %}
     </summary>
     <div class="body">
       {% if i.unavailable %}
@@ -78,7 +78,7 @@
     <tr>
       <td class="num ring-index">{{ loop.index }}</td>
       <td><span class="hash">{{ o.public_key }}</span></td>
-      <td class="num">{% if o.amount == "0" %}<span class="tag">hidden</span>{% else %}{{ o.amount }}{% endif %}</td>
+      <td class="num">{% if let Some(amount) = o.amount %}{{ amount }}{% else %}<span class="tag">hidden</span>{% endif %}</td>
       {% if has_view_tags %}<td><code>{{ o.view_tag }}</code></td>{% endif %}
     </tr>
   {% endfor %}

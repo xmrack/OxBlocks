@@ -14,7 +14,7 @@
       <th>Age [h:m:s]</th>
       <th class="num">Size</th>
       <th class="num">Txs</th>
-      <th class="num">Fees</th>
+      <th class="num">Reward</th>
       <th>Hash</th>
     </tr>
   </thead>
@@ -25,7 +25,7 @@
       <td>{{ b.age }}</td>
       <td class="num">{{ b.size }}</td>
       <td class="num">{{ b.tx_count }}</td>
-      <td class="num">{{ b.fees }}</td>
+      <td class="num">{{ b.reward }}</td>
       <td><a class="hash" href="/block/{{ b.hash }}">{{ b.hash }}</a></td>
     </tr>
   {% endfor %}
