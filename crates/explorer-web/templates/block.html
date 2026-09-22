@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "sort.html" as sort %}
 {% block title %}Block {{ height }} &mdash; oxblocks{% endblock %}
 {% block content %}
 <h1>Block {{ height }}<span class="sub">{{ timestamp_utc }} UTC</span></h1>
@@ -32,9 +33,9 @@
     <tr>
       <th>Hash</th>
       <th class="num">Outputs</th>
-      <th class="num"><a class="sort" href="{{ fee_sort.href }}">Fee{{ fee_sort.arrow }}</a></th>
+      <th class="num">{% call sort::header("Fee", fee_sort) %}{% endcall %}</th>
       <th class="num">Ring</th>
-      <th class="num"><a class="sort" href="{{ size_sort.href }}">Size{{ size_sort.arrow }}</a></th>
+      <th class="num">{% call sort::header("Size", size_sort) %}{% endcall %}</th>
     </tr>
   </thead>
   <tbody>

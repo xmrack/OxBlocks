@@ -142,6 +142,13 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
    click handler. */
 th a.sort { color: inherit; text-decoration: none; }
 th a.sort:hover { color: var(--fg); text-decoration: underline; }
+/* Two triangles, drawn rather than typed because every arrow character has
+   an emoji form on some phone. Unsorted shows both faintly, sorted shows only
+   the one it points. */
+.sort-mark { margin-left: 0.4em; vertical-align: -1px; fill: currentColor; }
+.sort-mark path { opacity: 0.45; }
+.sort-mark.asc .up, .sort-mark.desc .down { opacity: 1; }
+.sort-mark.asc .down, .sort-mark.desc .up { opacity: 0; }
 
 /* ---------- key/value panels ---------- */
 

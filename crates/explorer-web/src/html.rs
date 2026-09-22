@@ -413,14 +413,14 @@ impl SortDir {
     }
 }
 
-/// A column header's link: where clicking it goes, and the arrow that says
-/// how it is sorted, or that it can be.
+/// A column header's link: where clicking it goes, and whether it is sorted
+/// now, `asc`, `desc` or `none`, as the class its mark is drawn with.
 ///
 /// No JavaScript runs on this page, so "clicking a header to sort" has to be
 /// an ordinary link to a URL that already carries the answer.
 struct ColumnSort {
     href: String,
-    arrow: &'static str,
+    state: &'static str,
 }
 
 /// The header link for `key`, given the sort currently in effect (if any).
@@ -430,23 +430,22 @@ struct ColumnSort {
 /// active column instead links to its own reverse, so a second click flips
 /// it.
 ///
-/// Every sortable column carries an arrow. The active one points the way it
-/// is sorted now, and the rest carry an up and down arrow, because a header
-/// that looks like every other header does not say that it can be clicked.
-/// That arrow is U+21C5 and not U+2195, which phones draw as a colour emoji.
+/// Every sortable column carries a mark. The active one points the way it is
+/// sorted now, and the rest show both ways, because a header that looks like
+/// every other header does not say that it can be clicked. The mark is drawn
+/// in SVG: every arrow character has an emoji form on some phone.
 fn column_sort(page: &str, key: SortKey, active: Option<(SortKey, SortDir)>) -> ColumnSort {
     let dir = match active {
         Some((k, d)) if k == key => d.flipped(),
         _ => SortDir::Desc,
     };
-    let arrow = match active {
-        Some((k, SortDir::Asc)) if k == key => " \u{25b2}",
-        Some((k, SortDir::Desc)) if k == key => " \u{25bc}",
-        _ => " \u{21c5}",
+    let state = match active {
+        Some((k, d)) if k == key => d.as_str(),
+        _ => "none",
     };
     ColumnSort {
         href: format!("{page}?sort={}&dir={}", key.as_str(), dir.as_str()),
-        arrow,
+        state,
     }
 }
 
@@ -2675,7 +2674,7 @@ mod tests {
     fn an_unsorted_column_links_to_itself_descending_and_offers_both_directions() {
         let c = column_sort("/mempool", SortKey::Fee, None);
         assert_eq!(c.href, "/mempool?sort=fee&dir=desc");
-        assert_eq!(c.arrow, " \u{21c5}", "the column does not say it sorts");
+        assert_eq!(c.state, "none", "the column does not say it sorts");
 
         let c = column_sort(
             "/mempool",
@@ -2686,7 +2685,7 @@ mod tests {
             c.href, "/mempool?sort=size&dir=desc",
             "a column sorted by something else is still unsorted itself"
         );
-        assert_eq!(c.arrow, " \u{21c5}");
+        assert_eq!(c.state, "none");
     }
 
     /// The active column links to its own reverse, so a second click flips
@@ -2699,7 +2698,7 @@ mod tests {
             Some((SortKey::Waiting, SortDir::Desc)),
         );
         assert_eq!(desc.href, "/mempool?sort=waiting&dir=asc");
-        assert_eq!(desc.arrow, " \u{25bc}");
+        assert_eq!(desc.state, "desc");
 
         let asc = column_sort(
             "/mempool",
@@ -2707,7 +2706,7 @@ mod tests {
             Some((SortKey::Waiting, SortDir::Asc)),
         );
         assert_eq!(asc.href, "/mempool?sort=waiting&dir=desc");
-        assert_eq!(asc.arrow, " \u{25b2}");
+        assert_eq!(asc.state, "asc");
     }
 
     #[test]
@@ -2765,14 +2764,18 @@ mod tests {
         page.size_sort = column_sort("/block/3185430", SortKey::Size, active);
         let html = page.render().expect("renders");
         assert!(
-            html.contains("href=\"/block/3185430?sort=fee&#38;dir=desc\">Fee \u{25b2}"),
+            html.contains(
+                r#"href="/block/3185430?sort=fee&#38;dir=desc">Fee<svg class="sort-mark asc""#
+            ),
             "the active column does not flip:\n{html}"
         );
         assert!(
-            html.contains("href=\"/block/3185430?sort=size&#38;dir=desc\">Size \u{21c5}"),
+            html.contains(
+                r#"href="/block/3185430?sort=size&#38;dir=desc">Size<svg class="sort-mark none""#
+            ),
             "the size column does not offer to sort:\n{html}"
         );
-        assert!(!html.contains("Ring \u{21c5}"), "ring is not sortable");
+        assert!(!html.contains("Ring<svg"), "ring is not sortable");
     }
 
     /// A transaction page marks what it is about: its own hash and the key
@@ -2821,7 +2824,7 @@ mod tests {
             "the active column should link to its own reverse:\n{html}"
         );
         assert!(
-            html.contains("Fee \u{25b2}"),
+            html.contains(r#">Fee<svg class="sort-mark asc""#),
             "the active column should show which way it is sorted:\n{html}"
         );
         assert!(
@@ -2829,20 +2832,23 @@ mod tests {
             "an inactive column should default to descending:\n{html}"
         );
         assert!(
-            !html.contains("Waiting [h:m:s] \u{25b2}")
-                && !html.contains("Waiting [h:m:s] \u{25bc}"),
+            html.contains(r#">Waiting [h:m:s]<svg class="sort-mark none""#),
             "an inactive column must not claim a direction:\n{html}"
         );
         assert_eq!(
-            html.matches(" \u{21c5}").count(),
+            html.matches(r#"<svg class="sort-mark none""#).count(),
             2,
             "every sortable column but the active one should offer both \
              directions:\n{html}"
         );
         assert!(
-            !html.contains("Ring \u{21c5}") && !html.contains("Hash \u{21c5}"),
+            !html.contains("Ring<svg") && !html.contains("Hash<svg"),
             "a column that cannot be sorted must not offer to:\n{html}"
         );
+        // A typed arrow is what a phone turned into an emoji.
+        for glyph in ['\u{2195}', '\u{21c5}', '\u{25b2}', '\u{25bc}'] {
+            assert!(!html.contains(glyph), "a sort arrow is typed again");
+        }
     }
 
     /// One RingCT input and output, one pre-RingCT input and output. Both

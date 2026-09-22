@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "sort.html" as sort %}
 {% block title %}Mempool &mdash; oxblocks{% endblock %}
 {% block content %}
 <h1>Mempool<span class="sub">{{ txs.len() }} transactions</span></h1>
@@ -11,10 +12,10 @@
   <thead>
     <tr>
       <th>Hash</th>
-      <th><a class="sort" href="{{ waiting_sort.href }}">Waiting [h:m:s]{{ waiting_sort.arrow }}</a></th>
-      <th class="num"><a class="sort" href="{{ fee_sort.href }}">Fee{{ fee_sort.arrow }}</a></th>
+      <th>{% call sort::header("Waiting [h:m:s]", waiting_sort) %}{% endcall %}</th>
+      <th class="num">{% call sort::header("Fee", fee_sort) %}{% endcall %}</th>
       <th class="num">Ring</th>
-      <th class="num"><a class="sort" href="{{ size_sort.href }}">Size{{ size_sort.arrow }}</a></th>
+      <th class="num">{% call sort::header("Size", size_sort) %}{% endcall %}</th>
     </tr>
   </thead>
   <tbody>
