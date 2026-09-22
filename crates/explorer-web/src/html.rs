@@ -642,8 +642,11 @@ const fn fnv1a(mut bytes: &[u8]) -> u64 {
 pub struct Page(StatusCode, String);
 
 impl IntoResponse for Page {
+    /// `no-cache` lets a browser keep the page but makes it ask before showing
+    /// it again. Without it a phone showed a copy from before a change, and
+    /// the chain it describes moves every two minutes anyway.
     fn into_response(self) -> Response {
-        (self.0, Html(self.1)).into_response()
+        (self.0, [(header::CACHE_CONTROL, "no-cache")], Html(self.1)).into_response()
     }
 }
 
@@ -2734,6 +2737,14 @@ mod tests {
             rows.iter().map(|r| r.size).collect::<Vec<_>>(),
             vec![1_000, 2_000, 3_000]
         );
+    }
+
+    #[test]
+    fn a_page_is_checked_with_the_server_before_it_is_shown_again() {
+        for status in [StatusCode::OK, StatusCode::NOT_FOUND] {
+            let r = Page(status, String::new()).into_response();
+            assert_eq!(r.headers().get(header::CACHE_CONTROL).unwrap(), "no-cache");
+        }
     }
 
     /// A block's table sorts by fee and by size, and its headers link back to
