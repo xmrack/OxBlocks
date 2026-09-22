@@ -433,6 +433,7 @@ struct ColumnSort {
 /// Every sortable column carries an arrow. The active one points the way it
 /// is sorted now, and the rest carry an up and down arrow, because a header
 /// that looks like every other header does not say that it can be clicked.
+/// That arrow is U+21C5 and not U+2195, which phones draw as a colour emoji.
 fn column_sort(page: &str, key: SortKey, active: Option<(SortKey, SortDir)>) -> ColumnSort {
     let dir = match active {
         Some((k, d)) if k == key => d.flipped(),
@@ -441,7 +442,7 @@ fn column_sort(page: &str, key: SortKey, active: Option<(SortKey, SortDir)>) -> 
     let arrow = match active {
         Some((k, SortDir::Asc)) if k == key => " \u{25b2}",
         Some((k, SortDir::Desc)) if k == key => " \u{25bc}",
-        _ => " \u{2195}",
+        _ => " \u{21c5}",
     };
     ColumnSort {
         href: format!("{page}?sort={}&dir={}", key.as_str(), dir.as_str()),
@@ -2674,7 +2675,7 @@ mod tests {
     fn an_unsorted_column_links_to_itself_descending_and_offers_both_directions() {
         let c = column_sort("/mempool", SortKey::Fee, None);
         assert_eq!(c.href, "/mempool?sort=fee&dir=desc");
-        assert_eq!(c.arrow, " \u{2195}", "the column does not say it sorts");
+        assert_eq!(c.arrow, " \u{21c5}", "the column does not say it sorts");
 
         let c = column_sort(
             "/mempool",
@@ -2685,7 +2686,7 @@ mod tests {
             c.href, "/mempool?sort=size&dir=desc",
             "a column sorted by something else is still unsorted itself"
         );
-        assert_eq!(c.arrow, " \u{2195}");
+        assert_eq!(c.arrow, " \u{21c5}");
     }
 
     /// The active column links to its own reverse, so a second click flips
@@ -2768,10 +2769,10 @@ mod tests {
             "the active column does not flip:\n{html}"
         );
         assert!(
-            html.contains("href=\"/block/3185430?sort=size&#38;dir=desc\">Size \u{2195}"),
+            html.contains("href=\"/block/3185430?sort=size&#38;dir=desc\">Size \u{21c5}"),
             "the size column does not offer to sort:\n{html}"
         );
-        assert!(!html.contains("Ring \u{2195}"), "ring is not sortable");
+        assert!(!html.contains("Ring \u{21c5}"), "ring is not sortable");
     }
 
     /// A transaction page marks what it is about: its own hash and the key
@@ -2833,13 +2834,13 @@ mod tests {
             "an inactive column must not claim a direction:\n{html}"
         );
         assert_eq!(
-            html.matches(" \u{2195}").count(),
+            html.matches(" \u{21c5}").count(),
             2,
             "every sortable column but the active one should offer both \
              directions:\n{html}"
         );
         assert!(
-            !html.contains("Ring \u{2195}") && !html.contains("Hash \u{2195}"),
+            !html.contains("Ring \u{21c5}") && !html.contains("Hash \u{21c5}"),
             "a column that cannot be sorted must not offer to:\n{html}"
         );
     }
