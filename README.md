@@ -1,14 +1,11 @@
 # oxblocks
 
-oxblocks is a Monero block explorer. It reads a `monerod` node through RPC and
-serves two things: HTML pages for people, and a JSON API for programs. It is
-written in Rust.
+oxblocks is a Monero block explorer written in Rust.
 
 The explorer does not open the blockchain database. It holds no keys. It writes
-nothing to disk. For each request it asks the daemon, renders the answer, and
-forgets it.
+nothing to disk. For each request it asks the daemon over RPC and renders the answer.
 
-The JSON API matches the API that xmrblocks serves, so existing clients work
+The JSON API matches the API that [xmrblocks](https://github.com/moneroexamples/onion-monero-blockchain-explorer) serves, so existing clients work
 without changes.
 
 ## Requirements
@@ -40,9 +37,6 @@ To serve other machines, bind to an address they can reach:
 ```bash
 ./target/release/oxblocks --bind 0.0.0.0:8081 --daemon-url http://127.0.0.1:18081
 ```
-
-The explorer starts even when the daemon is down. It then serves a page that
-says so, and it recovers when the daemon comes back.
 
 ### Options
 
@@ -226,17 +220,8 @@ speed, not correctness. `/health` reports the size and the hit counts.
 here. It does not cover the dependency tree, where some crates do use `unsafe`.
 `tools/check-unsafe.sh` fails the build when a crate stops inheriting the rule.
 
-**No consensus code and no database handle.** The explorer talks to an
-unmodified daemon over RPC. It links no C++ and it opens no LMDB file. A bug in
-the web layer costs one response. It cannot corrupt chain data, because the
-process cannot reach it.
-
-**No secrets to leak.** The explorer accepts no view key, no spend key and no
-raw transaction hex. It stores nothing between requests. There is no login, no
-session and no cookie.
-
 **Escaped output.** Templates escape every value at compile time. To emit a raw
-value a developer must write `|safe`, which a reviewer can grep for.
+value a developer must write `|safe`.
 
 **A strict browser policy.** Every response carries
 `Content-Security-Policy: default-src 'none'; style-src 'self'; form-action
@@ -261,20 +246,11 @@ licences, duplicate versions and source registries. Read the tree yourself with
 
 ## Pruned nodes
 
-The explorer never asks for a pruned transaction. A pruned copy is smaller, but
-it is not the transaction that the network relayed, and its byte count is not
-the transaction size. The flag that requests one is private and no option sets
-it.
-
 On a pruned daemon, `tx_size` under-reports for a transaction outside the stripe
 that the node keeps. The node holds only the prefix, so the missing bytes are
 not there to count. Run an unpruned daemon if you need that field to be exact.
 Every other field is correct on a pruned node, because ring expansion reads the
 output table, and the daemon never prunes that table.
-
-The explorer compresses its own responses instead. It negotiates gzip, deflate
-or brotli with each client, which recovers the bandwidth that pruning would have
-saved.
 
 ## Testing
 
@@ -301,5 +277,3 @@ OXBLOCKS_TEST_RPC=http://127.0.0.1:28081 cargo test -- --ignored
 ## License
 
 MIT. Read [LICENSE](LICENSE).
-
-Repository: <https://github.com/xmrack/oxblocks>
