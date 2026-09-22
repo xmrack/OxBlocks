@@ -1,14 +1,21 @@
-//! The response envelope, byte-compatible with the C++ explorer's JSON API.
+//! The response envelope.
 //!
-//! Upstream wraps every answer in a JSend-ish object and **always** replies
-//! HTTP 200, including for failures. Clients distinguish outcomes by the
-//! `status` member, not by the status code.
+//! The body is the JSend-ish object that xmrblocks clients expect:
 //!
 //! ```text
 //! {"data": <object>, "status": "success"}
 //! {"data": {"title": "<message>"}, "status": "fail"}
 //! {"data": null, "message": "<message>", "status": "error"}
 //! ```
+//!
+//! The HTTP status is **not** upstream's. xmrblocks answers 200 to everything,
+//! including failures, and leaves the outcome to the `status` member alone. A
+//! caller that reads status codes, and every proxy, cache and monitor between
+//! the two, is then told that a refused request succeeded. Here the code says
+//! what happened: 400 for input this explorer will not parse, 404 for
+//! something the chain does not hold, 5xx when the fault is ours or the
+//! daemon's. The body is unchanged, so a client that reads `status` behaves
+//! the same.
 //!
 //! Note `"data": null` on the error form. The researched spec asserted `{}`
 //! and reasoned about it in prose; a verifier compiled the vendored
@@ -22,7 +29,9 @@ use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
-/// `fail` is the caller's fault — a hash that will not parse, a height past
+/// Which body shape an answer takes.
+///
+/// `fail` is the caller's fault, a hash that will not parse or a height past
 /// the tip. `error` is ours or the daemon's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -33,6 +42,7 @@ pub enum Outcome {
 #[derive(Debug, Clone)]
 pub struct ApiError {
     pub outcome: Outcome,
+    pub status: StatusCode,
     pub message: String,
     /// Upstream sometimes returns partially-built data alongside an error —
     /// `/api/transactions` assigns `data["blocks"]` before the loop that can
@@ -42,20 +52,41 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    pub fn fail(message: impl Into<String>) -> Self {
+    fn new(outcome: Outcome, status: StatusCode, message: impl Into<String>) -> Self {
         Self {
-            outcome: Outcome::Fail,
+            outcome,
+            status,
             message: message.into(),
             partial: None,
         }
     }
 
-    pub fn error(message: impl Into<String>) -> Self {
-        Self {
-            outcome: Outcome::Error,
-            message: message.into(),
-            partial: None,
-        }
+    /// Answers 400: the argument is not something this explorer will read.
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self::new(Outcome::Fail, StatusCode::BAD_REQUEST, message)
+    }
+
+    /// Answers 404: the argument was well formed and the chain does not hold
+    /// it.
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::new(Outcome::Fail, StatusCode::NOT_FOUND, message)
+    }
+
+    /// Answers 502: the daemon could not be reached, or answered with
+    /// something this explorer cannot use.
+    pub fn upstream(message: impl Into<String>) -> Self {
+        Self::new(Outcome::Error, StatusCode::BAD_GATEWAY, message)
+    }
+
+    /// Answers 503: this deployment cannot serve the endpoint at all, because
+    /// of how its daemon is built or configured.
+    pub fn unsupported(message: impl Into<String>) -> Self {
+        Self::new(Outcome::Error, StatusCode::SERVICE_UNAVAILABLE, message)
+    }
+
+    /// Answers 500: our own bug.
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::new(Outcome::Error, StatusCode::INTERNAL_SERVER_ERROR, message)
     }
 
     #[must_use]
@@ -119,20 +150,24 @@ fn api_headers() -> [(HeaderName, HeaderValue); 3] {
     ]
 }
 
-fn render(value: &serde_json::Value) -> Response {
+fn render(status: StatusCode, value: &serde_json::Value) -> Response {
     // `dump()` with no arguments is compact, and serde_json's default writer
     // matches: no spaces after `,` or `:`.
-    let body = serde_json::to_string(value).unwrap_or_else(|_| {
-        r#"{"data":null,"message":"serialisation failed","status":"error"}"#.to_owned()
-    });
-    (StatusCode::OK, api_headers(), body).into_response()
+    let (status, body) = match serde_json::to_string(value) {
+        Ok(body) => (status, body),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            r#"{"data":null,"message":"serialisation failed","status":"error"}"#.to_owned(),
+        ),
+    };
+    (status, api_headers(), body).into_response()
 }
 
 impl<T: Serialize> IntoResponse for ApiOk<T> {
     fn into_response(self) -> Response {
         let data = match serde_json::to_value(&self.0) {
             Ok(v) => v,
-            Err(e) => return ApiError::error(format!("could not render: {e}")).into_response(),
+            Err(e) => return ApiError::internal(format!("could not render: {e}")).into_response(),
         };
         let mut out = serde_json::Map::new();
         out.insert("data".to_owned(), data);
@@ -140,13 +175,13 @@ impl<T: Serialize> IntoResponse for ApiOk<T> {
             "status".to_owned(),
             serde_json::Value::String("success".to_owned()),
         );
-        render(&serde_json::Value::Object(out))
+        render(StatusCode::OK, &serde_json::Value::Object(out))
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        render(&self.to_value())
+        render(self.status, &self.to_value())
     }
 }
 
@@ -175,23 +210,66 @@ mod tests {
             })
     }
 
+    /// The body is upstream's, including the wording, which spells "Cant"
+    /// without an apostrophe.
     #[test]
-    fn a_failure_is_data_title_and_http_200() {
-        // The wording is upstream's, from a live deployment: it echoes the
-        // sanitised argument, and spells "Cant" without an apostrophe.
-        let r = ApiError::fail("Cant parse tx hash: abc").into_response();
-        assert_eq!(r.status(), StatusCode::OK, "upstream never uses 4xx here");
+    fn a_failure_is_data_title() {
+        let r = ApiError::bad_request("Cant parse tx hash: abc").into_response();
         assert_eq!(
             body_of(r),
             r#"{"data":{"title":"Cant parse tx hash: abc"},"status":"fail"}"#
         );
     }
 
+    /// The status code is the part that is ours. A refused request must not
+    /// come back as 200, or every proxy, cache and monitor in the path is told
+    /// it succeeded.
+    #[test]
+    fn the_status_code_says_what_happened() {
+        for (expected, built) in [
+            (StatusCode::BAD_REQUEST, ApiError::bad_request("x")),
+            (StatusCode::NOT_FOUND, ApiError::not_found("x")),
+            (StatusCode::BAD_GATEWAY, ApiError::upstream("x")),
+            (StatusCode::SERVICE_UNAVAILABLE, ApiError::unsupported("x")),
+            (StatusCode::INTERNAL_SERVER_ERROR, ApiError::internal("x")),
+        ] {
+            assert_eq!(built.clone().into_response().status(), expected);
+            assert!(built.status.is_client_error() || built.status.is_server_error());
+        }
+        assert_eq!(ApiOk(7).into_response().status(), StatusCode::OK);
+    }
+
+    /// Which body shape goes with which code: a 4xx is the caller's fault and
+    /// carries `fail`, a 5xx is ours and carries `error`.
+    #[test]
+    fn the_code_and_the_body_agree_on_whose_fault_it_is() {
+        for built in [ApiError::bad_request("x"), ApiError::not_found("x")] {
+            assert_eq!(built.outcome, Outcome::Fail);
+            assert!(
+                built.status.is_client_error(),
+                "{} is not 4xx",
+                built.status
+            );
+        }
+        for built in [
+            ApiError::upstream("x"),
+            ApiError::unsupported("x"),
+            ApiError::internal("x"),
+        ] {
+            assert_eq!(built.outcome, Outcome::Error);
+            assert!(
+                built.status.is_server_error(),
+                "{} is not 5xx",
+                built.status
+            );
+        }
+    }
+
     /// The correction: `data` is null, not `{}`. A verifier compiled nlohmann
     /// to establish this after the spec asserted the opposite.
     #[test]
     fn an_error_carries_a_null_data_and_a_message() {
-        let r = ApiError::error("boom").into_response();
+        let r = ApiError::internal("boom").into_response();
         assert_eq!(
             body_of(r),
             r#"{"data":null,"message":"boom","status":"error"}"#
@@ -202,7 +280,7 @@ mod tests {
     /// failure, because upstream assigns the array before the loop.
     #[test]
     fn an_error_can_carry_partially_built_data() {
-        let r = ApiError::error("Cant get block: 99")
+        let r = ApiError::upstream("Cant get block: 99")
             .with_partial(serde_json::json!({"blocks": [{"height": 100}]}))
             .into_response();
         assert_eq!(
@@ -248,7 +326,7 @@ mod tests {
     /// are covered by `shapes::tests::declaration_order_is_alphabetical`.
     #[test]
     fn envelope_keys_are_alphabetical() {
-        let e = ApiError::error("x").into_response();
+        let e = ApiError::internal("x").into_response();
         let body = body_of(e);
         let keys: Vec<&str> = ["data", "message", "status"].into();
         let mut last = 0usize;

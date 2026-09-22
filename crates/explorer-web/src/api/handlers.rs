@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use explorer_core::fmt::{remove_bad_chars, timestamp_utc};
+use explorer_core::fmt::{decimal, timestamp_utc};
 use explorer_core::{BlockId, BlockIdError, ChainError, Hash32, RpcChainSource, unexpanded_inputs};
 use monerod_rpc::types::{BlockHeader, GetTxidsLooseRequest, TxEntry};
 use serde::Serialize;
@@ -24,19 +24,35 @@ pub struct AppState {
 
 pub type Shared = State<Arc<AppState>>;
 
-/// Map a chain failure onto upstream's two outcomes.
+/// The length of a hash written out, which is the longest argument any route
+/// here accepts.
+const HASH_TEXT_LEN: usize = 64;
+
+/// A caller's argument, on its way back into an error message.
 ///
-/// `fail` means the caller asked for something that is not there; `error`
-/// means we could not answer. Upstream draws the line the same way, and the
-/// distinction is the only signal a client gets, since both are HTTP 200.
+/// Bounded, because the argument comes from a URL and the message it lands in
+/// is read by a person. A well formed argument is at most 64 characters, so
+/// anything this truncates was wrong already.
+pub fn echo(arg: &str) -> String {
+    if arg.chars().count() <= HASH_TEXT_LEN {
+        return arg.to_owned();
+    }
+    let mut out: String = arg.chars().take(HASH_TEXT_LEN).collect();
+    out.push_str("...");
+    out
+}
+
+/// Map a chain failure onto an answer.
+///
+/// Not found is the caller's, anything else is ours or the daemon's.
 fn on_chain_error(e: &ChainError, what: &str) -> ApiError {
     if e.is_not_found() {
-        ApiError::fail(what.to_owned())
+        ApiError::not_found(what.to_owned())
     } else {
         // The operator gets the detail; the client does not. See
         // ChainError::public_message.
         tracing::warn!("{what}: {e}");
-        ApiError::error(e.public_message())
+        ApiError::upstream(e.public_message())
     }
 }
 
@@ -88,11 +104,9 @@ pub async fn transaction(
     State(state): Shared,
     Path(raw): Path<String>,
 ) -> Result<ApiOk<TxDetail>, ApiError> {
-    let cleaned = remove_bad_chars(&raw);
-    let hash: Hash32 = cleaned
+    let hash: Hash32 = raw
         .parse()
-        // Upstream echoes the *sanitised* argument, not the raw one.
-        .map_err(|_| ApiError::fail(format!("Cant parse tx hash: {cleaned}")))?;
+        .map_err(|_| ApiError::bad_request(format!("Cant parse tx hash: {}", echo(&raw))))?;
 
     let fetched = state
         .chain
@@ -101,12 +115,12 @@ pub async fn transaction(
         .map_err(|e| on_chain_error(&e, &format!("Cant get tx: {hash}")))?;
 
     let Some(entry) = fetched.txs.first() else {
-        return Err(ApiError::fail(format!("Cant find tx: {hash}")));
+        return Err(ApiError::not_found(format!("Cant find tx: {hash}")));
     };
 
     let tx = entry
         .parse_json()
-        .map_err(|e| ApiError::error(format!("Cant parse tx {hash}: {e}")))?;
+        .map_err(|e| ApiError::upstream(format!("Cant parse tx {hash}: {e}")))?;
 
     // One /get_outs per input. Never batched across the transaction: monerod
     // fails the whole request if any single index is out of range, which would
@@ -136,11 +150,13 @@ pub async fn transaction(
 
 /// Wrap [`BlockId::parse`] in upstream's wording, which differs by which shape
 /// was attempted.
-fn parse_block_id(cleaned: &str) -> Result<BlockId, ApiError> {
-    BlockId::parse(cleaned).map_err(|e| match e {
-        BlockIdError::NotAHash => ApiError::fail(format!("Cant parse blk hash: {cleaned}")),
+fn parse_block_id(arg: &str) -> Result<BlockId, ApiError> {
+    BlockId::parse(arg).map_err(|e| match e {
+        BlockIdError::NotAHash => {
+            ApiError::bad_request(format!("Cant parse blk hash: {}", echo(arg)))
+        }
         BlockIdError::NotAHeight | BlockIdError::Unrecognised => {
-            ApiError::fail(format!("Cant find blk using search string: {cleaned}"))
+            ApiError::bad_request(format!("Cant find blk using search string: {}", echo(arg)))
         }
     })
 }
@@ -162,8 +178,7 @@ pub async fn block(
     State(state): Shared,
     Path(raw): Path<String>,
 ) -> Result<ApiOk<BlockDetail>, ApiError> {
-    let cleaned = remove_bad_chars(&raw);
-    let id = parse_block_id(&cleaned)?;
+    let id = parse_block_id(&raw)?;
     Ok(ApiOk(build_block_detail(&state, id).await?))
 }
 
@@ -244,8 +259,7 @@ pub async fn raw_block(
     State(state): Shared,
     Path(raw): Path<String>,
 ) -> Result<ApiOk<serde_json::Value>, ApiError> {
-    let cleaned = remove_bad_chars(&raw);
-    let id = parse_block_id(&cleaned)?;
+    let id = parse_block_id(&raw)?;
 
     let got = state
         .chain
@@ -254,7 +268,7 @@ pub async fn raw_block(
         .map_err(|e| on_chain_error(&e, &block_not_found(id)))?;
 
     let value: serde_json::Value = serde_json::from_str(&got.json)
-        .map_err(|_| ApiError::error("Faild parsing raw blk data into json".to_owned()))?;
+        .map_err(|_| ApiError::upstream("Faild parsing raw blk data into json".to_owned()))?;
     Ok(ApiOk(value))
 }
 
@@ -262,10 +276,9 @@ pub async fn raw_transaction(
     State(state): Shared,
     Path(raw): Path<String>,
 ) -> Result<ApiOk<serde_json::Value>, ApiError> {
-    let cleaned = remove_bad_chars(&raw);
-    let hash: Hash32 = cleaned
+    let hash: Hash32 = raw
         .parse()
-        .map_err(|_| ApiError::fail(format!("Cant parse tx hash: {cleaned}")))?;
+        .map_err(|_| ApiError::bad_request(format!("Cant parse tx hash: {}", echo(&raw))))?;
 
     let fetched = state
         .chain
@@ -274,11 +287,11 @@ pub async fn raw_transaction(
         .map_err(|e| on_chain_error(&e, &format!("Cant get tx: {hash}")))?;
 
     let Some(entry) = fetched.txs.first() else {
-        return Err(ApiError::fail(format!("Cant find tx: {hash}")));
+        return Err(ApiError::not_found(format!("Cant find tx: {hash}")));
     };
 
     let value: serde_json::Value = serde_json::from_str(&entry.as_json)
-        .map_err(|_| ApiError::error("Faild parsing raw tx data into json".to_owned()))?;
+        .map_err(|_| ApiError::upstream("Faild parsing raw tx data into json".to_owned()))?;
     Ok(ApiOk(value))
 }
 
@@ -318,7 +331,7 @@ pub async fn fee_estimate(
         .chain
         .fee_estimate(grace_blocks)
         .await
-        .map_err(|_| ApiError::error("Cant get dynamic fee estimate".to_owned()))?;
+        .map_err(|_| ApiError::upstream("Cant get dynamic fee estimate".to_owned()))?;
 
     Ok(ApiOk(FeeData {
         fee: estimate.fee,
@@ -374,22 +387,29 @@ pub struct PageQuery {
 }
 
 impl PageQuery {
-    /// Upstream reads a query parameter only when its raw text matches
-    /// `\d+`, and otherwise silently substitutes the default. An
-    /// unparseable value is not an error there, so it is not one here.
-    fn parse(&self, default_limit: u64, max_limit: u64) -> (u64, u64) {
-        fn digits(v: Option<&String>) -> Option<u64> {
-            let s = v?;
-            (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
-                .then(|| s.parse().ok())
-                .flatten()
+    /// Read `page` and `limit`.
+    ///
+    /// A parameter that is present but is not a plain number is refused. The
+    /// alternative is to answer a question the caller did not ask, which is
+    /// worse than saying no.
+    fn parse(&self, default_limit: u64, max_limit: u64) -> Result<(u64, u64), ApiError> {
+        fn number(name: &str, given: Option<&String>) -> Result<Option<u64>, ApiError> {
+            match given {
+                None => Ok(None),
+                Some(text) => decimal(text).map(Some).ok_or_else(|| {
+                    ApiError::bad_request(format!("{name} is not a number: {}", echo(text)))
+                }),
+            }
         }
-        (
-            digits(self.page.as_ref()).unwrap_or(0),
-            digits(self.limit.as_ref())
-                .unwrap_or(default_limit)
-                .min(max_limit),
-        )
+
+        let page = number("page", self.page.as_ref())?.unwrap_or(0);
+        let limit = number("limit", self.limit.as_ref())?.unwrap_or(default_limit);
+        if limit > max_limit {
+            return Err(ApiError::bad_request(format!(
+                "limit is at most {max_limit} on this endpoint: {limit}"
+            )));
+        }
+        Ok((page, limit))
     }
 }
 
@@ -420,7 +440,7 @@ pub async fn transactions(
     State(state): Shared,
     axum::extract::Query(q): axum::extract::Query<PageQuery>,
 ) -> Result<ApiOk<TransactionsData>, ApiError> {
-    let (page, limit) = q.parse(25, MAX_TRANSACTIONS_LIMIT);
+    let (page, limit) = q.parse(25, MAX_TRANSACTIONS_LIMIT)?;
 
     let info = state
         .chain
@@ -453,9 +473,9 @@ pub async fn transactions(
         let fetched = state.chain.blocks_in_range(start, end).await.map_err(|e| {
             let partial = serde_json::json!({ "blocks": [] });
             if e.is_not_found() {
-                ApiError::fail(format!("Cant get block: {start}"))
+                ApiError::not_found(format!("Cant get block: {start}"))
             } else {
-                ApiError::error(format!("Cant get transactions in block: {start}"))
+                ApiError::upstream(format!("Cant get transactions in block: {start}"))
             }
             .with_partial(partial)
         })?;
@@ -518,15 +538,15 @@ pub async fn mempool(
 ) -> Result<ApiOk<MempoolData>, ApiError> {
     // Upstream's default is effectively unbounded; it only pages when asked.
     // Ours is capped, for the reason on MAX_MEMPOOL_LIMIT.
-    let (page, limit) = q.parse(MAX_MEMPOOL_LIMIT, MAX_MEMPOOL_LIMIT);
+    let (page, limit) = q.parse(MAX_MEMPOOL_LIMIT, MAX_MEMPOOL_LIMIT)?;
 
     let pool = state.chain.mempool().await.map_err(|e| match e {
-        ChainError::NeedsUnrestricted(what) => ApiError::error(format!(
+        ChainError::NeedsUnrestricted(what) => ApiError::unsupported(format!(
             "{what} needs an unrestricted daemon; this one blocks /get_transaction_pool"
         )),
         other => {
             tracing::warn!("mempool: {other}");
-            ApiError::error(other.public_message())
+            ApiError::upstream(other.public_message())
         }
     })?;
 
@@ -577,9 +597,9 @@ pub async fn mempool(
 // /api/search/<height|hash>
 // ---------------------------------------------------------------------------
 
-/// Search dispatches on the *shape* of the sanitised argument: a short numeric
-/// string is a height, a 64-character hex string is tried as a block hash and
-/// then as a transaction hash.
+/// Search dispatches on the *shape* of the argument: a short decimal string is
+/// a height, a 64-character hex string is tried as a block hash and then as a
+/// transaction hash.
 ///
 /// The result is the matching block or transaction object with a `title`
 /// naming which it is, so a client can tell them apart without re-inspecting
@@ -591,36 +611,40 @@ pub async fn search(
     State(state): Shared,
     Path(raw): Path<String>,
 ) -> Result<ApiOk<serde_json::Value>, ApiError> {
-    let cleaned = remove_bad_chars(&raw);
+    let shown = echo(&raw);
 
-    if let Ok(BlockId::Height(height)) = BlockId::parse(&cleaned) {
-        let block = block(State(state), Path(height.to_string())).await?;
-        return Ok(ApiOk(titled(block.0, "block")));
-    }
-
-    if cleaned.len() == 64 {
+    match BlockId::parse(&raw) {
+        Ok(BlockId::Height(height)) => {
+            let block = block(State(state), Path(height.to_string())).await?;
+            return Ok(ApiOk(titled(block.0, "block")));
+        }
         // A block hash and a transaction hash are the same shape, so the only
         // way to tell them apart is to try one and then the other.
-        if let Ok(found) = block(State(Arc::clone(&state)), Path(cleaned.clone())).await {
-            return Ok(ApiOk(titled(found.0, "block")));
+        Ok(BlockId::Hash(_)) => {
+            if let Ok(found) = block(State(Arc::clone(&state)), Path(raw.clone())).await {
+                return Ok(ApiOk(titled(found.0, "block")));
+            }
+            if let Ok(found) = transaction(State(state), Path(raw.clone())).await {
+                return Ok(ApiOk(titled(found.0, "tx")));
+            }
+            return Err(ApiError::not_found(format!(
+                "Cant find blk or tx using search string: {shown}"
+            )));
         }
-        if let Ok(found) = transaction(State(state), Path(cleaned.clone())).await {
-            return Ok(ApiOk(titled(found.0, "tx")));
-        }
-        return Err(ApiError::fail(format!(
-            "Cant find blk or tx using search string: {cleaned}"
-        )));
+        Err(_) => {}
     }
 
-    if cleaned.len() > 64 {
-        return Err(ApiError::fail(format!(
-            "Cant find blk or tx using search string: {cleaned}. Monero has no \
+    // A mainnet address is 95 characters, so an argument this long is most
+    // likely one, and saying why it cannot work beats a bare refusal.
+    if raw.chars().count() > HASH_TEXT_LEN {
+        return Err(ApiError::bad_request(format!(
+            "Cant find blk or tx using search string: {shown}. Monero has no \
              address index, so addresses are not searchable"
         )));
     }
 
-    Err(ApiError::fail(format!(
-        "Cant find blk or tx using search string: {cleaned}"
+    Err(ApiError::bad_request(format!(
+        "Cant find blk or tx using search string: {shown}"
     )))
 }
 
@@ -902,8 +926,10 @@ pub async fn transaction_private(
     State(state): Shared,
     Path(raw): Path<String>,
 ) -> Result<ApiOk<PrivateTxData>, ApiError> {
-    // Transaction hashes are rendered lowercase, so normalise before matching.
-    let postfix = remove_bad_chars(&raw).to_ascii_lowercase();
+    // Hex is case insensitive and transaction hashes are rendered lowercase,
+    // so the case is folded before matching. Nothing else about the argument
+    // is changed: a character that is not hex is refused below, not dropped.
+    let postfix = raw.to_ascii_lowercase();
 
     let info = state
         .chain
@@ -912,12 +938,15 @@ pub async fn transaction_private(
         .map_err(|e| on_chain_error(&e, "Cant get daemon info"))?;
 
     if let Err(why) = check_postfix(&postfix, total_transactions(&info)) {
-        return Err(ApiError::fail(match why {
+        return Err(ApiError::bad_request(match why {
             PostfixRefusal::Length => format!(
                 "Tx hash postfix not between {MIN_POSTFIX_LEN} and {MAX_POSTFIX_LEN} \
-                 characters in length: {postfix}"
+                 characters in length: {}",
+                echo(&postfix)
             ),
-            PostfixRefusal::NotHex => format!("Tx hash postfix is not hex: {postfix}"),
+            PostfixRefusal::NotHex => {
+                format!("Tx hash postfix is not hex: {}", echo(&postfix))
+            }
             PostfixRefusal::TooLongToBeAnonymous { tx_count } => format!(
                 "Tx hash postfix {postfix} is too long to be anonymous on a chain \
                  of {tx_count} transactions"
@@ -940,7 +969,7 @@ pub async fn transaction_private(
     // coincidence of starting with it.
     let searched = whole_byte_suffix(&postfix);
     let request = GetTxidsLooseRequest::from_hex_suffix(searched)
-        .ok_or_else(|| ApiError::fail(format!("Tx hash postfix is not hex: {postfix}")))?;
+        .ok_or_else(|| ApiError::bad_request(format!("Tx hash postfix is not hex: {postfix}")))?;
 
     let Some(found) = state
         .chain
@@ -948,7 +977,7 @@ pub async fn transaction_private(
         .await
         .map_err(|e| on_chain_error(&e, "Cant search for matching transactions"))?
     else {
-        return Err(ApiError::error(
+        return Err(ApiError::unsupported(
             "This daemon does not provide get_txids_loose, which the k-anonymous \
              lookup needs. It is in monerod master and release-v0.19 but in no \
              release build."
@@ -965,7 +994,7 @@ pub async fn transaction_private(
         .collect();
 
     if matching.len() as u64 > MAX_PRIVATE_TX_MATCHES {
-        return Err(ApiError::fail(format!(
+        return Err(ApiError::bad_request(format!(
             "More than {MAX_PRIVATE_TX_MATCHES} transactions end with {postfix}. \
              Please use a longer postfix."
         )));
@@ -1031,18 +1060,15 @@ pub async fn blocks_range(
     State(state): Shared,
     Path((start_raw, end_raw)): Path<(String, String)>,
 ) -> Result<ApiOk<Vec<BlockDetail>>, ApiError> {
-    let start_s = remove_bad_chars(&start_raw);
-    let end_s = remove_bad_chars(&end_raw);
-
-    let start: u64 = start_s
-        .parse()
-        .map_err(|_| ApiError::fail(format!("Cant parse block number: {start_s}")))?;
-    let end: u64 = end_s
-        .parse()
-        .map_err(|_| ApiError::fail(format!("Cant parse block number: {end_s}")))?;
+    let start = decimal(&start_raw).ok_or_else(|| {
+        ApiError::bad_request(format!("Cant parse block number: {}", echo(&start_raw)))
+    })?;
+    let end = decimal(&end_raw).ok_or_else(|| {
+        ApiError::bad_request(format!("Cant parse block number: {}", echo(&end_raw)))
+    })?;
 
     if start > end {
-        return Err(ApiError::fail(
+        return Err(ApiError::bad_request(
             "Invalid input: start height should be less than or equal to end height.".to_owned(),
         ));
     }
@@ -1054,7 +1080,7 @@ pub async fn blocks_range(
         .map_err(|e| on_chain_error(&e, "Cant get daemon info"))?;
 
     if end > info.height {
-        return Err(ApiError::fail(format!(
+        return Err(ApiError::not_found(format!(
             "Requested end height is higher than blockchain: {end}, {}",
             info.height
         )));
@@ -1062,7 +1088,7 @@ pub async fn blocks_range(
 
     let span = end.saturating_sub(start).saturating_add(1);
     if span > MAX_BLOCK_RANGE {
-        return Err(ApiError::fail(format!(
+        return Err(ApiError::bad_request(format!(
             "Requested {span} blocks; this explorer serves at most {MAX_BLOCK_RANGE} \
              per request because each one costs a call to the daemon."
         )));

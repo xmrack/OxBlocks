@@ -35,27 +35,24 @@ pub enum BlockIdError {
 }
 
 impl BlockId {
-    /// Parse a **sanitised** path argument the way upstream dispatches: eight
-    /// characters or fewer is a height, exactly 64 is a hash, anything else is
-    /// rejected.
+    /// Parse a path argument: eight digits or fewer is a height, exactly 64
+    /// hex characters is a hash, anything else is rejected.
     ///
-    /// The eight-character bound is upstream's, and it is a bound on the
-    /// *text* rather than the value -- `99999999` parses and `100000000` does
-    /// not, which will matter around block 100,000,000 and not before.
+    /// Nothing is stripped or repaired first, so `1,23` is an error rather
+    /// than height 123.
     ///
-    /// Expects the output of [`crate::fmt::remove_bad_chars`]; it does no
-    /// sanitising of its own.
-    pub fn parse(cleaned: &str) -> Result<Self, BlockIdError> {
-        if cleaned.len() <= 8 {
-            cleaned
-                .parse::<u64>()
-                .map(Self::Height)
-                .map_err(|_| BlockIdError::NotAHeight)
-        } else if cleaned.len() == crate::hash::HASH_HEX_LEN {
-            cleaned
-                .parse::<Hash32>()
+    /// The eight-character bound is on the *text* rather than the value --
+    /// `99999999` parses and `100000000` does not, which will matter around
+    /// block 100,000,000 and not before.
+    pub fn parse(arg: &str) -> Result<Self, BlockIdError> {
+        if arg.len() == crate::hash::HASH_HEX_LEN {
+            arg.parse::<Hash32>()
                 .map(Self::Hash)
                 .map_err(|_| BlockIdError::NotAHash)
+        } else if arg.len() <= 8 {
+            crate::fmt::decimal(arg)
+                .map(Self::Height)
+                .ok_or(BlockIdError::NotAHeight)
         } else {
             Err(BlockIdError::Unrecognised)
         }

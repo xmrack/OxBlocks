@@ -16,11 +16,11 @@ use askama::Template;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
-use explorer_core::fmt::{age, now, remove_bad_chars, timestamp_utc};
+use explorer_core::fmt::{age, decimal, now, timestamp_utc};
 use explorer_core::{Amount, BlockId, ChainError, Hash32, TxFacts};
 use monerod_rpc::types::TxOutTarget;
 
-use crate::api::handlers::{AppState, Shared};
+use crate::api::handlers::{AppState, Shared, echo};
 use crate::config::Theme;
 
 /// The chain summary strip shown on every page.
@@ -728,7 +728,7 @@ pub async fn index(state: Shared) -> Page {
 /// is `text/plain`, `nosniff` is set and the policy is `default-src 'none'`),
 /// but it reflected raw input and read like a different piece of software.
 pub async fn page_at(state: Shared, Path(raw): Path<String>) -> Page {
-    let Ok(page) = remove_bad_chars(&raw).parse::<u64>() else {
+    let Some(page) = decimal(&raw) else {
         return error_page(
             status_of(&state).await,
             StatusCode::NOT_FOUND,
@@ -802,14 +802,13 @@ async fn render_page(State(state): Shared, page: u64) -> Page {
 
 pub async fn block(State(state): Shared, Path(raw): Path<String>) -> Page {
     let chain = status_of(&state).await;
-    let cleaned = remove_bad_chars(&raw);
 
-    let Ok(id) = BlockId::parse(&cleaned) else {
+    let Ok(id) = BlockId::parse(&raw) else {
         return error_page(
             chain,
             StatusCode::NOT_FOUND,
             "No such block",
-            &format!("{cleaned} is not a block height or a block hash."),
+            &format!("{} is not a block height or a block hash.", echo(&raw)),
         );
     };
 
@@ -901,14 +900,13 @@ fn chain_error_page(chain: Option<ChainStatus>, e: &ChainError, title: &str) -> 
 
 pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page {
     let chain = status_of(&state).await;
-    let cleaned = remove_bad_chars(&raw);
 
-    let Ok(hash) = cleaned.parse::<Hash32>() else {
+    let Ok(hash) = raw.parse::<Hash32>() else {
         return error_page(
             chain,
             StatusCode::NOT_FOUND,
             "No such transaction",
-            &format!("{cleaned} is not a transaction hash."),
+            &format!("{} is not a transaction hash.", echo(&raw)),
         );
     };
 
@@ -1194,13 +1192,13 @@ pub struct SearchQuery {
 /// on the canonical page rather than on a query string.
 pub async fn search(State(state): Shared, Query(q): Query<SearchQuery>) -> Response {
     let raw = q.q.unwrap_or_default();
-    let cleaned = remove_bad_chars(raw.trim());
+    let cleaned = raw.trim();
 
     if cleaned.is_empty() {
         return axum::response::Redirect::to("/").into_response();
     }
 
-    match BlockId::parse(&cleaned) {
+    match BlockId::parse(cleaned) {
         Ok(BlockId::Height(_)) => {
             return axum::response::Redirect::to(&format!("/block/{cleaned}")).into_response();
         }
@@ -1428,6 +1426,12 @@ mod tests {
     #[test]
     fn every_api_route_appears_in_the_documentation() {
         let router_source = include_str!("main.rs");
+        // The route table only. The tests below it name `/api` paths that are
+        // arguments rather than routes.
+        let router_source = router_source
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or(router_source);
         let page = api_page().render().expect("renders");
 
         let mut routes: Vec<&str> = Vec::new();
@@ -1455,6 +1459,30 @@ mod tests {
                 page.contains(stem),
                 "{route} is routed but {stem} appears nowhere in the API \
                  documentation page"
+            );
+        }
+    }
+
+    /// Every status code the API can answer with has to be on the page. A
+    /// client that reads the documentation and then meets an undocumented code
+    /// treats a plain refusal as a transport failure.
+    #[test]
+    fn the_documented_status_codes_are_the_ones_the_api_answers_with() {
+        use crate::api::envelope::ApiError;
+
+        let page = api_page().render().expect("renders");
+        let codes = [
+            StatusCode::OK,
+            ApiError::bad_request("x").status,
+            ApiError::not_found("x").status,
+            ApiError::internal("x").status,
+            ApiError::upstream("x").status,
+            ApiError::unsupported("x").status,
+        ];
+        for code in codes {
+            assert!(
+                page.contains(code.as_str()),
+                "the page never mentions {code}"
             );
         }
     }

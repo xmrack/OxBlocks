@@ -481,6 +481,124 @@ mod tests {
         assert!(response.headers().get("content-security-policy").is_some());
     }
 
+    async fn get(uri: &str) -> (StatusCode, String) {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let config = Config::parse_from(["oxblocks"]);
+        let response = router(&config, test_state())
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("request builds"),
+            )
+            .await
+            .expect("router responds");
+
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("body reads");
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    /// An argument is read as given or refused. It is never repaired first.
+    ///
+    /// `1,23` was previously stripped to `123` and answered as that block, so
+    /// a caller who mistyped a height got a confident answer about a different
+    /// one.
+    #[tokio::test]
+    async fn a_malformed_argument_is_refused_rather_than_cleaned_up() {
+        let hash = "a".repeat(64);
+        for uri in [
+            "/api/block/1,23",
+            "/api/block/1%2C23",
+            "/api/block/+12",
+            "/api/block/%2012",
+            "/api/block/0x12",
+            &format!("/api/transaction/{}", "a".repeat(63)),
+            &format!("/api/transaction/{}g", "a".repeat(63)),
+            &format!("/api/transaction/{hash}-"),
+            &format!("/api/search/{}g", "a".repeat(63)),
+            "/api/blocks/1,0/5",
+            "/api/blocks/1/5e2",
+            "/api/transactions?limit=abc",
+            "/api/transactions?page=-1",
+            "/api/mempool?limit=",
+            "/api/search/1,23",
+        ] {
+            let (status, body) = get(uri).await;
+            assert_eq!(
+                status,
+                StatusCode::BAD_REQUEST,
+                "{uri} answered {status} with {body}"
+            );
+            assert!(body.contains(r#""status":"fail""#), "{uri} said {body}");
+        }
+    }
+
+    /// The refusal above is about the argument, not about the daemon being
+    /// unreachable: a well formed argument gets past the parse and fails
+    /// later, with a different code.
+    #[tokio::test]
+    async fn a_well_formed_argument_reaches_the_daemon() {
+        for uri in [
+            "/api/block/123",
+            &format!("/api/transaction/{}", "a".repeat(64)),
+        ] {
+            let (status, _) = get(uri).await;
+            assert_eq!(
+                status,
+                StatusCode::BAD_GATEWAY,
+                "{uri} should have been refused by the daemon, not by the parser"
+            );
+        }
+    }
+
+    /// A cap is a refusal, not a silent clamp. Asking for 999 and being given
+    /// 50 without being told is the same class of surprise as `1,23`.
+    #[tokio::test]
+    async fn a_limit_past_the_cap_is_refused_rather_than_clamped() {
+        let (status, body) = get("/api/transactions?limit=999").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("at most 50"), "{body}");
+
+        let (status, body) = get("/api/mempool?limit=501").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("at most 500"), "{body}");
+    }
+
+    /// The pages parse the same way, and answer in their own voice.
+    #[tokio::test]
+    async fn the_pages_refuse_a_malformed_argument_too() {
+        for uri in ["/block/1,23", "/tx/1,23", "/page/1,23"] {
+            let (status, body) = get(uri).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{uri} answered {status}");
+            assert!(
+                body.contains("<!DOCTYPE html>"),
+                "{uri} did not render a page"
+            );
+        }
+    }
+
+    /// An argument is echoed back to say what was refused, and a long one is
+    /// cut short rather than reflected whole.
+    #[tokio::test]
+    async fn a_refusal_echoes_a_bounded_amount_of_the_argument() {
+        let (status, body) = get(&format!("/api/block/{}", "9".repeat(400))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains("..."),
+            "the echoed argument was not cut short"
+        );
+        assert!(
+            body.len() < 200,
+            "the whole argument came back in the message: {body}"
+        );
+    }
+
     #[tokio::test]
     async fn unknown_paths_are_404_not_500() {
         use axum::body::Body;

@@ -16,7 +16,7 @@ pub mod tx_extra;
 pub use amount::Amount;
 pub use cache::{Cache, REORG_WINDOW, safe_to_cache_by_height};
 pub use chain::{BlockId, BlockIdError, ChainError, ResolvedInput, RingMember};
-pub use fmt::{age, remove_bad_chars, timestamp_utc};
+pub use fmt::{age, decimal, timestamp_utc};
 pub use hash::{Hash32, HashParseError};
 pub use rpc_source::{
     BlockWithTxs, DEFAULT_MAX_INFLIGHT_RPC, FetchedTxs, RpcChainSource, unexpanded_inputs,

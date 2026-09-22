@@ -53,20 +53,17 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-/// Keep only the characters upstream keeps in a path argument.
+/// A plain decimal number, or nothing.
 ///
-/// `xmreg::remove_bad_chars` **deletes** everything outside
-/// `[A-Za-z0-9+/=]` rather than rejecting the input, and does so *before* any
-/// length or parse check. So `"1,234"` becomes `"1234"` and is then looked up
-/// as height 1234. Reproduced exactly, because the difference is observable:
-/// rejecting instead would turn some of upstream's successful lookups into
-/// errors.
+/// `str::parse::<u64>` accepts a leading `+`, so `"+12"` would otherwise come
+/// back as 12. A height in a path is digits or it is wrong, and repairing it
+/// would answer a question the caller did not ask.
 #[must_use]
-pub fn remove_bad_chars(input: &str) -> String {
-    input
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='))
-        .collect()
+pub fn decimal(input: &str) -> Option<u64> {
+    if input.is_empty() || !input.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    input.parse().ok()
 }
 
 /// Seconds since the Unix epoch, by this machine's clock.
@@ -209,41 +206,27 @@ mod tests {
         assert_eq!(age(366 * 86_400, 0), "01:001:00:00:00");
     }
 
+    /// Nothing is repaired on the way in. `1,234` is not height 1234, a
+    /// leading sign is not a number, and multi-byte input is rejected whole
+    /// rather than having its ASCII picked out of it.
     #[test]
-    fn sanitising_deletes_rather_than_rejects() {
-        // The observable consequence: upstream answers this as height 1234.
-        assert_eq!(remove_bad_chars("1,234"), "1234");
-        assert_eq!(remove_bad_chars("abc-def"), "abcdef");
-        assert_eq!(
-            remove_bad_chars("<script>alert(1)</script>"),
-            "scriptalert1/script"
-        );
+    fn a_height_is_digits_or_it_is_nothing() {
+        assert_eq!(decimal("1234"), Some(1234));
+        assert_eq!(decimal("0"), Some(0));
+        assert_eq!(decimal("1,234"), None);
+        assert_eq!(decimal("+12"), None);
+        assert_eq!(decimal("-12"), None);
+        assert_eq!(decimal(" 12"), None);
+        assert_eq!(decimal("12 "), None);
+        assert_eq!(decimal("1e3"), None);
+        assert_eq!(decimal(""), None);
+        assert_eq!(decimal("1\u{00e9}2"), None);
     }
 
-    /// `/` is inside upstream's keep-set, so traversal characters are only
-    /// partly removed: `"../../etc/passwd"` survives as `"//etc/passwd"`.
-    ///
-    /// Harmless here and deliberately reproduced — the sanitised value is used
-    /// as a height or a hash, never as a filesystem path, and the parse that
-    /// follows rejects it. Pinned so that nobody "fixes" the keep-set and
-    /// silently diverges from upstream on inputs that do parse.
+    /// A number too large for the type is refused, not truncated.
     #[test]
-    fn sanitising_keeps_slashes_because_upstream_does() {
-        assert_eq!(remove_bad_chars("../../etc/passwd"), "//etc/passwd");
-        assert_eq!(remove_bad_chars("a/b"), "a/b");
-    }
-
-    #[test]
-    fn sanitising_keeps_hex_of_either_case_and_the_base64_characters() {
-        let h = "2917A83ec63c66b14922ec0383ea682d2e3c2708aaeb1434d15762d32984eb83";
-        assert_eq!(remove_bad_chars(h), h, "uppercase hex must survive intact");
-        assert_eq!(remove_bad_chars("a+b/c="), "a+b/c=");
-    }
-
-    /// Multi-byte input must not panic and must not smuggle bytes through.
-    #[test]
-    fn sanitising_drops_non_ascii_without_panicking() {
-        assert_eq!(remove_bad_chars("é🙂"), "");
-        assert_eq!(remove_bad_chars("1é2🙂3"), "123");
+    fn a_height_past_the_end_of_the_type_is_refused() {
+        assert_eq!(decimal("18446744073709551615"), Some(u64::MAX));
+        assert_eq!(decimal("18446744073709551616"), None);
     }
 }

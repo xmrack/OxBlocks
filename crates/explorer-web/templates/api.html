@@ -22,11 +22,7 @@
 <h2>The envelope</h2>
 
 <p>
-  Every answer this API produces is wrapped, and its HTTP status is
-  <strong>always 200</strong> &mdash; including for failures. Read the
-  <code class="lit">status</code> member, not the status code. That is
-  upstream's convention, kept because changing it would break every existing
-  client.
+  Every answer this API produces is wrapped in one of three shapes.
 </p>
 
 <pre class="blob">{"data": { … }, "status": "success"}
@@ -34,13 +30,35 @@
 {"data": null, "message": "…", "status": "error"}</pre>
 
 <p>
-  <code class="lit">fail</code> means the caller asked for something that is not
-  there &mdash; a hash that will not parse, a height past the tip.
-  <code class="lit">error</code> means this explorer or its daemon could not
-  answer. Error messages are deliberately vague about internals: an unreachable
-  daemon reports &ldquo;the explorer could not reach its daemon&rdquo; rather
-  than naming the address it failed to reach.
+  <code class="lit">fail</code> means the caller asked for something this
+  explorer will not answer: an argument that will not parse, a height past the
+  tip. <code class="lit">error</code> means this explorer or its daemon could
+  not answer. Error messages are deliberately vague about internals: an
+  unreachable daemon reports &ldquo;the explorer could not reach its
+  daemon&rdquo; rather than naming the address it failed to reach.
 </p>
+
+<h3>Status codes</h3>
+
+<p>
+  The HTTP status says the same thing as the envelope. This is the one place
+  the API departs from upstream, which answers
+  <code class="lit">200</code> to everything and leaves the outcome to the
+  <code class="lit">status</code> member alone. A client that reads
+  <code class="lit">status</code> is unaffected.
+</p>
+
+<table>
+  <thead><tr><th class="num">Code</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td class="num">200</td><td>The answer is in <code class="lit">data</code>.</td></tr>
+    <tr><td class="num">400</td><td>The argument is not one this explorer reads, or a limit is over its cap.</td></tr>
+    <tr><td class="num">404</td><td>The argument was well formed and the chain does not hold it.</td></tr>
+    <tr><td class="num">500</td><td>A bug here.</td></tr>
+    <tr><td class="num">502</td><td>The daemon could not be reached, or answered with something unusable.</td></tr>
+    <tr><td class="num">503</td><td>This deployment cannot serve the endpoint, because of how its daemon is built or configured.</td></tr>
+  </tbody>
+</table>
 
 <p>
   Keys are sorted alphabetically, recursively, throughout. Enveloped responses
@@ -55,9 +73,8 @@
   bare <code class="lit">504</code>, a request body over the limit is a
   <code class="lit">413</code>, and a panic caught in a handler is a
   <code class="lit">500</code>. All three are <code class="lit">text/plain</code>
-  and carry no <code class="lit">status</code> member, so a client that reads
-  only the envelope should treat a non-200 as a transport failure rather than
-  trying to parse it. Every one of them still carries the security headers.
+  and carry no <code class="lit">status</code> member. Every one of them still
+  carries the security headers.
 </p>
 
 <p>
@@ -72,18 +89,13 @@
 <h2>How arguments are read</h2>
 
 <p>
-  <strong>Path arguments are sanitised, not rejected.</strong> Everything
-  outside <code class="lit">[A-Za-z0-9+/=]</code> is deleted before anything is
-  parsed, so <code class="lit">/api/block/1,234</code> answers with block 1234
-  rather than an error. Upstream does this and the difference is observable, so
-  it is reproduced exactly.
-</p>
-
-<p>
-  <strong>Query parameters are read only when they are all digits.</strong>
-  Anything else &mdash; a negative number, a decimal, a word &mdash; is
-  silently replaced by the default rather than rejected. Also upstream's
-  behaviour.
+  Arguments are read as given. A height is decimal digits, a hash is 64 hex
+  characters of either case, and a postfix is hex. Anything else is a
+  <code class="lit">400</code>, and so is a
+  <code class="lit">page</code> or <code class="lit">limit</code> that is not a
+  plain number. Nothing is stripped or repaired first, so
+  <code class="lit">/api/block/1,23</code> is refused rather than answered as
+  block 123.
 </p>
 
 <h2>Endpoints</h2>

@@ -5,8 +5,10 @@ oxblocks is a Monero block explorer written in Rust.
 The explorer does not open the blockchain database. It holds no keys. It writes
 nothing to disk. For each request it asks the daemon over RPC and renders the answer.
 
-The JSON API matches the API that [xmrblocks](https://github.com/moneroexamples/onion-monero-blockchain-explorer) serves, so existing clients work
-without changes.
+The JSON API serves the same response bodies as
+[xmrblocks](https://github.com/moneroexamples/onion-monero-blockchain-explorer),
+so a client that reads the body works without changes. It differs on two
+points, both listed under [JSON API](#json-api).
 
 ## Requirements
 
@@ -122,15 +124,39 @@ and `--theme dark` fix one palette for everyone.
 
 ## JSON API
 
-Every API response has HTTP status 200. Read the result from the body.
+Every response is wrapped. Keys are sorted alphabetically.
 
 ```json
 {"data": { ... }, "status": "success"}
 {"data": {"title": "Cant parse tx hash: deadbeef"}, "status": "fail"}
+{"data": null, "message": "...", "status": "error"}
 ```
 
-`fail` means the caller asked for something that does not exist. `error` means
-the explorer could not answer. Keys are sorted alphabetically.
+`fail` means the caller asked for something this explorer will not answer.
+`error` means the explorer or its daemon could not answer.
+
+The HTTP status says the same thing.
+
+| Code | Meaning |
+| --- | --- |
+| 200 | The answer is in `data`. |
+| 400 | The argument is not one this explorer reads, or a limit is over its cap. |
+| 404 | The argument was well formed and the chain does not hold it. |
+| 500 | A bug here. |
+| 502 | The daemon could not be reached, or answered with something unusable. |
+| 503 | This deployment cannot serve the endpoint, because of how its daemon is built or configured. |
+
+Arguments are read as given. A height is decimal digits, a hash is 64 hex
+characters of either case, and a postfix is hex. Anything else is a 400, and so
+is a `page` or `limit` that is not a plain number. Nothing is stripped or
+repaired first, so `/api/block/1,23` is refused rather than answered as block
+123.
+
+Those two points are where the API departs from xmrblocks, which answers 200 to
+everything and deletes the characters it does not recognise before it parses.
+Both were changed on purpose. A refused request that reports success misleads
+every proxy, cache and monitor in the path, and a mistyped height that returns a
+different block is worse than an error.
 
 | Endpoint | Returns |
 | --- | --- |
