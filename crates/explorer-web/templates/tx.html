@@ -81,7 +81,7 @@
 </div>
 {% endif %}
 
-<h2>{% if coinbase %}Inputs{% else %}{{ inputs.len() }} input{% if inputs.len() != 1 %}s{% endif %}{% endif %}</h2>
+<h2>{% if coinbase %}Inputs{% else %}{{ inputs.len() }} Input{% if inputs.len() != 1 %}s{% endif %}{% endif %}</h2>
 {% if coinbase %}
 <p class="empty">A coinbase transaction has no inputs; it creates new coins.</p>
 {% else %}
@@ -146,7 +146,7 @@
   {% endfor %}
 {% endif %}
 
-<h2>{{ outputs.len() }} output{% if outputs.len() != 1 %}s{% endif %}</h2>
+<h2>{{ outputs.len() }} Output{% if outputs.len() != 1 %}s{% endif %}</h2>
 <div class="legend">
   <div>One-time key
     <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>

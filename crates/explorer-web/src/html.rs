@@ -2189,15 +2189,15 @@ mod tests {
     #[test]
     fn the_input_and_output_headings_count_in_english() {
         let many = tx_page().render().expect("renders");
-        assert!(many.contains("<h2>2 inputs</h2>"), "{many}");
-        assert!(many.contains("<h2>2 outputs</h2>"), "{many}");
+        assert!(many.contains("<h2>2 Inputs</h2>"), "{many}");
+        assert!(many.contains("<h2>2 Outputs</h2>"), "{many}");
 
         let mut page = tx_page();
         page.inputs.truncate(1);
         page.outputs.truncate(1);
         let one = page.render().expect("renders");
-        assert!(one.contains("<h2>1 input</h2>"), "{one}");
-        assert!(one.contains("<h2>1 output</h2>"), "{one}");
+        assert!(one.contains("<h2>1 Input</h2>"), "{one}");
+        assert!(one.contains("<h2>1 Output</h2>"), "{one}");
 
         let mut page = tx_page();
         page.coinbase = true;
