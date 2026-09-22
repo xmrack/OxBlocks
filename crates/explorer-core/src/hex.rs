@@ -23,11 +23,9 @@ pub fn decode_to_slice(s: &str, out: &mut [u8]) -> Result<(), DecodeError> {
     if src.len() != out.len().saturating_mul(2) {
         return Err(DecodeError);
     }
-    for (slot, pair) in out.iter_mut().zip(src.chunks_exact(2)) {
-        let [hi, lo] = pair else {
-            return Err(DecodeError);
-        };
-        *slot = (value(*hi)? << 4) | value(*lo)?;
+    let (pairs, _) = src.as_chunks::<2>();
+    for (slot, &[hi, lo]) in out.iter_mut().zip(pairs) {
+        *slot = (value(hi)? << 4) | value(lo)?;
     }
     Ok(())
 }

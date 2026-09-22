@@ -39,9 +39,9 @@ getrandom
 glob
 heck
 http
-httparse
 http-body
 http-body-util
+httparse
 httpdate
 hyper
 hyper-rustls

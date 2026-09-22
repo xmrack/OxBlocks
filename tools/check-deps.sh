@@ -11,6 +11,11 @@
 #   tools/check-deps.sh --update   rewrite the baseline
 set -euo pipefail
 
+# `comm` requires both inputs in the byte order `sort` produced, and a locale
+# that ignores punctuation orders `httparse` before `http-body` where the C
+# locale does the reverse. Pin both so the baseline reads the same everywhere.
+export LC_ALL=C
+
 BASELINE=deps-baseline.txt
 
 # Pinned to the target the Dockerfile and the systemd unit deploy on, so the
