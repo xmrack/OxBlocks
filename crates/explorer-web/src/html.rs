@@ -2098,6 +2098,113 @@ mod tests {
         );
     }
 
+    /// The text of the first hint panel that opens after `marker`.
+    fn hint_after<'a>(html: &'a str, marker: &str) -> &'a str {
+        let rest = &html[html.find(marker).expect("the marker is on the page")..];
+        let open = rest.find("<p>").expect("the hint has a panel");
+        let close = rest.find("</p>").expect("the panel closes");
+        &rest[open + 3..close]
+    }
+
+    /// The Version field is two numbers side by side and the hint described
+    /// only the second, which left a reader no way to tell what the first one
+    /// counts.
+    #[test]
+    fn the_transaction_version_explains_both_of_its_numbers() {
+        let html = tx_page().render().expect("renders");
+        let panel = hint_after(&html, "<dt>Version</dt>");
+
+        assert!(
+            panel.contains("format"),
+            "the hint does not say what the first number is:\n{panel}"
+        );
+        assert!(
+            panel.contains("scheme"),
+            "the hint does not say what the second number is:\n{panel}"
+        );
+        assert!(
+            panel.find("format") < panel.find("scheme"),
+            "the hint explains the numbers in the opposite order to the page"
+        );
+    }
+
+    /// A hint opens next to the value, never inside the label.
+    ///
+    /// `dl.kv` sizes its label column to fit the widest `<dt>`, so a panel
+    /// opened there pushed every value on the page far to the right, and a
+    /// `<th>` sizes its column the same way.
+    #[test]
+    fn a_hint_opens_beside_a_value_and_not_inside_a_label() {
+        for (name, html) in [
+            ("index", index_page().render().expect("renders")),
+            ("block", block_page().render().expect("renders")),
+            ("tx", tx_page().render().expect("renders")),
+            ("api", api_page().render().expect("renders")),
+            (
+                "mempool",
+                mempool_page(Some((SortKey::Size, SortDir::Desc)))
+                    .render()
+                    .expect("renders"),
+            ),
+        ] {
+            for label in ["th", "dt"] {
+                for (at, _) in html.match_indices(&format!("<{label}")) {
+                    let rest = &html[at..];
+                    let end = rest.find(&format!("</{label}>")).expect("the label closes");
+                    assert!(
+                        !rest[..end].contains(r#"<details class="hint">"#),
+                        "{name} opens a hint inside a <{label}>, which widens its column"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The panel is prose wherever it opens.
+    ///
+    /// The ring age caption uppercases and letter-spaces its text, so the
+    /// explanation nested in it came out shouting.
+    #[test]
+    fn a_hint_panel_reads_as_prose_wherever_it_opens() {
+        let (_, rest) = STYLESHEET
+            .split_once("details.hint > p {")
+            .expect("the hint panel has rules");
+        let rule = rest.split_once('}').expect("the rules close").0;
+
+        for property in [
+            "text-transform: none",
+            "letter-spacing: normal",
+            "white-space: normal",
+        ] {
+            assert!(
+                rule.contains(property),
+                "a panel inside a caption or a header inherits its {property}"
+            );
+        }
+    }
+
+    /// The right edge of the age axis is the moment of this transaction.
+    ///
+    /// It was labelled "spent", which reads as a claim about the member
+    /// nearest to it rather than as the origin of the axis.
+    #[test]
+    fn the_age_axis_names_its_right_edge_after_this_transaction() {
+        let html = tx_page().render().expect("renders");
+
+        assert!(
+            html.contains(">this tx</text>"),
+            "the axis does not say what its right edge is:\n{html}"
+        );
+        assert!(
+            !html.contains(">spent</text>"),
+            "the right edge is labelled as a spent member again"
+        );
+        assert!(
+            html.contains("this transaction at the right"),
+            "the chart describes itself to a screen reader in the old terms"
+        );
+    }
+
     /// No page may carry a `style=` attribute.
     ///
     /// The policy is `style-src 'self'` with no `'unsafe-inline'`, so a

@@ -30,13 +30,14 @@
   <dt>Size</dt><dd>{{ size }} bytes{% if pruned %} <span class="tag">prefix only</span>{% endif %}</dd>
   <dt>Version</dt><dd>{{ version_no }}{% if rct_type > 0 %} &mdash; RingCT type {{ rct_type }}{% endif %}
     <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
-    <p>Which version of RingCT hid the amounts. RingCT replaces a visible amount
-    with a commitment that proves the sums balance without showing them. Type
-    0 means no RingCT, which covers transactions older than it and every
-    coinbase, because a block reward is public. Types 1 and 2 are the original
-    scheme. Types 3 and 4 replaced its range proofs with Bulletproofs, 5 added
+    <p>Two numbers. The first is the transaction format. Version 1 carried
+    plain amounts that anyone could read. Version 2 hides them with RingCT,
+    which proves the sums balance without showing them. The second number is
+    the RingCT scheme this transaction used. Types 1 and 2 are the original
+    one. Types 3 and 4 replaced its range proofs with Bulletproofs, 5 added
     CLSAG signatures, and 6 uses Bulletproofs+. The later types are smaller
-    and faster to verify, not more private.</p></details>
+    and faster to verify, not more private. A block reward is public, so a
+    coinbase shows no RingCT type.</p></details>
   </dd>
   <dt>Ring size</dt><dd>{% if coinbase %}&mdash;{% else %}{{ ring_size }}{% endif %}
     <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
@@ -101,8 +102,8 @@
       <figure class="ring-ages">
         <figcaption>Ring member ages
           <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
-          <p>How old each ring member was when this input spent it. The spend is the
-          right edge and older members sit further left. The axis is
+          <p>How old each ring member was when this input spent it. The right edge
+          is this transaction and older members sit further left. The axis is
           logarithmic. Monero draws decoys from a distribution that strongly
           favours recent outputs, so on a linear axis almost the whole ring
           would pile against that edge. Members of a similar age overlap
@@ -112,14 +113,14 @@
         </figcaption>
         <div class="scroll">
         <svg class="strip" viewBox="0 0 {{ crate::html::STRIP_WIDTH }} {{ crate::html::STRIP_HEIGHT }}"
-             role="img" aria-label="Ring member ages, oldest at the left and the spend at the right">
+             role="img" aria-label="Ring member ages, oldest at the left and this transaction at the right">
           <rect class="track" x="0" y="0" rx="3" width="{{ crate::html::STRIP_WIDTH }}" height="{{ crate::html::STRIP_BAND }}"/>
           {% for t in i.ages.ticks %}<line class="grid" x1="{{ t.x }}" y1="0" x2="{{ t.x }}" y2="{{ crate::html::STRIP_BAND }}"/>{% endfor %}
           {% for m in i.ages.marks %}<rect class="halo" x="{{ m.halo }}" y="0" rx="2" width="{{ crate::html::HALO_WIDTH }}" height="{{ crate::html::STRIP_BAND }}"><title>{{ m.label }} old</title></rect>{% endfor %}
           {% for m in i.ages.marks %}<rect class="stem" x="{{ m.stem }}" y="0" width="{{ crate::html::STEM_WIDTH }}" height="{{ crate::html::STRIP_BAND }}"/>{% endfor %}
           <rect class="frame" x="0" y="0" rx="3" width="{{ crate::html::STRIP_WIDTH }}" height="{{ crate::html::STRIP_BAND }}"/>
           {% for t in i.ages.ticks %}<text class="tick" x="{{ t.x }}" y="{{ crate::html::TICK_BASELINE }}" text-anchor="middle">{{ t.label }}</text>{% endfor %}
-          <text class="tick edge" x="{{ crate::html::STRIP_WIDTH }}" y="{{ crate::html::TICK_BASELINE }}" text-anchor="end">spent</text>
+          <text class="tick edge" x="{{ crate::html::STRIP_WIDTH }}" y="{{ crate::html::TICK_BASELINE }}" text-anchor="end">this tx</text>
         </svg>
         </div>
       </figure>
@@ -145,26 +146,29 @@
 {% endif %}
 
 <h2>Outputs <span class="sub">{{ outputs.len() }}</span></h2>
+<div class="legend">
+  <div>One-time key
+    <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
+    <p>Every output is paid to a fresh address used only once. The sender derives
+    it from the recipient's address and a random secret, so the recipient's
+    real address never reaches the chain. Two payments to the same person
+    share nothing an observer can link. The recipient finds the outputs that
+    are theirs by scanning the chain with their view key.</p></details>
+  </div>
+  {% if has_view_tags %}<div>View tag
+    <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
+    <p>One byte that makes scanning cheaper. A wallet has to test every output on
+    the chain to find the ones it can spend, and that test is expensive. The
+    view tag is a cheap first check, drawn from the same shared secret as
+    the one-time key. It rules out 255 of every 256 outputs before the
+    expensive check runs. It arrived in August 2022. It reveals nothing
+    beyond which of the 256 buckets an output falls in.</p></details>
+  </div>{% endif %}
+</div>
 <div class="scroll">
 <table>
-  <thead><tr><th class="num">#</th>
-    <th>One-time key
-      <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
-      <p>Every output is paid to a fresh address used only once. The sender derives
-      it from the recipient's address and a random secret, so the recipient's
-      real address never reaches the chain. Two payments to the same person
-      share nothing an observer can link. The recipient finds the outputs that
-      are theirs by scanning the chain with their view key.</p></details>
-    </th>
-    <th class="num">Amount</th>{% if has_view_tags %}<th>View tag
-      <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
-      <p>One byte that makes scanning cheaper. A wallet has to test every output on
-      the chain to find the ones it can spend, and that test is expensive. The
-      view tag is a cheap first check, drawn from the same shared secret as
-      the one-time key. It rules out 255 of every 256 outputs before the
-      expensive check runs. It arrived in August 2022. It reveals nothing
-      beyond which of the 256 buckets an output falls in.</p></details>
-    </th>{% endif %}</tr></thead>
+  <thead><tr><th class="num">#</th><th>One-time key</th>
+    <th class="num">Amount</th>{% if has_view_tags %}<th>View tag</th>{% endif %}</tr></thead>
   <tbody>
   {% for o in outputs %}
     <tr>
