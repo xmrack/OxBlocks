@@ -65,7 +65,7 @@ contain `unsafe`, and claiming otherwise would be false. What the project actual
 guarantees is narrower and worth stating plainly — no consensus code, no database
 handle, and no C++ in the web process, and no `unsafe` in the code we wrote.
 
-The tree is **136 third-party crates**, of which 10 are proc-macros. That is ordinary
+The tree is **108 third-party crates**, of which 6 are proc-macros. That is ordinary
 for an async HTTP service and it is not small in absolute terms; quoting the number
 is more useful than calling it lean. Count it yourself with `cargo tree --workspace
 -e normal`, deduplicated by name and version. Three things hold it in place:
@@ -75,6 +75,11 @@ is more useful than calling it lean. Count it yourself with `cargo tree --worksp
   It compares names rather than versions, so routine upgrades stay quiet.
 * `cargo deny` runs in CI over advisories, licences, duplicate versions and source
   registries, and denies unmaintained crates outright.
+* `monerod-rpc` speaks to the daemon through `hyper` rather than `reqwest`. reqwest
+  enables `tower-http/follow-redirect`, which Cargo unifies across the workspace and
+  which pulls `url` &rarr; `idna` &rarr; ~25 ICU crates of Unicode tables &mdash; all
+  of it carried so the client could then set its redirect policy to `none`. Dropping
+  it removed 28 crates and added none.
 * `monerod-rpc` on its own builds without the `tls` feature, dropping 12 crates. The
   `oxblocks` binary always links TLS: `explorer-web` depends on `monerod-rpc` with
   default features and exposes no way to turn it off, which is deliberate — a

@@ -13,7 +13,8 @@
 pub mod client;
 pub mod error;
 pub mod types;
+mod url;
 
 pub use client::{Client, ClientBuilder};
-pub use error::{RpcError, Status};
+pub use error::{RpcError, Status, TransportKind};
 pub use types::{JsonRpcEnvelope, JsonRpcError, NestedJsonError};

@@ -44,10 +44,38 @@ impl std::fmt::Display for Status {
     }
 }
 
+/// Why a request never produced a response, so callers can tell a daemon that
+/// is briefly unreachable from one that answered with something unusable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportKind {
+    /// The connection could not be established.
+    Connect,
+    /// The deadline passed with no answer.
+    Timeout,
+    Other,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RpcError {
-    #[error("could not reach monerod: {0}")]
-    Transport(#[from] reqwest::Error),
+    #[error("could not reach monerod for {context}: {message}")]
+    Transport {
+        context: &'static str,
+        kind: TransportKind,
+        message: String,
+    },
+
+    /// The response exceeded the ceiling this client will accumulate.
+    #[error("monerod's response to {context} was {len} bytes, which is too large")]
+    ResponseTooLarge { context: &'static str, len: u64 },
+
+    /// The request body could not be built. Not reachable from remote input:
+    /// the bodies are this crate's own structs.
+    #[error("could not encode the request for {context}: {source}")]
+    Encode {
+        context: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
 
     /// monerod answered the JSON-RPC envelope with an `error` member.
     #[error("monerod rejected {method}: {message} (code {code})")]
@@ -101,7 +129,9 @@ impl RpcError {
     pub fn is_transient(&self) -> bool {
         match self {
             Self::Status { status, .. } => matches!(status, Status::Busy),
-            Self::Transport(e) => e.is_timeout() || e.is_connect(),
+            Self::Transport { kind, .. } => {
+                matches!(kind, TransportKind::Timeout | TransportKind::Connect)
+            }
             _ => false,
         }
     }
@@ -127,6 +157,34 @@ mod tests {
         let s = Status::parse("SOMETHING_NEW");
         assert!(!s.is_ok());
         assert_eq!(s.to_string(), "SOMETHING_NEW");
+    }
+
+    /// A daemon that is down or slow is worth retrying; one that answered with
+    /// something unusable is not, and nor is a response too large to hold.
+    #[test]
+    fn only_connect_and_timeout_failures_are_worth_retrying() {
+        for kind in [TransportKind::Connect, TransportKind::Timeout] {
+            let e = RpcError::Transport {
+                context: "get_info",
+                kind,
+                message: "…".to_owned(),
+            };
+            assert!(e.is_transient(), "{kind:?} should be retryable");
+        }
+        let other = RpcError::Transport {
+            context: "get_info",
+            kind: TransportKind::Other,
+            message: "…".to_owned(),
+        };
+        assert!(!other.is_transient());
+        assert!(
+            !RpcError::ResponseTooLarge {
+                context: "get_transactions",
+                len: u64::MAX,
+            }
+            .is_transient(),
+            "a response that big will be just as big next time"
+        );
     }
 
     #[test]
