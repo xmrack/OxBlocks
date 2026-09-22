@@ -277,7 +277,7 @@ code.lit {
 
 /* ---------- pagination ---------- */
 
-.pager { display: flex; gap: 0.5rem; align-items: center; margin-top: 1.9rem; font-size: 0.89rem; }
+.pager { display: flex; gap: 0.5rem; align-items: center; margin: 1.9rem 0; font-size: 0.89rem; }
 .pager a, .pager span {
   padding: 0.34rem 0.75rem;
   border: 1px solid var(--line);
