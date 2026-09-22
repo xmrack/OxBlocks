@@ -3,19 +3,11 @@
 {% block content %}
 <h1>Transaction{% if coinbase %} <span class="tag coinbase">coinbase</span>{% endif %}{% if pool_payout %} <span class="tag coinbase">pool payout</span>{% endif %}</h1>
 {% if pool_payout %}
-<p class="empty tight">
-  The reward is split directly among the outputs below rather than paid to a
-  single address, which is how a decentralised pool such as p2pool settles
-  with its miners on-chain.
-  <details class="hint"><summary>?</summary>
-  <p>A solo miner or a custodial pool takes the whole reward to one output and
-  settles with miners off-chain, so its coinbase has a single output. A
-  decentralised pool pays every participant in the coinbase itself. That shape
-  is what is being reported here &mdash; it identifies the payout structure, not
-  the software, and another multi-recipient payout scheme would look the same.
-  Attributing the block to a specific pool, or telling which ring member
-  elsewhere is one of these payouts being spent, requires that pool's own
-  sidechain records, which are not on the Monero chain.</p></details>
+<p class="lede">
+  The reward is split directly among the outputs below rather than paid to one
+  address, which is how a decentralised pool such as p2pool settles with its
+  miners on-chain. That is the payout <em>shape</em>, not an attribution: naming
+  the pool would need its own sidechain records, which are not on this chain.
 </p>
 {% endif %}
 <p class="hash">{{ hash }}</p>
@@ -30,46 +22,42 @@
   {% endif %}
   <dt>Fee</dt><dd>{{ fee }} XMR</dd>
   <dt>Size</dt><dd>{{ size }} bytes{% if pruned %} <span class="tag">prefix only</span>{% endif %}</dd>
-  <dt>Version</dt><dd>{{ version_no }}{% if rct_type > 0 %} &mdash; RingCT type {{ rct_type }}{% endif %}
-    <details class="hint"><summary>?</summary>
-    <p>RingCT hides transaction amounts behind commitments. Type 0 means no
-    RingCT: the transaction predates it, or is a coinbase, whose amount is
-    public by construction. Types 1&ndash;2 are the original scheme with range
-    proofs; 3 and 4 use Bulletproofs; 5 adds CLSAG signatures; 6 uses
-    Bulletproofs+. Later types are smaller and cheaper to verify, not more
-    private.</p></details>
-  </dd>
-  <dt>Ring size</dt><dd>{% if coinbase %}&mdash;{% else %}{{ ring_size }}{% endif %}
-    <details class="hint"><summary>?</summary>
-    <p>How many outputs each input could have spent, one of which is real and
-    the rest decoys. An observer cannot tell them apart, so the ring is the
-    anonymity set for that input. Monero fixes the ring size by consensus
-    rather than letting senders choose &mdash; a transaction with an unusual
-    ring size would stand out &mdash; and it has been 16 since August 2022. A
-    coinbase creates coins rather than spending them, so it has no ring.</p></details>
-  </dd>
-  <dt>Unlock time</dt><dd>{{ unlock_time }}
-    <details class="hint"><summary>?</summary>
-    <p>A height or timestamp before which these outputs cannot be spent. 0
-    means no lock, which is the normal case. Every coinbase is locked for 60
-    blocks by consensus, so a coinbase shows its own height plus 60 here.</p></details>
-  </dd>
-  {% if payment_id != "" %}<dt>Payment ID</dt><dd><span class="hash">{{ payment_id }}</span>
-    <details class="hint"><summary>?</summary>
-    <p>An optional identifier a sender attaches so the recipient can tell
-    payments apart &mdash; exchanges used them to match deposits to accounts.
-    This is the <strong>unencrypted</strong> 64-character form: it is readable
-    by anyone and marks the transaction as unusual, which is why it is
-    deprecated and wallets no longer produce it.</p></details>
-  </dd>{% endif %}
-  {% if payment_id8 != "" %}<dt>Payment ID</dt><dd><span class="hash">{{ payment_id8 }}</span> <span class="tag">encrypted</span>
-    <details class="hint"><summary>?</summary>
-    <p>The short payment ID, encrypted to the recipient with a shared secret,
-    so only they can read it. Integrated addresses carry one of these. Wallets
-    attach a dummy one to many transactions so that carrying a payment ID is
-    not itself a distinguishing signal.</p></details>
-  </dd>{% endif %}
+  <dt>Version</dt><dd>{{ version_no }}{% if rct_type > 0 %} &mdash; RingCT type {{ rct_type }}{% endif %}</dd>
+  <dt>Ring size</dt><dd>{% if coinbase %}&mdash;{% else %}{{ ring_size }}{% endif %}</dd>
+  <dt>Unlock time</dt><dd>{{ unlock_time }}</dd>
+  {% if payment_id != "" %}<dt>Payment ID</dt><dd><span class="hash">{{ payment_id }}</span></dd>{% endif %}
+  {% if payment_id8 != "" %}<dt>Payment ID</dt><dd><span class="hash">{{ payment_id8 }}</span> <span class="tag">encrypted</span></dd>{% endif %}
 </dl>
+
+<details class="glossary">
+  <summary>What do these fields mean?</summary>
+  <dl>
+    <dt>Version / RingCT type</dt>
+    <dd>RingCT hides amounts behind commitments. Type 0 means no RingCT: the
+    transaction predates it, or is a coinbase, whose amount is public by
+    construction. 1&ndash;2 are the original scheme, 3 and 4 use Bulletproofs,
+    5 adds CLSAG signatures, 6 uses Bulletproofs+. Later types are smaller and
+    cheaper to verify, not more private.</dd>
+
+    <dt>Ring size</dt>
+    <dd>How many outputs each input could have spent &mdash; one real, the rest
+    decoys, indistinguishable to an observer. Monero fixes this by consensus
+    rather than letting senders choose, because an unusual ring size would
+    itself stand out; it has been 16 since August 2022. A coinbase creates
+    coins rather than spending them, so it has no ring.</dd>
+
+    <dt>Unlock time</dt>
+    <dd>A height or timestamp before which these outputs cannot be spent. 0
+    means no lock, which is the normal case. Every coinbase is locked for 60
+    blocks, so one shows its own height plus 60.</dd>
+
+    <dt>Payment ID</dt>
+    <dd>An optional identifier a sender attaches so a recipient can tell
+    payments apart. The 16-character form is encrypted to the recipient and is
+    what integrated addresses carry. The 64-character form is readable by
+    anyone, marks the transaction as unusual, and is deprecated.</dd>
+  </dl>
+</details>
 
 {% if pruned %}
 <div class="notice">
@@ -99,15 +87,7 @@
       </p>
       {% else %}
       <figure class="ring-ages">
-        <figcaption>Ring member ages
-          <details class="hint"><summary>?</summary>
-          <p>How old each of this input's ring members was when it was spent,
-          in days. Monero picks decoys from a gamma distribution that favours
-          recent outputs, because real spends are usually recent too &mdash; so
-          a healthy ring leans left, and the real output is not distinguishable
-          by age. The buckets double in width because a linear axis would put
-          nearly every member in the first one.</p></details>
-        </figcaption>
+        <figcaption>Ring member ages, in days before this was spent</figcaption>
         <svg viewBox="0 0 {{ i.chart_width }} {{ i.chart_height + 10 }}"
              width="{{ i.chart_width }}" height="{{ i.chart_height + 10 }}"
              role="img" aria-label="Distribution of ring member ages">
@@ -137,28 +117,34 @@
     </div>
   </details>
   {% endfor %}
+<details class="glossary">
+  <summary>What am I looking at?</summary>
+  <dl>
+    <dt>Key image</dt>
+    <dd>A value derived from the one real output being spent. It is unique to
+    that output but reveals nothing about which one it is. The network refuses
+    a second transaction carrying the same key image, which is how double
+    spends are prevented without anyone learning what was spent.</dd>
+
+    <dt>Ring members</dt>
+    <dd>The listed outputs are the candidates for this input: one was really
+    spent, the others are decoys pulled from the chain. Nothing here
+    distinguishes them.</dd>
+
+    <dt>The age chart</dt>
+    <dd>How old each ring member was when it was spent. Decoys are drawn from a
+    gamma distribution favouring recent outputs, because real spends usually
+    are recent too &mdash; so a healthy ring leans left and the real output does
+    not stand out by age. The buckets double in width because a linear axis
+    would put nearly everything in the first one.</dd>
+  </dl>
+</details>
 {% endif %}
 
 <h2>Outputs <span class="sub">{{ outputs.len() }}</span></h2>
 <div class="scroll">
 <table>
-  <thead><tr><th class="num">#</th>
-    <th>One-time key
-      <details class="hint"><summary>?</summary>
-      <p>Every output pays a fresh one-time address, derived by the sender from
-      the recipient's public address and a random value only the sender knows.
-      The recipient's actual address never appears on the chain, and two
-      payments to the same person share nothing an observer can link. The
-      recipient finds their outputs by scanning with their view key.</p></details>
-    </th>
-    <th class="num">Amount</th>{% if has_view_tags %}<th>View tag
-      <details class="hint"><summary>?</summary>
-      <p>One byte derived from the same shared secret as the one-time key. A
-      wallet scanning the chain can skip an output whose view tag does not
-      match without performing the much more expensive full derivation, which
-      made scanning several times faster when it was introduced in 2022. It
-      narrows an output to one bucket in 256 and reveals nothing else.</p></details>
-    </th>{% endif %}</tr></thead>
+  <thead><tr><th class="num">#</th><th>One-time key</th><th class="num">Amount</th>{% if has_view_tags %}<th>View tag</th>{% endif %}</tr></thead>
   <tbody>
   {% for o in outputs %}
     <tr>
@@ -171,16 +157,39 @@
   </tbody>
 </table>
 </div>
+<details class="glossary">
+  <summary>What am I looking at?</summary>
+  <dl>
+    <dt>One-time key</dt>
+    <dd>Every output pays a fresh one-time address, derived by the sender from
+    the recipient's published address and a random value only the sender knows.
+    The recipient's actual address never appears on the chain, and two payments
+    to the same person share nothing an observer can link. The recipient finds
+    their own outputs by scanning with their view key.</dd>
 
-<h2>Extra <span class="sub">tx_extra</span>
-  <details class="hint"><summary>?</summary>
-  <p>A free-form byte field carried by every transaction. By convention it
-  holds the transaction public key the recipient needs in order to recognise
-  their outputs, optionally an encrypted payment ID, and on coinbases the
-  tags a merge-mining or pool setup adds. monerod does not require it to parse
-  cleanly, so some transactions on the chain carry bytes that decode to
-  nothing &mdash; those are shown raw below.</p></details>
-</h2>
+    {% if has_view_tags %}<dt>View tag</dt>
+    <dd>One byte derived from the same shared secret as the one-time key. A
+    scanning wallet can skip an output whose view tag does not match without
+    doing the much more expensive full derivation, which made scanning several
+    times faster when it arrived in 2022. It narrows an output to one bucket in
+    256 and reveals nothing further.</dd>{% endif %}
+
+    <dt>Amount</dt>
+    <dd><span class="tag">hidden</span> means RingCT is concealing the value: it
+    is committed to on the chain but not published. A figure here instead means
+    the amount is public &mdash; every coinbase, and any transaction predating
+    RingCT.</dd>
+  </dl>
+</details>
+
+<h2>Extra <span class="sub">tx_extra</span></h2>
+<p class="lede">
+  A free-form byte field on every transaction. By convention it carries the
+  transaction public key the recipient needs to recognise their outputs,
+  sometimes an encrypted payment ID, and on coinbases whatever tags a
+  merge-mining or pool setup adds. monerod does not require it to parse, so
+  some transactions carry bytes that decode to nothing.
+</p>
 {% if extra == "" %}
 <p class="empty">This transaction carries no extra field.</p>
 {% else %}
