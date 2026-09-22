@@ -7,7 +7,7 @@
   The reward is split directly among the outputs below rather than paid to a
   single address, which is how a decentralised pool such as p2pool settles
   with its miners on-chain.
-  <details class="hint"><summary>?</summary>
+  <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
   <p>A solo miner or a custodial pool takes the whole reward to one output and
   settles with miners off-chain, so its coinbase has a single output. A
   decentralised pool pays every participant in the coinbase itself. That shape
@@ -31,7 +31,7 @@
   <dt>Fee</dt><dd>{{ fee }} XMR</dd>
   <dt>Size</dt><dd>{{ size }} bytes{% if pruned %} <span class="tag">prefix only</span>{% endif %}</dd>
   <dt>Version</dt><dd>{{ version_no }}{% if rct_type > 0 %} &mdash; RingCT type {{ rct_type }}{% endif %}
-    <details class="hint"><summary>?</summary>
+    <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
     <p>RingCT hides transaction amounts behind commitments. Type 0 means no
     RingCT: the transaction predates it, or is a coinbase, whose amount is
     public by construction. Types 1&ndash;2 are the original scheme with range
@@ -40,7 +40,7 @@
     private.</p></details>
   </dd>
   <dt>Ring size</dt><dd>{% if coinbase %}&mdash;{% else %}{{ ring_size }}{% endif %}
-    <details class="hint"><summary>?</summary>
+    <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
     <p>How many outputs each input could have spent, one of which is real and
     the rest decoys. An observer cannot tell them apart, so the ring is the
     anonymity set for that input. Monero fixes the ring size by consensus
@@ -49,13 +49,13 @@
     coinbase creates coins rather than spending them, so it has no ring.</p></details>
   </dd>
   <dt>Unlock time</dt><dd>{{ unlock_time }}
-    <details class="hint"><summary>?</summary>
+    <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
     <p>A height or timestamp before which these outputs cannot be spent. 0
     means no lock, which is the normal case. Every coinbase is locked for 60
     blocks by consensus, so a coinbase shows its own height plus 60 here.</p></details>
   </dd>
   {% if payment_id != "" %}<dt>Payment ID</dt><dd><span class="hash">{{ payment_id }}</span>
-    <details class="hint"><summary>?</summary>
+    <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
     <p>An optional identifier a sender attaches so the recipient can tell
     payments apart &mdash; exchanges used them to match deposits to accounts.
     This is the <strong>unencrypted</strong> 64-character form: it is readable
@@ -63,7 +63,7 @@
     deprecated and wallets no longer produce it.</p></details>
   </dd>{% endif %}
   {% if payment_id8 != "" %}<dt>Payment ID</dt><dd><span class="hash">{{ payment_id8 }}</span> <span class="tag">encrypted</span>
-    <details class="hint"><summary>?</summary>
+    <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
     <p>The short payment ID, encrypted to the recipient with a shared secret,
     so only they can read it. Integrated addresses carry one of these. Wallets
     attach a dummy one to many transactions so that carrying a payment ID is
@@ -100,7 +100,7 @@
       {% else %}
       <figure class="ring-ages">
         <figcaption>Ring member ages
-          <details class="hint"><summary>?</summary>
+          <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
           <p>How old each of this input's ring members was when it was spent,
           in days. Monero picks decoys from a gamma distribution that favours
           recent outputs, because real spends are usually recent too &mdash; so
@@ -144,7 +144,7 @@
 <table>
   <thead><tr><th class="num">#</th>
     <th>One-time key
-      <details class="hint"><summary>?</summary>
+      <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
       <p>Every output pays a fresh one-time address, derived by the sender from
       the recipient's public address and a random value only the sender knows.
       The recipient's actual address never appears on the chain, and two
@@ -152,7 +152,7 @@
       recipient finds their outputs by scanning with their view key.</p></details>
     </th>
     <th class="num">Amount</th>{% if has_view_tags %}<th>View tag
-      <details class="hint"><summary>?</summary>
+      <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
       <p>One byte derived from the same shared secret as the one-time key. A
       wallet scanning the chain can skip an output whose view tag does not
       match without performing the much more expensive full derivation, which
@@ -173,7 +173,7 @@
 </div>
 
 <h2>Extra <span class="sub">tx_extra</span>
-  <details class="hint"><summary>?</summary>
+  <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
   <p>A free-form byte field carried by every transaction. By convention it
   holds the transaction public key the recipient needs in order to recognise
   their outputs, optionally an encrypted payment ID, and on coinbases the

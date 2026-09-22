@@ -333,17 +333,24 @@ details.hint > summary {
   list-style: none;
   cursor: help;
   color: var(--fg-faint);
-  border: 1px solid var(--line);
-  border-radius: 50%;
-  font-size: 0.68rem;
-  font-weight: 700;
-  padding: 0 0.32rem;
-  margin-left: 0.3rem;
+  margin-left: 0.32rem;
   user-select: none;
+  vertical-align: -1px;
 }
 details.hint > summary::-webkit-details-marker { display: none; }
-details.hint > summary:hover { color: var(--fg); border-color: var(--fg-faint); }
-details.hint[open] > summary { color: var(--accent); border-color: var(--accent); }
+details.hint > summary:hover { color: var(--fg); }
+details.hint[open] > summary { color: var(--accent); }
+
+/* The icon draws its own circle, so the summary carries no border. Strokes
+   follow `currentColor`, which is what makes hover and open states work. */
+details.hint .icon {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  overflow: visible;
+}
+details.hint .icon .dot { fill: currentColor; stroke: none; }
+details.hint .icon .stem { stroke-linecap: round; }
 details.hint > p {
   margin: 0.45rem 0 0.2rem;
   padding: 0.55rem 0.75rem;

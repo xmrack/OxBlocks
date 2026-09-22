@@ -1383,6 +1383,17 @@ mod tests {
             html.matches("<details class=\"hint\">").count() >= 6,
             "the explanatory hints are missing:\n{html}"
         );
+        // An icon, not a bare "?" character: the glyph relied on the reader
+        // guessing, and rendered at the mercy of whatever font was in use.
+        assert!(
+            !html.contains("<summary>?</summary>"),
+            "the hint affordance is a bare question mark again"
+        );
+        assert_eq!(
+            html.matches(r#"<svg class="icon""#).count(),
+            html.matches("<details class=\"hint\">").count(),
+            "every hint should carry the icon"
+        );
         assert!(!html.to_lowercase().contains("<script"));
         assert!(!html.contains("onclick"));
         // The key image was an unlabelled hash next to the ring member count,
