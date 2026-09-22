@@ -1068,6 +1068,73 @@ mod tests {
         );
     }
 
+    /// Every documented endpoint carries a runnable example, and the example
+    /// points at the endpoint it is filed under.
+    ///
+    /// The second half is the part worth checking: a copied section whose
+    /// `curl` line still names the endpoint above it is the likely mistake,
+    /// and it reads as correct.
+    #[test]
+    fn every_documented_endpoint_shows_a_curl_example_for_itself() {
+        let page = api_page().render().expect("renders");
+        let mut checked = 0;
+
+        for (at, _) in page.match_indices(r#"<section class="endpoint" id=""#) {
+            let rest = page.get(at..).unwrap_or_default();
+            let Some(body_end) = rest.find("</section>") else {
+                panic!("unterminated endpoint section")
+            };
+            let section = rest.get(..body_end).unwrap_or_default();
+
+            // The shared response shapes are not endpoints and take no request.
+            let id_at = r#"<section class="endpoint" id=""#.len();
+            let id = section
+                .get(id_at..)
+                .and_then(|r| r.split('"').next())
+                .unwrap_or_default();
+            if id.starts_with("shape-") {
+                continue;
+            }
+
+            // The route as the heading states it, up to its first argument.
+            let route = section
+                .split_once(r#"<h3>"#)
+                .and_then(|(_, r)| r.split_once("</h3>"))
+                .and_then(|(h, _)| h.rsplit_once(r#"<code class="lit">"#))
+                .and_then(|(_, c)| c.split_once("</code>"))
+                .map(|(path, _)| path)
+                .unwrap_or_default();
+            let stem = route
+                .split(['?'])
+                .next()
+                .unwrap_or_default()
+                .split("&lt;")
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches('/');
+            assert!(
+                stem.starts_with('/'),
+                "section {id} has no route in its heading, found {route:?}"
+            );
+
+            let example = section
+                .split_once(r#"<pre class="blob">curl "#)
+                .map(|(_, rest)| rest.split_once("</pre>").unwrap_or((rest, "")).0)
+                .unwrap_or_else(|| panic!("section {id} documents no curl example"));
+            assert!(
+                example.contains(stem),
+                "the example under {id} does not call {stem}: {example}"
+            );
+            checked += 1;
+        }
+
+        assert!(
+            checked >= 13,
+            "only {checked} endpoint sections were examined, so this test is \
+             not reading the page"
+        );
+    }
+
     /// The documentation page is subject to the same rule as every other page:
     /// nothing external, no script, one stylesheet. Example requests are shown
     /// as paths rather than absolute URLs partly for this reason -- a page read

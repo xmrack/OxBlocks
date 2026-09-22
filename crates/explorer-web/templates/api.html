@@ -10,6 +10,15 @@
   so a client written against that explorer works here unchanged.
 </p>
 
+<p>
+  Each endpoint below carries a runnable <code class="lit">curl</code> line.
+  They refer to <code class="lit">$OXBLOCKS</code> rather than a hostname: set
+  it to this explorer's base URL, scheme included, and the examples run as
+  written. No URL is printed on this page on purpose &mdash; an explorer is
+  often read over Tor, and a page that names a host gives the reader something
+  to click that leaves it.
+</p>
+
 <h2>The envelope</h2>
 
 <p>
@@ -117,6 +126,7 @@
     which. oxblocks expects an unrestricted daemon.
   </p>
   <p><a href="/api/version">/api/version</a></p>
+  <pre class="blob">curl -s "$OXBLOCKS/api/version"</pre>
 </section>
 
 <section class="endpoint" id="networkinfo">
@@ -143,6 +153,7 @@
     exact value matters.
   </p>
   <p><a href="/api/networkinfo">/api/networkinfo</a></p>
+  <pre class="blob">curl -s "$OXBLOCKS/api/networkinfo"</pre>
 </section>
 
 <section class="endpoint" id="block">
@@ -160,6 +171,7 @@
     two different C++ types.
   </p>
   <p><a href="/api/block/{{ sample_height }}">/api/block/{{ sample_height }}</a></p>
+  <pre class="blob">curl -s "$OXBLOCKS/api/block/{{ sample_height }}"</pre>
 </section>
 
 <section class="endpoint" id="rawblock">
@@ -172,6 +184,7 @@
     upstream byte for byte.
   </p>
   <p><a href="/api/rawblock/{{ sample_height }}">/api/rawblock/{{ sample_height }}</a></p>
+  <pre class="blob">curl -s "$OXBLOCKS/api/rawblock/{{ sample_height }}"</pre>
 </section>
 
 <section class="endpoint" id="blocks">
@@ -188,6 +201,7 @@
     millions of them. A wider range is refused rather than truncated.
   </p>
   <p><a href="/api/blocks/{{ sample_range_start }}/{{ sample_height }}">/api/blocks/{{ sample_range_start }}/{{ sample_height }}</a></p>
+  <pre class="blob">curl -s "$OXBLOCKS/api/blocks/{{ sample_range_start }}/{{ sample_height }}"</pre>
 </section>
 
 <section class="endpoint" id="transaction">
@@ -204,6 +218,7 @@
     <code class="lit">confirmations</code> 0, and the time they arrived rather
     than a block timestamp.
   </p>
+  <pre class="blob">curl -s "$OXBLOCKS/api/transaction/&lt;hash&gt;"</pre>
 </section>
 
 <section class="endpoint" id="rawtransaction">
@@ -212,6 +227,7 @@
     The transaction exactly as monerod decoded it, keys re-sorted, with no
     interpretation of any kind.
   </p>
+  <pre class="blob">curl -s "$OXBLOCKS/api/rawtransaction/&lt;hash&gt;"</pre>
 </section>
 
 <section class="endpoint" id="private">
@@ -253,6 +269,7 @@
     <a href="#blocks">/api/blocks</a>, works normally.
   </div>
   {% endif %}
+  <pre class="blob">curl -s "$OXBLOCKS/api/transaction/private/&lt;postfix&gt;"</pre>
 </section>
 
 <section class="endpoint" id="transactions">
@@ -281,6 +298,7 @@
     page early and never sees the oldest blocks.
   </p>
   <p><a href="/api/transactions?page=0&amp;limit=5">/api/transactions?page=0&amp;limit=5</a></p>
+  <pre class="blob">curl -s "$OXBLOCKS/api/transactions?page=0&amp;limit=5"</pre>
 </section>
 
 <section class="endpoint" id="mempool">
@@ -305,6 +323,7 @@
     <strong>Needs an unrestricted daemon.</strong>
   </p>
   <p><a href="/api/mempool">/api/mempool</a></p>
+  <pre class="blob">curl -s "$OXBLOCKS/api/mempool"</pre>
 </section>
 
 <section class="endpoint" id="recent">
@@ -321,6 +340,7 @@
     the most expensive endpoint here.
   </p>
   <p><a href="/api/transactions/recent">/api/transactions/recent</a></p>
+  <pre class="blob">curl -s "$OXBLOCKS/api/transactions/recent"</pre>
 </section>
 
 <section class="endpoint" id="search">
@@ -338,6 +358,7 @@
     and cannot have one without scanning with a view key, which this explorer
     deliberately never asks for.
   </p>
+  <pre class="blob">curl -s "$OXBLOCKS/api/search/&lt;height|hash&gt;"</pre>
 </section>
 
 <section class="endpoint" id="feeestimate">
@@ -349,6 +370,7 @@
     been per-byte since 2019, and the second key kept its old name.
   </p>
   <p><a href="/api/feeestimate">/api/feeestimate</a></p>
+  <pre class="blob">curl -s "$OXBLOCKS/api/feeestimate"</pre>
 </section>
 
 <section class="endpoint" id="health">
@@ -365,6 +387,7 @@
     upstream is slow turns one degraded dependency into an outage.
   </p>
   <p><a href="/health">/health</a></p>
+  <pre class="blob">curl -s "$OXBLOCKS/health"</pre>
 </section>
 
 <h2>Shared shapes</h2>
