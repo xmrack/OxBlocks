@@ -1,6 +1,6 @@
 # oxblocks
 
-oxblocks is a Monero block explorer written in Rust.
+Oxide Blocks (oxblocks) is a Monero block explorer written in Rust.
 
 The explorer does not open the blockchain database. It holds no keys. It writes
 nothing to disk. For each request it asks the daemon over RPC and renders the answer.
