@@ -167,7 +167,7 @@ everything and deletes the characters it does not recognise before it parses.
 | `/api/version` | The explorer version and the daemon version. |
 | `/api/blocks/<start>/<end>` | A range of blocks. 100 blocks at most. |
 | `/api/transaction/private/<postfix>` | Every transaction whose hash ends with the postfix. |
-| `/api/transactions/recent` | The mempool plus the last 30 blocks. |
+| `/api/transactions/recent` | The mempool plus the last 30 blocks, the same window for every caller. |
 
 A running explorer documents its own API at `/api`. That page lists each
 parameter and each limit. It also states two facts that no static page can
@@ -180,14 +180,21 @@ this explorer keeps no index.
 
 ### Private lookups and k-anonymity
 
-Two endpoints let a caller fetch data without naming what it wants. The caller
-hides in a set, and the explorer cannot tell which member of the set the caller
-wanted.
+Three endpoints let a caller fetch data without a request that singles out what
+it wants.
 
 `/api/transaction/private/<postfix>` returns every transaction whose hash ends
-with the hex postfix that you give. The caller picks the one it wants on its own
-machine. `/api/blocks/<start>/<end>` does the same for blocks. Ask for a range
-and keep the block you meant.
+with the hex postfix that you give. The caller picks the one it wants on its
+own machine, and the explorer cannot tell which one that was.
+`/api/blocks/<start>/<end>` does the same for blocks. Ask for a range and keep
+the block you meant.
+
+`/api/transactions/recent` works differently: there is nothing to pick, because
+every caller who hits it gets the same window, the unconfirmed pool plus the
+last 30 blocks. A request for "the newest transaction" would otherwise name
+that transaction. A request for "whatever is recent" does not, because it is
+the same request no matter who sends it or which transaction they actually
+want.
 
 A postfix is 2 to 12 hex characters. The explorer also checks the postfix
 against the size of the chain, and accepts it only when it expects 20 to 1000
