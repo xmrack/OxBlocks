@@ -492,7 +492,10 @@ pub async fn transactions(
                 height: header.height,
                 #[allow(
                     clippy::cast_precision_loss,
-                    reason = "upstream holds this in a double here and an                               integer in /api/block, and the float is the                               observable difference we reproduce; block                               weights are far below 2^53 in any case"
+                    reason = "upstream holds this in a double here and an \
+                              integer in /api/block, and the float is the \
+                              observable difference we reproduce; block \
+                              weights are far below 2^53 in any case"
                 )]
                 size: header.block_size as f64,
                 timestamp: header.timestamp,
