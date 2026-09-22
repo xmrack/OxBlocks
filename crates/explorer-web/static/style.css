@@ -91,7 +91,10 @@ form.search button {
 }
 .status b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
 
-main { padding: 1.6rem 0 3rem; }
+/* The bottom padding is deliberately generous: it is what separates a page
+   with no pager, like a transaction, from the footer, and it has to match
+   the gap a pager's own margin-top adds on the pages that have one. */
+main { padding: 1.6rem 0 4.9rem; }
 
 h1 { font-size: 1.35rem; margin: 0 0 1rem; letter-spacing: -0.02em; }
 h2 { font-size: 1.05rem; margin: 2rem 0 0.75rem; letter-spacing: -0.01em; }
@@ -277,7 +280,7 @@ code.lit {
 
 /* ---------- pagination ---------- */
 
-.pager { display: flex; gap: 0.5rem; align-items: center; margin: 1.9rem 0; font-size: 0.89rem; }
+.pager { display: flex; gap: 0.5rem; align-items: center; margin-top: 1.9rem; font-size: 0.89rem; }
 .pager a, .pager span {
   padding: 0.34rem 0.75rem;
   border: 1px solid var(--line);
