@@ -1328,6 +1328,36 @@ mod tests {
         assert_eq!(bars.iter().map(|b| b.count).sum::<usize>(), 1);
     }
 
+    /// The tag states what was inferred, not the output count.
+    ///
+    /// It first read "51 recipients", which the Outputs column beside it
+    /// already said -- a tag that repeats an adjacent cell costs a reader
+    /// attention and tells them nothing.
+    #[test]
+    fn the_pool_payout_tag_says_more_than_the_output_count_does() {
+        let html = block_page().render().expect("renders");
+        assert!(
+            html.contains(r#"<span class="tag coinbase">pool payout</span>"#),
+            "the inference is not stated:\n{html}"
+        );
+
+        let outputs = block_tx(true).outputs;
+        assert!(
+            !html.contains(&format!(r#"<span class="tag coinbase">{outputs}"#)),
+            "the tag opens by restating the output count"
+        );
+
+        let mut tx = tx_page();
+        tx.coinbase = true;
+        tx.pool_payout = true;
+        let tx_html = tx.render().expect("renders");
+        assert!(tx_html.contains(r#"<span class="tag coinbase">pool payout</span>"#));
+        assert!(
+            !tx_html.contains("recipients</span>"),
+            "the transaction heading still counts recipients in its tag"
+        );
+    }
+
     /// A coinbase paying many recipients is the shape a decentralised pool
     /// leaves. Reported as a shape, not as an attribution to any software.
     #[test]

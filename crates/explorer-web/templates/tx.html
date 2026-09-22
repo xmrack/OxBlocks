@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Transaction {{ hash }} &mdash; oxblocks{% endblock %}
 {% block content %}
-<h1>Transaction{% if coinbase %} <span class="tag coinbase">coinbase</span>{% endif %}{% if pool_payout %} <span class="tag coinbase">pays {{ outputs.len() }} recipients</span>{% endif %}</h1>
+<h1>Transaction{% if coinbase %} <span class="tag coinbase">coinbase</span>{% endif %}{% if pool_payout %} <span class="tag coinbase">pool payout</span>{% endif %}</h1>
 {% if pool_payout %}
 <p class="empty tight">
-  This coinbase pays many recipients at once, which is how a decentralised
-  pool such as p2pool distributes a block reward.
+  The reward is split directly among the outputs below rather than paid to a
+  single address, which is how a decentralised pool such as p2pool settles
+  with its miners on-chain.
   <details class="hint"><summary>?</summary>
   <p>A solo miner or a custodial pool takes the whole reward to one output and
   settles with miners off-chain, so its coinbase has a single output. A
