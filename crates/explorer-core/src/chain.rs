@@ -159,8 +159,8 @@ pub struct ResolvedInput {
     /// Empty when the ring could not be resolved.
     ///
     /// monerod fails an entire `/get_outs` batch if any one index is out of
-    /// range, so one unresolvable input must not blank the whole page. Upstream
-    /// drops just that input's ring and renders the rest; so do we.
+    /// range, so one unresolvable input must not blank the whole page. That
+    /// input's ring is dropped and the rest are rendered.
     pub ring: Vec<RingMember>,
     /// True when the ring is not being reported: either monerod refused the
     /// lookup, or the endpoint deliberately did not ask for one. Rendered as
@@ -202,7 +202,7 @@ mod tests {
 
         let hash = "dc2ef85b049311814742f543469e3ec1b8d589e68434d9f220ce41072c69c39e";
         assert!(matches!(BlockId::parse(hash), Ok(BlockId::Hash(_))));
-        // Uppercase is accepted, as upstream accepts it.
+        // Uppercase is accepted.
         assert!(matches!(
             BlockId::parse(&hash.to_uppercase()),
             Ok(BlockId::Hash(_))
@@ -230,7 +230,7 @@ mod tests {
             BlockId::parse(&"a".repeat(65)),
             Err(BlockIdError::Unrecognised)
         );
-        // 100000000 is nine characters, so it is not a height by upstream's rule.
+        // 100000000 is nine characters, so it is too long to be a height.
         assert_eq!(BlockId::parse("100000000"), Err(BlockIdError::Unrecognised));
     }
 

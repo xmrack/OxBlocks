@@ -1,10 +1,9 @@
-//! Response shapes, field-for-field compatible with the C++ explorer.
+//! Response shapes.
 //!
-//! **Every struct here declares its fields in alphabetical order.** nlohmann
-//! stores objects in a `std::map`, so upstream emits keys byte-ascending and
-//! recursively; serde emits them in *declaration* order. Declaring them sorted
-//! is how the two agree without routing everything through
-//! `serde_json::Value`.
+//! **Every struct here declares its fields in alphabetical order.** The API
+//! emits keys byte-ascending, recursively, and serde emits them in
+//! *declaration* order. Declaring them sorted is how the two agree without
+//! routing everything through `serde_json::Value`.
 //!
 //! Two things hold the property up, and only one of them is load-bearing today.
 //! The declaration order is the belt: `declaration_order_is_alphabetical` below
@@ -26,8 +25,8 @@ use serde::Serialize;
 
 /// One ring member.
 ///
-/// The height field is named `block_no`, not `height`. That is upstream's
-/// name and the one clients index on, so it is not ours to tidy.
+/// The height field is named `block_no`, not `height`. Clients index on that
+/// name, so it is not ours to tidy.
 #[derive(Debug, Clone, Serialize)]
 pub struct ApiMixin {
     pub block_no: u64,
@@ -41,10 +40,9 @@ pub struct ApiInput {
     pub key_image: String,
     /// `null`, not `[]`, when the ring could not be resolved.
     ///
-    /// Upstream initialises this as `json {}` — which is null — and only
-    /// becomes an array on first `push_back`. An input whose very first ring
-    /// member fails to resolve therefore serialises as `"mixins":null`, and a
-    /// plain `Vec` would emit `[]` and diverge.
+    /// An input whose very first ring member fails to resolve serialises as
+    /// `"mixins":null`. A plain `Vec` would emit `[]`, which says the input
+    /// has no ring members at all.
     pub mixins: Option<Vec<ApiMixin>>,
 }
 
@@ -68,9 +66,8 @@ pub struct TxSummary {
     pub tx_hash: String,
     pub tx_size: u64,
     pub tx_version: u64,
-    /// devel emits this; master does not. Kept because a transaction that
-    /// cannot be spent until a given height or time is a fact a reader wants,
-    /// and it costs one field.
+    /// Emitted because a transaction that cannot be spent until a given
+    /// height or time is a fact a reader wants, and it costs one field.
     pub unlock_time: u64,
     pub xmr_inputs: u64,
     pub xmr_outputs: u64,
@@ -84,9 +81,7 @@ pub struct TxDetail {
     pub confirmations: u64,
     pub current_height: u64,
     pub extra: String,
-    /// `null` for a coinbase transaction, confirmed against a live upstream
-    /// capture. Upstream declares `json inputs;` and never enters the loop for
-    /// a lone `txin_gen`, so it stays null rather than becoming `[]`.
+    /// `null`, not `[]`, for a coinbase transaction, which spends nothing.
     pub inputs: Option<Vec<ApiInput>>,
     pub mixin: u64,
     pub outputs: Vec<ApiOutput>,
@@ -110,9 +105,8 @@ pub struct BlockDetail {
     pub block_height: u64,
     pub current_height: u64,
     pub hash: String,
-    /// Integer here. The *same* value is a JSON float in `/api/transactions`,
-    /// because upstream holds it in a `uint64_t` in one builder and a `double`
-    /// in the other. Confirmed on one block: 95511 versus 95511.0.
+    /// Integer here. The *same* value is a JSON float in `/api/transactions`.
+    /// On one block that is 95511 against 95511.0.
     pub size: u64,
     pub timestamp: u64,
     pub timestamp_utc: String,
@@ -307,8 +301,8 @@ impl TxDetail {
 
 /// Hash rendering for a value that came off the wire as a string.
 ///
-/// monerod returns lowercase hex, but a user may have *asked* in uppercase and
-/// upstream echoes the parsed value, so normalise rather than pass through.
+/// monerod returns lowercase hex, but a caller may have *asked* in uppercase.
+/// The parsed value is echoed, so normalise rather than pass through.
 #[must_use]
 pub fn normalise_hash(raw: &str) -> String {
     raw.parse::<Hash32>()
@@ -389,8 +383,8 @@ mod tests {
         assert_eq!(
             keys, expected,
             "{what} declares its fields out of alphabetical order, so it would \
-             emit keys in a different order from upstream if serde_json ever \
-             stopped sorting them"
+             emit its keys out of order if serde_json ever stopped sorting \
+             them"
         );
     }
 
@@ -452,13 +446,9 @@ mod tests {
         }
     }
 
-    /// Upstream emits keys byte-ascending because nlohmann stores objects in a
-    /// `std::map`. Every struct here has to be declared in that order to agree
-    /// with it without routing through a sorting container.
-    ///
-    /// The module comment has claimed since it was written that this is
-    /// "checked mechanically". It was not: there was no test module here at
-    /// all until this one.
+    /// Every response emits its keys byte-ascending, so every struct here has
+    /// to be declared in that order to agree without routing through a sorting
+    /// container.
     #[test]
     fn declaration_order_is_alphabetical() {
         assert_sorted(&declared_keys(&mixin()), "ApiMixin");
@@ -496,8 +486,8 @@ mod tests {
     /// The helper itself, because an ordering test built on a broken scanner
     /// would pass for the wrong reason.
     ///
-    /// Upstream sorts recursively, so every nested object has to be ordered
-    /// too -- but it is ordered *against its own siblings*, not against its
+    /// Sorting is recursive, so every nested object has to be ordered too.
+    /// Each one is ordered *against its own siblings*, not against its
     /// parent's fields. `ApiMixin` and `ApiOutput` are asserted separately
     /// above for that reason, and must not leak into `TxDetail`'s list here.
     #[test]
@@ -543,7 +533,7 @@ mod tests {
             r#"{"apple":2,"zebra":1}"#,
             "serde_json is no longer sorting object keys, which means the \
              `preserve_order` feature has been switched on somewhere in the \
-             dependency graph. Upstream emits keys byte-ascending, so every \
+             dependency graph. Responses emit keys byte-ascending, so every \
              response struct's declaration order is now load-bearing."
         );
     }

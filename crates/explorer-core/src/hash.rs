@@ -1,10 +1,9 @@
 //! A validated 32-byte hash.
 //!
-//! Block hashes, transaction hashes, key images and output keys are all 32 bytes
-//! rendered as 64 hex characters. The C++ explorer re-checks that shape with an
-//! ad-hoc regex at each use site, which means a missed check is invisible.
-//!
-//! Here it is a type. A [`Hash32`] cannot exist unless it parsed, so "this value
+//! Block hashes, transaction hashes, key images and output keys are all 32
+//! bytes rendered as 64 hex characters. That shape is a type here rather than
+//! a check repeated at each use site. A [`Hash32`] cannot exist unless it
+//! parsed, so "this value
 //! was validated" is something the compiler knows rather than something a reader
 //! has to audit for.
 

@@ -55,7 +55,7 @@ fn on_chain_error(e: &ChainError, what: &str) -> ApiError {
         // The operator gets the detail; the client does not. See
         // ChainError::public_message.
         tracing::warn!("{what}: {e}");
-        ApiError::upstream(e.public_message())
+        ApiError::daemon(e.public_message())
     }
 }
 
@@ -75,9 +75,8 @@ pub struct VersionData {
     last_git_commit_date: String,
     last_git_commit_hash: String,
     monero_version_full: String,
-    /// Not an upstream key. oxblocks is not the C++ explorer, and a client
-    /// that wants to know which implementation it is talking to should not
-    /// have to guess from the absence of a commit hash.
+    /// An extra key, so a client can tell which explorer answered rather
+    /// than guess from the absence of a commit hash.
     oxblocks_version: String,
 }
 
@@ -123,7 +122,7 @@ pub async fn transaction(
 
     let tx = entry
         .parse_json()
-        .map_err(|e| ApiError::upstream(format!("Cant parse tx {hash}: {e}")))?;
+        .map_err(|e| ApiError::daemon(format!("Cant parse tx {hash}: {e}")))?;
 
     // One /get_outs per input. Never batched across the transaction: monerod
     // fails the whole request if any single index is out of range, which would
@@ -151,8 +150,8 @@ pub async fn transaction(
 // /api/block/<height|hash>
 // ---------------------------------------------------------------------------
 
-/// Wrap [`BlockId::parse`] in upstream's wording, which differs by which shape
-/// was attempted.
+/// Wrap [`BlockId::parse`] in the wording the API uses, which differs by
+/// which shape was attempted.
 fn parse_block_id(arg: &str) -> Result<BlockId, ApiError> {
     BlockId::parse(arg).map_err(|e| match e {
         BlockIdError::NotAHash => {
@@ -164,12 +163,10 @@ fn parse_block_id(arg: &str) -> Result<BlockId, ApiError> {
     })
 }
 
-/// How upstream words a missing block, which differs by how it was asked for.
+/// How a missing block is worded, which differs by how it was asked for.
 ///
 /// For a hash the message carries **literal angle brackets** around a
-/// lowercased hash, because fmt routes `crypto::hash` through monero's
-/// `operator<<`, which writes `<` and `>`. Confirmed against a live upstream
-/// deployment. The spec wrote `<hash>` as a metavariable and hid it.
+/// lowercased hash. They are part of the message, not a placeholder for one.
 fn block_not_found(id: BlockId) -> String {
     match id {
         BlockId::Height(h) => format!("Cant get block: {h}"),
@@ -236,8 +233,8 @@ fn block_detail(header: &BlockHeader, entries: &[TxEntry]) -> BlockDetail {
         block_height: header.height,
         // The tip, derived from this block's own depth rather than a second
         // round trip: `depth` is 0 for the tip, and `current_height` is the
-        // chain *height* (tip + 1). Checked against a real upstream capture --
-        // block 2,000,000 at depth 1,765,612 reports current_height 3,765,613.
+        // chain *height* (tip + 1). Block 2,000,000 at depth 1,765,612
+        // reports current_height 3,765,613.
         current_height: header.height.saturating_add(header.depth).saturating_add(1),
         hash: normalise_hash(&header.hash),
         size: header.block_size,
@@ -254,10 +251,9 @@ fn block_detail(header: &BlockHeader, entries: &[TxEntry]) -> BlockDetail {
 /// The block exactly as monerod decoded it.
 ///
 /// `data` is `get_block`'s nested `json` string, reparsed and re-serialised.
-/// The reparse is not ceremony: monerod emits that document in *declaration*
-/// order (`major_version, minor_version, timestamp, prev_id, nonce, miner_tx,
-/// tx_hashes`) and upstream re-sorts it alphabetically on the way out, so
-/// forwarding the string verbatim would be byte-wrong.
+/// monerod emits that document in *declaration* order (`major_version,
+/// minor_version, timestamp, prev_id, nonce, miner_tx, tx_hashes`), and every
+/// response here sorts its keys, so the string cannot be forwarded verbatim.
 pub async fn raw_block(
     State(state): Shared,
     Path(raw): Path<String>,
@@ -271,7 +267,7 @@ pub async fn raw_block(
         .map_err(|e| on_chain_error(&e, &block_not_found(id)))?;
 
     let value: serde_json::Value = serde_json::from_str(&got.json)
-        .map_err(|_| ApiError::upstream("Faild parsing raw blk data into json".to_owned()))?;
+        .map_err(|_| ApiError::daemon("Faild parsing raw blk data into json".to_owned()))?;
     Ok(ApiOk(value))
 }
 
@@ -294,7 +290,7 @@ pub async fn raw_transaction(
     };
 
     let value: serde_json::Value = serde_json::from_str(&entry.as_json)
-        .map_err(|_| ApiError::upstream("Faild parsing raw tx data into json".to_owned()))?;
+        .map_err(|_| ApiError::daemon("Faild parsing raw tx data into json".to_owned()))?;
     Ok(ApiOk(value))
 }
 
@@ -305,9 +301,8 @@ pub async fn raw_transaction(
 #[derive(Serialize)]
 pub struct FeeData {
     fee: u64,
-    /// Upstream reports the same number twice: the per-byte estimate is what
-    /// monerod returns, and `fee_per_kb` kept its name from before the
-    /// per-byte switch. Reproduced rather than corrected.
+    /// The same number as `fee`. monerod returns a per-byte estimate, and
+    /// this key kept its name from before the per-byte switch.
     fee_per_kb: u64,
     grace_blocks: u64,
 }
@@ -321,8 +316,9 @@ pub async fn fee_estimate(
     State(state): Shared,
     axum::extract::Query(q): axum::extract::Query<GraceQuery>,
 ) -> Result<ApiOk<FeeData>, ApiError> {
-    // Upstream only honours the parameter when it is all digits, and otherwise
-    // silently uses the default rather than erroring.
+    // The parameter is honoured only when it is all digits. Anything else
+    // takes the default, because this one is a query hint rather than the
+    // subject of the request.
     let grace_blocks = q
         .grace_blocks
         .as_deref()
@@ -334,7 +330,7 @@ pub async fn fee_estimate(
         .chain
         .fee_estimate(grace_blocks)
         .await
-        .map_err(|_| ApiError::upstream("Cant get dynamic fee estimate".to_owned()))?;
+        .map_err(|_| ApiError::daemon("Cant get dynamic fee estimate".to_owned()))?;
 
     Ok(ApiOk(FeeData {
         fee: estimate.fee,
@@ -349,32 +345,16 @@ pub async fn fee_estimate(
 
 /// The largest `limit` `/api/transactions` will honour.
 ///
-/// **A deliberate divergence from upstream, for safety rather than taste.**
+/// Every block in a page costs a network round trip to the daemon: one
+/// `get_block` for each block that holds transactions, because headers carry
+/// no `tx_hashes`, plus one `get_transactions` for the page. Without a cap a
+/// single unauthenticated `?limit=200` took 19 seconds of daemon work and
+/// returned 4 MB, and the header range cap of 1000 let one request reach a
+/// thousand blocks. At this cap a page costs 52 calls on a full chain and 3 on
+/// a quiet one, measured.
 ///
-/// Upstream does not clamp this. It can afford not to: it reads its own local
-/// database, so a large page costs it local disk reads. Every block here is a
-/// network round trip to the daemon -- one `get_block` for each block that
-/// holds transactions, because headers carry no `tx_hashes`, plus one
-/// `get_transactions` for the page.
-///
-/// Before this cap existed, a single unauthenticated `?limit=200` request
-/// took 19 seconds of daemon work and returned 4 MB, and the header range cap
-/// of 1000 meant one request could reach a thousand blocks -- against a
-/// daemon that would accept 128 such requests at once, with no bound on how
-/// many calls were in flight. That is a denial-of-service amplifier reachable
-/// by anyone who can make an HTTP request.
-///
-/// The figure first written here, "10,190 RPC calls", was wrong: it counted
-/// cache *misses*, and one `/get_transactions` carrying forty hashes is forty
-/// misses and one call. The true count was about four hundred. That mistake is
-/// why [`explorer_core::RpcChainSource::rpc_calls`] exists -- the number that
-/// matters is now counted rather than inferred. At the cap today a page costs
-/// one header range, one `get_block` per block that holds transactions, and
-/// one batched `get_transactions`: 52 calls on a full chain, and 3 on a quiet
-/// one, measured.
-///
-/// Clamped rather than rejected, because upstream silently substitutes a
-/// default for input it will not use, and a clamp keeps that habit.
+/// A larger `limit` is refused rather than clamped, so a caller never receives
+/// a page it did not ask for.
 pub const MAX_TRANSACTIONS_LIMIT: u64 = 50;
 
 /// The largest `limit` `/api/mempool` will honour.
@@ -421,9 +401,9 @@ pub struct BlockRow {
     age: String,
     hash: String,
     height: u64,
-    /// A JSON **float** here, and an integer in `/api/block`. Upstream holds
-    /// the same value in a `double` in one builder and a `uint64_t` in the
-    /// other; on one block that is 95511.0 against 95511.
+    /// A JSON **float** here, and an integer in `/api/block`. The two
+    /// endpoints report one value in two types: on one block that is 95511.0
+    /// against 95511.
     size: f64,
     timestamp: u64,
     timestamp_utc: String,
@@ -452,15 +432,13 @@ pub async fn transactions(
         .map_err(|e| on_chain_error(&e, "Cant get daemon info"))?;
     let height = info.height;
 
-    // Upstream computes the window in UNSIGNED arithmetic and only then
-    // narrows to int64, so a large `page` wraps modulo 2^64 and lands on
-    // recent blocks rather than erroring. Reproduced with explicit wrapping:
-    // a faithful transcription would panic here, because this build keeps
-    // overflow-checks on in release.
+    // A large `page` wraps modulo 2^64 and lands back on recent blocks
+    // instead of erroring. The wrap is written out, because this build keeps
+    // overflow-checks on in release and would otherwise panic.
     let span = limit.wrapping_mul(page.wrapping_add(1));
     #[allow(
         clippy::cast_possible_wrap,
-        reason = "the wrap is the behaviour being reproduced; see above"
+        reason = "the wrap is deliberate, see above"
     )]
     let start_signed = (height.wrapping_sub(span)) as i64;
     #[allow(clippy::cast_sign_loss, reason = "max(0) has already removed the sign")]
@@ -470,15 +448,14 @@ pub async fn transactions(
     let mut blocks = Vec::new();
     if start < height && limit > 0 {
         // One fan-out for the whole page rather than two calls per block. The
-        // partially-built array still travels with the error, because upstream
-        // assigns `data["blocks"]` before the loop that can fail -- it is
-        // empty here, since a batch either arrives or does not.
+        // partially-built array still travels with the error. It is empty
+        // here, since a batch either arrives or does not.
         let fetched = state.chain.blocks_in_range(start, end).await.map_err(|e| {
             let partial = serde_json::json!({ "blocks": [] });
             if e.is_not_found() {
                 ApiError::not_found(format!("Cant get block: {start}"))
             } else {
-                ApiError::upstream(format!("Cant get transactions in block: {start}"))
+                ApiError::daemon(format!("Cant get transactions in block: {start}"))
             }
             .with_partial(partial)
         })?;
@@ -492,9 +469,8 @@ pub async fn transactions(
                 height: header.height,
                 #[allow(
                     clippy::cast_precision_loss,
-                    reason = "upstream holds this in a double here and an \
-                              integer in /api/block, and the float is the \
-                              observable difference we reproduce; block \
+                    reason = "this endpoint reports the value as a float and \
+                              /api/block reports it as an integer, and block \
                               weights are far below 2^53 in any case"
                 )]
                 size: header.block_size as f64,
@@ -514,13 +490,9 @@ pub async fn transactions(
         current_height: height,
         limit,
         page,
-        // Ceiling division, and a deliberate divergence: upstream writes
-        // `height / limit`, which floors, so the final partial page is not
-        // counted. A client that trusts the number stops one page early and
-        // never sees the oldest blocks -- at height 137,082 with 25 per page
-        // it reports 5,483 pages when page 5,483 exists and holds seven
-        // blocks. The same floor is in upstream's mempool count and its HTML
-        // index. Guards a zero limit, which upstream also special-cases.
+        // Ceiling division. Flooring would leave the final partial page
+        // uncounted, and a client that trusts the number then stops one page
+        // early and never sees the oldest blocks. Guards a zero limit.
         total_page_no: if limit == 0 {
             0
         } else {
@@ -542,8 +514,8 @@ pub async fn mempool(
     State(state): Shared,
     axum::extract::Query(q): axum::extract::Query<PageQuery>,
 ) -> Result<ApiOk<MempoolData>, ApiError> {
-    // Upstream's default is effectively unbounded; it only pages when asked.
-    // Ours is capped, for the reason on MAX_MEMPOOL_LIMIT.
+    // Capped by default rather than only when asked, for the reason on
+    // MAX_MEMPOOL_LIMIT.
     let (page, limit) = q.parse(MAX_MEMPOOL_LIMIT, MAX_MEMPOOL_LIMIT)?;
 
     let pool = state.chain.mempool().await.map_err(|e| match e {
@@ -552,7 +524,7 @@ pub async fn mempool(
         )),
         other => {
             tracing::warn!("mempool: {other}");
-            ApiError::upstream(other.public_message())
+            ApiError::daemon(other.public_message())
         }
     })?;
 
@@ -671,9 +643,8 @@ pub struct NetworkInfoData {
     alt_blocks_count: u64,
     block_size_limit: u64,
     block_size_median: u64,
-    /// A JSON **string**, not a number. Upstream renders 128-bit difficulty
-    /// through a decimal-string helper because it does not fit a double, and
-    /// the README's numeric example is stale.
+    /// A JSON **string**, not a number. A 128-bit difficulty does not fit a
+    /// double, so a parser backed by doubles would lose it.
     cumulative_difficulty: String,
     current: bool,
     current_hf_version: u8,
@@ -719,11 +690,9 @@ pub async fn network_info(State(state): Shared) -> Result<ApiOk<NetworkInfoData>
         .ok()
         .map(|h| h.block_header.major_version);
 
-    // Despite the name, this field carries **bytes**. Upstream sums the pool's
-    // `blob_size` into `MempoolStatus::mempool_size`, whose own declaration
-    // says "size in bytes", and publishes it under the kbytes name unchanged --
-    // on master and on devel alike. Dividing by 1024 to honour the name would
-    // hand every existing consumer a number 1024 times too small.
+    // Despite the name, this field carries **bytes**. The name is part of the
+    // JSON API, so dividing by 1024 to honour it would hand every existing
+    // consumer a number 1024 times too small.
     //
     // Taken from `get_transaction_pool_stats`, which is the same total without
     // the pool attached to it. Unavailable on a restricted daemon, in which
@@ -743,10 +712,9 @@ pub async fn network_info(State(state): Shared) -> Result<ApiOk<NetworkInfoData>
         current: true,
         current_hf_version: hf.unwrap_or(0),
         difficulty: info.difficulty().to_string(),
-        // master reports the real estimate here and states the grace window
-        // beside it; devel replaced the first with a variable it never assigns
-        // -- a constant zero -- and dropped the second. Following master: a
-        // dead field is not a contract worth reproducing.
+        // The real estimate, with the grace window beside it. Both are
+        // reported, because a field that is always zero tells a client
+        // nothing.
         fee_estimate: fee.as_ref().map_or(0, |f| f.fee),
         fee_estimate_grace_blocks: 10,
         fee_per_kb: fee.as_ref().map_or(0, |f| f.fee),
@@ -792,7 +760,7 @@ pub async fn network_info(State(state): Shared) -> Result<ApiOk<NetworkInfoData>
 /// million.
 ///
 /// On mainnet this permits 5 characters and refuses 6, so the smallest set
-/// served is around 40 transactions. Matches upstream devel exactly.
+/// served is around 40 transactions.
 pub const MIN_ANONYMITY_SET: u64 = 20;
 
 /// The most matches this explorer will expand before refusing.
@@ -830,13 +798,12 @@ const _: () = assert!(
 ///
 /// `get_info.tx_count` counts only **non-coinbase** transactions, which on a
 /// quiet chain is a tiny fraction of the total: the local testnet reports 14
-/// against a real 134,875. Upstream reads `get_db().get_tx_count()`, which
-/// includes them, and the anonymity rule divides by this number — so using the
-/// RPC field directly refuses postfixes that are perfectly anonymous.
+/// against a real 134,875. The anonymity rule divides by this number, so
+/// using the RPC field directly would refuse postfixes that are perfectly
+/// anonymous.
 ///
 /// Each block carries exactly one coinbase transaction, so the total is the
-/// non-coinbase count plus the height. Checked against upstream on the same
-/// chain: 14 + 134,861 = 134,875, which is what it reports.
+/// non-coinbase count plus the height: 14 + 134,861 = 134,875 on that chain.
 fn total_transactions(info: &monerod_rpc::types::GetInfo) -> u64 {
     info.tx_count.saturating_add(info.height)
 }
@@ -1039,10 +1006,8 @@ pub async fn transaction_private(
 
 /// The widest block range this explorer will serve.
 ///
-/// **A deliberate divergence from upstream devel, for the same reason the
-/// `limit` clamp exists.** devel imposes no cap: it checks only that
-/// `start <= end <= current_height`, which it can afford because it reads its
-/// own database. Every block here costs the operator's daemon a call, so an
+/// Bounded for the same reason the `limit` cap exists. Every block costs the
+/// operator's daemon a call, so an
 /// uncapped `/api/blocks/0/3000000` would be three million of them from one
 /// unauthenticated request -- and a response to match, which has to be held in
 /// memory to be sent.
@@ -1121,8 +1086,8 @@ pub async fn blocks_range(
 /// `/api/transactions/recent` answers with a *set* rather than a page, so
 /// expanding every ring of it would be thousands of calls for a caller who
 /// wants one of them and can re-request that one through `/api/transaction`.
-/// Every transaction in the window shares one `current_height`, including the
-/// pool ones, which is what upstream reports.
+/// Every transaction in the window shares one `current_height`, the pool ones
+/// included.
 fn push_unexpanded(txs: &mut Vec<TxDetail>, entries: &[TxEntry], current_height: u64) {
     for entry in entries {
         let Ok(tx) = entry.parse_json() else { continue };
@@ -1137,10 +1102,9 @@ fn push_unexpanded(txs: &mut Vec<TxDetail>, entries: &[TxEntry], current_height:
 
 /// How many blocks back `/api/transactions/recent` reaches.
 ///
-/// Matches devel. The endpoint exists so that a caller who wants a *recent*
-/// transaction can take a window rather than name one — "a recent tx endpoint
-/// the newest-guess cannot beat", in upstream's words: if everyone asks for
-/// the same window, asking reveals nothing.
+/// The endpoint exists so that a caller who wants a *recent* transaction can
+/// take a window rather than name one. If everyone asks for the same window,
+/// asking reveals nothing.
 ///
 /// **The window is bounded; the pool beside it is not.** Every unconfirmed
 /// transaction is listed, because counting them in `mempool_txs_no` and then
@@ -1220,14 +1184,14 @@ mod tests {
 
     use super::*;
 
-    // Both bugs below were found by diffing against a live upstream devel
-    // build on the same chain, not by reading the code.
+    // Both bugs below were found by comparing live output on a real chain,
+    // not by reading the code.
 
     /// A transaction still in the pool has no block, so no block timestamp --
     /// monerod puts the time it arrived in `received_timestamp` instead.
     /// Reading `block_timestamp` regardless dated every unconfirmed
-    /// transaction 1970-01-01, which was found by comparing against upstream
-    /// on a chain that, unlike the earlier one, had a non-empty pool.
+    /// transaction 1970-01-01, which only showed up on a chain with a
+    /// non-empty pool.
     #[test]
     fn a_pool_transaction_is_dated_by_when_it_arrived() {
         let entry: TxEntry = serde_json::from_value(serde_json::json!({
@@ -1254,8 +1218,8 @@ mod tests {
     }
 
     /// An odd-length postfix must narrow to its TRAILING bytes. Taking the
-    /// leading ones returned an empty set while still reporting success --
-    /// upstream found 37 matches for "abc" where this returned 0.
+    /// leading ones returned an empty set while still reporting success:
+    /// 0 matches for "abc" where the chain held 37.
     #[test]
     fn an_odd_postfix_narrows_to_its_trailing_bytes() {
         assert_eq!(whole_byte_suffix("abc"), "bc");
@@ -1267,9 +1231,9 @@ mod tests {
     }
 
     /// The anonymity rule, which is the entire privacy property of the
-    /// endpoint. Numbers are upstream's, checked against the same chain.
+    /// endpoint. The numbers are measured on the chains named below.
     #[test]
-    fn the_anonymity_rule_matches_upstream() {
+    fn the_anonymity_rule_holds_at_both_scales() {
         // The local testnet: 134,875 transactions.
         const CHAIN: u64 = 134_875;
         assert!(check_postfix("00", CHAIN, Limits::default()).is_ok());
@@ -1281,7 +1245,7 @@ mod tests {
             Err(PostfixRefusal::TooLongToBeAnonymous { .. })
         ));
 
-        // Mainnet-scale: upstream's comment says this permits 5 and refuses 6.
+        // Mainnet-scale: 5 characters qualify and 6 do not.
         const MAINNET: u64 = 67_000_000;
         assert!(check_postfix("abcde", MAINNET, Limits::default()).is_ok());
         assert!(matches!(

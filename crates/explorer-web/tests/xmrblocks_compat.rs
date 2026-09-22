@@ -1,16 +1,11 @@
-//! Proof that oxblocks' `/api/*` output matches upstream's, built from captured
+//! Proof that the `/api/*` bodies match xmrblocks, built from captured
 //! responses so it needs neither a daemon nor a network.
-//!
-//! The target is upstream's **devel** branch. devel and master have genuinely
-//! diverged — 44 commits each way — so this is a real choice rather than a
-//! default; see README.md for what is taken from each.
 //!
 //! Both sides are real captures **of the same chain**:
 //!
-//! * `fixtures/devel-api/` — responses from a devel build of
-//!   `onion-monero-blockchain-explorer`, serving the local testnet.
-//! * `fixtures/testnet/devel_*` — monerod's answers for the same blocks and
-//!   transactions, from the daemon that explorer was reading.
+//! * `fixtures/devel-api/` holds xmrblocks responses for the local testnet.
+//! * `fixtures/testnet/devel_*` holds monerod's answers for the same blocks
+//!   and transactions, from the daemon that explorer was reading.
 //!
 //! Because both come from one chain at one moment, there is nothing
 //! tip-relative to excuse: `current_height` and `confirmations` must match
@@ -52,7 +47,7 @@ fn diff(ours: &Value, theirs: &Value, path: &str, out: &mut Vec<String>) {
                 match (a.get(k), b.get(k)) {
                     (Some(x), Some(y)) => diff(x, y, &format!("{path}/{k}"), out),
                     (None, Some(y)) => {
-                        out.push(format!("{path}/{k}: missing from ours (upstream {y})"));
+                        out.push(format!("{path}/{k}: missing from ours (xmrblocks {y})"));
                     }
                     (Some(x), None) => out.push(format!("{path}/{k}: extra in ours ({x})")),
                     (None, None) => unreachable!("key came from one of the two maps"),
@@ -68,7 +63,7 @@ fn diff(ours: &Value, theirs: &Value, path: &str, out: &mut Vec<String>) {
             }
         }
         (x, y) if x == y => {}
-        (x, y) => out.push(format!("{path}: {x} vs upstream {y}")),
+        (x, y) => out.push(format!("{path}: {x} vs xmrblocks {y}")),
     }
 }
 
@@ -78,7 +73,7 @@ fn assert_identical(ours: &Value, capture: &str) {
     diff(ours, &theirs, "", &mut out);
     assert!(
         out.is_empty(),
-        "{capture} differs from upstream devel in {} place(s):\n  {}",
+        "{capture} differs from xmrblocks in {} place(s):\n  {}",
         out.len(),
         out.join("\n  ")
     );
@@ -122,24 +117,24 @@ fn render_block(height: u64) -> Value {
 }
 
 #[test]
-fn a_block_with_a_ring_transaction_matches_devel_exactly() {
+fn a_block_with_a_ring_transaction_matches_xmrblocks_exactly() {
     assert_identical(&render_block(134_721), "block_134721.json");
 }
 
 #[test]
-fn a_block_with_a_seven_input_transaction_matches_devel_exactly() {
+fn a_block_with_a_seven_input_transaction_matches_xmrblocks_exactly() {
     assert_identical(&render_block(3_900), "block_3900.json");
 }
 
 #[test]
-fn a_coinbase_only_block_matches_devel_exactly() {
+fn a_coinbase_only_block_matches_xmrblocks_exactly() {
     assert_identical(&render_block(134_720), "block_coinbase_only.json");
 }
 
-/// `/api/blocks/<start>/<end>`, devel's k-anonymous block lookup. Its `data` is
-/// a bare **list** of the single-block object, not an object wrapping one.
+/// `/api/blocks/<start>/<end>`, the k-anonymous block lookup. Its `data` is a
+/// bare **list** of single-block objects, not an object wrapping one.
 #[test]
-fn a_block_range_matches_devel_exactly() {
+fn a_block_range_matches_xmrblocks_exactly() {
     let blocks: Vec<Value> = (134_719..=134_721)
         .map(|h| render_block(h)["data"].clone())
         .collect();
@@ -148,7 +143,7 @@ fn a_block_range_matches_devel_exactly() {
 }
 
 #[test]
-fn a_ring_transaction_matches_devel_exactly() {
+fn a_ring_transaction_matches_xmrblocks_exactly() {
     use explorer_core::{Hash32, ResolvedInput, RingMember};
     use monerod_rpc::types::{GetOutsResponse, GetTransactionsResponse, TxIn};
 
@@ -199,9 +194,8 @@ fn a_ring_transaction_matches_devel_exactly() {
     assert_identical(&ours, "transaction_ring.json");
 }
 
-/// devel emits `unlock_time` where master does not. This is the field that
-/// retargeting turned on, so it gets an assertion of its own rather than only
-/// being covered incidentally by the whole-object comparisons.
+/// `unlock_time` gets an assertion of its own rather than being covered only
+/// by the whole-object comparisons.
 #[test]
 fn unlock_time_is_present_and_carries_the_real_value() {
     let block = render_block(134_721);
@@ -210,14 +204,14 @@ fn unlock_time_is_present_and_carries_the_real_value() {
     for tx in txs {
         assert!(
             tx.get("unlock_time").is_some(),
-            "every transaction object carries unlock_time on devel"
+            "every transaction object carries unlock_time"
         );
     }
 
     // The coinbase of block 134721 unlocks 60 blocks later, which is the one
     // place the value is neither zero nor arbitrary.
-    let upstream = load("devel-api/block_134721.json");
-    let theirs = upstream["data"]["txs"][0]["unlock_time"].as_u64();
+    let captured = load("devel-api/block_134721.json");
+    let theirs = captured["data"]["txs"][0]["unlock_time"].as_u64();
     assert_eq!(txs[0]["unlock_time"].as_u64(), theirs);
     assert!(
         theirs.is_some_and(|t| t > 0),

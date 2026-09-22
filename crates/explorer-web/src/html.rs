@@ -1,10 +1,8 @@
 //! The HTML interface.
 //!
 //! Templates are compiled by askama, which escapes every interpolation by
-//! default. That is the whole defence against the class of bug that made
-//! upstream's 7,178-line `page.h` risky: there, markup was assembled by string
-//! concatenation, so a missed escape was invisible. Here an unescaped value
-//! requires writing `|safe`, which greps.
+//! default. Markup assembled by string concatenation hides a missed escape.
+//! Here an unescaped value requires writing `|safe`, which greps.
 //!
 //! No JavaScript, no cookies, no images, no external requests. The
 //! Content-Security-Policy is `default-src 'none'; style-src 'self'`, so the
@@ -693,13 +691,12 @@ fn visible_amount(atomic: u64) -> Option<String> {
 
 /// The index shows this so it agrees with the block page's own count.
 ///
-/// `num_txes` is upstream's count of non-coinbase transactions -- see
-/// `BlockHeader::num_txes` -- and every valid block carries exactly one
-/// coinbase besides those, a consensus rule this crate does not itself
-/// enforce but can rely on. The block page counts every row it renders
-/// instead of applying this arithmetic a second time, so the two derivations
-/// cannot silently drift apart the way `num_txes` alone once did: the index
-/// showed 16, the block page (which folded the coinbase in) showed 17.
+/// `BlockHeader::num_txes` counts non-coinbase transactions only, and every
+/// valid block carries exactly one coinbase besides those, a consensus rule
+/// this crate does not itself enforce but can rely on. The block page counts
+/// every row it renders instead of applying this arithmetic a second time, so
+/// the two derivations cannot silently drift apart the way `num_txes` alone
+/// once did: the index showed 16, the block page showed 17.
 fn total_tx_count(num_txes: u64) -> u64 {
     num_txes.saturating_add(1)
 }
@@ -1330,9 +1327,8 @@ mod tests {
         })
     }
 
-    /// The defence the whole HTML layer rests on. Upstream builds markup by
-    /// string concatenation across 7,178 lines, where a missed escape is
-    /// invisible; here escaping is the default and opting out requires `|safe`.
+    /// The defence the whole HTML layer rests on. Escaping is the default,
+    /// and opting out requires `|safe`.
     #[test]
     fn a_hostile_search_term_is_escaped_in_the_page() {
         let page = ErrorPage {
@@ -1480,7 +1476,7 @@ mod tests {
             ApiError::bad_request("x").status,
             ApiError::not_found("x").status,
             ApiError::internal("x").status,
-            ApiError::upstream("x").status,
+            ApiError::daemon("x").status,
             ApiError::unsupported("x").status,
         ];
         for code in codes {

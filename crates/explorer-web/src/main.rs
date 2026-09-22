@@ -70,7 +70,7 @@ fn router(config: &Config, state: Arc<AppState>) -> Router {
         .route("/api/mempool", get(handlers::mempool))
         .route("/api/search/{query}", get(handlers::search))
         .route("/api/networkinfo", get(handlers::network_info))
-        // k-anonymous lookups, from upstream devel
+        // k-anonymous lookups
         .route("/api/blocks/{start}/{end}", get(handlers::blocks_range))
         .route(
             "/api/transaction/private/{postfix}",
@@ -95,9 +95,9 @@ fn router(config: &Config, state: Arc<AppState>) -> Router {
         .with_state(state)
         .route(
             "/robots.txt",
-            // The C++ explorer ships the same policy. An explorer is a mirror
-            // of public data; there is nothing to gain from being crawled, and
-            // crawlers are expensive here because every page costs RPC calls.
+            // An explorer mirrors public data, so there is nothing to gain
+            // from being crawled, and crawlers are expensive here because
+            // every page costs RPC calls.
             get(|| async { "User-agent: *\nDisallow: /\n" }),
         );
 
@@ -142,7 +142,7 @@ fn router(config: &Config, state: Arc<AppState>) -> Router {
             )
             .layer(RequestBodyLimitLayer::new(config.max_body_bytes))
             // 504 rather than 408: when this fires it is almost always the
-            // upstream daemon being slow, not the client being slow.
+            // daemon being slow, not the client being slow.
             .layer(TimeoutLayer::with_status_code(
                 StatusCode::GATEWAY_TIMEOUT,
                 config.request_timeout(),
@@ -165,7 +165,7 @@ fn router(config: &Config, state: Arc<AppState>) -> Router {
 ///
 /// The cache is the only state this process holds, so its hit counts are the
 /// one operational number worth exposing. Deliberately says nothing about the
-/// daemon: a health check that fails when an upstream is slow turns one
+/// daemon: a health check that fails when the daemon is slow turns one
 /// degraded dependency into an outage.
 async fn health(
     axum::extract::State(state): api::handlers::Shared,

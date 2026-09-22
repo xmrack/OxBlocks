@@ -1,7 +1,6 @@
 //! Rendering helpers shared by the JSON API and the HTML pages.
 
-/// Format a unix timestamp as upstream's `timestamp_utc`: `%Y-%m-%d %H:%M:%S`
-/// in UTC.
+/// Format a unix timestamp as `timestamp_utc`: `%Y-%m-%d %H:%M:%S` in UTC.
 ///
 /// Implemented rather than pulled in as a dependency. The conversion is a
 /// closed-form integer algorithm (Howard Hinnant's `civil_from_days`), it is
@@ -68,9 +67,8 @@ pub fn decimal(input: &str) -> Option<u64> {
 
 /// Seconds since the Unix epoch, by this machine's clock.
 ///
-/// The only honest answer to "how long ago", and what upstream uses
-/// (`std::time(nullptr)`). The two cheaper-looking substitutes are both wrong
-/// in the case a reader cares about most:
+/// The only honest answer to "how long ago". The two cheaper-looking
+/// substitutes are both wrong in the case a reader cares about most:
 ///
 /// * monerod's `adjusted_time` is derived from recent block timestamps, not
 ///   from a clock, so a chain that has stopped reports its newest block as
@@ -85,19 +83,18 @@ pub fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// Upstream's `age` string: the gap between two timestamps, rendered
-/// `h:m:s`, `d:h:m:s`, or `y:d:h:m:s` depending on magnitude.
+/// The `age` string: the gap between two timestamps, rendered `h:m:s`,
+/// `d:h:m:s`, or `y:d:h:m:s` depending on magnitude.
 ///
-/// Reproduces `xmreg::get_age` and `timestamp_difference` exactly, including
-/// two details that look like bugs and are not ours to fix:
+/// Two details look like bugs and are part of the format:
 ///
 /// * the difference is **absolute**, so a block whose timestamp is ahead of
-///   the server clock reports a positive age rather than a negative one;
-/// * a year is a flat 31,536,000 seconds — 365 days, no leap handling — so
-///   the `y` field drifts against the calendar by design.
+///   the server clock reports a positive age rather than a negative one,
+/// * a year is a flat 31,536,000 seconds, 365 days with no leap handling, so
+///   the `y` field drifts against the calendar.
 ///
 /// The day field is three digits wide in the `y:d:h:m:s` form and two in the
-/// `d:h:m:s` form, which is upstream's formatting, not a typo.
+/// `d:h:m:s` form. That is the format, not a typo.
 #[must_use]
 pub fn age(t1: u64, t2: u64) -> String {
     const YEAR: u64 = 31_536_000;
@@ -135,11 +132,11 @@ mod tests {
 
     use super::*;
 
-    /// Both values are lifted from real captures checked in under `fixtures/`,
-    /// so these pin against the reference implementation rather than against
+    /// Both values are lifted from real captures checked in under
+    /// `fixtures/`, so these pin against recorded output rather than against
     /// my own arithmetic.
     #[test]
-    fn renders_the_timestamps_upstream_rendered() {
+    fn renders_the_timestamps_the_captures_hold() {
         // fixtures/mainnet/gold_block_2000000.json
         assert_eq!(timestamp_utc(1_577_680_194), "2019-12-30 04:29:54");
         // fixtures/testnet/get_transactions_ring.json, block 134721
@@ -178,7 +175,7 @@ mod tests {
     #[test]
     fn age_widens_its_format_as_the_gap_grows() {
         assert_eq!(age(1000, 1000), "00:00:00");
-        // The gap upstream rendered as "00:04:06" in a captured response.
+        // The gap a captured response rendered as "00:04:06".
         assert_eq!(age(1_789_790_544 + 246, 1_789_790_544), "00:04:06");
         assert_eq!(age(3661, 0), "01:01:01");
         assert_eq!(age(86_399, 0), "23:59:59");
@@ -189,17 +186,17 @@ mod tests {
         assert_eq!(age(31_536_000 + 86_400 * 5 + 3661, 0), "01:005:01:01:01");
     }
 
-    /// Upstream takes the absolute difference, so a block timestamped ahead of
-    /// the server clock -- which happens, monerod allows some drift -- reports
-    /// a positive age rather than underflowing.
+    /// The difference is absolute, so a block timestamped ahead of the server
+    /// clock -- which happens, monerod allows some drift -- reports a positive
+    /// age rather than underflowing.
     #[test]
     fn age_is_absolute_so_a_future_timestamp_does_not_underflow() {
         assert_eq!(age(0, 3661), "01:01:01");
         assert_eq!(age(100, 200), age(200, 100));
     }
 
-    /// A flat 31,536,000-second year is upstream's definition. Pinned so the
-    /// "fix" of using a calendar year is a deliberate divergence, not a tidy-up.
+    /// A year is a flat 31,536,000 seconds. Pinned so that switching to a
+    /// calendar year is a deliberate change, not a tidy-up.
     #[test]
     fn a_year_is_three_hundred_and_sixty_five_days_exactly() {
         assert_eq!(age(365 * 86_400, 0), "01:000:00:00:00");

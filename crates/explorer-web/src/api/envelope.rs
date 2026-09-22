@@ -8,22 +8,12 @@
 //! {"data": null, "message": "<message>", "status": "error"}
 //! ```
 //!
-//! The HTTP status is **not** upstream's. xmrblocks answers 200 to everything,
-//! including failures, and leaves the outcome to the `status` member alone. A
-//! caller that reads status codes, and every proxy, cache and monitor between
-//! the two, is then told that a refused request succeeded. Here the code says
-//! what happened: 400 for input this explorer will not parse, 404 for
-//! something the chain does not hold, 5xx when the fault is ours or the
-//! daemon's. The body is unchanged, so a client that reads `status` behaves
-//! the same.
+//! The HTTP status says the same thing as the envelope: 400 for input this
+//! explorer will not parse, 404 for something the chain does not hold, 5xx
+//! when the fault is ours or the daemon's. A client that reads the `status`
+//! member instead sees the same three shapes either way.
 //!
-//! Note `"data": null` on the error form. The researched spec asserted `{}`
-//! and reasoned about it in prose; a verifier compiled the vendored
-//! nlohmann 3.12.0 and showed an empty braced-init-list picks the default
-//! constructor, giving `value_t::null`. Upstream's own code proves it too:
-//! `page.h:4550` initialises `mixins` the same way and then calls
-//! `push_back`, which only converts `null` to an array and throws on an
-//! object. Eleven documented failure forms were byte-wrong on that point.
+//! The error form carries `"data": null`, not `{}`.
 
 use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -44,10 +34,9 @@ pub struct ApiError {
     pub outcome: Outcome,
     pub status: StatusCode,
     pub message: String,
-    /// Upstream sometimes returns partially-built data alongside an error —
-    /// `/api/transactions` assigns `data["blocks"]` before the loop that can
-    /// fail, so its error form carries whatever blocks were collected. When
-    /// that applies, the partial value goes here.
+    /// `/api/transactions` fills its `blocks` array before the step that can
+    /// fail, so its error form carries whatever blocks it had. That partial
+    /// value goes here.
     pub partial: Option<serde_json::Value>,
 }
 
@@ -74,7 +63,7 @@ impl ApiError {
 
     /// Answers 502: the daemon could not be reached, or answered with
     /// something this explorer cannot use.
-    pub fn upstream(message: impl Into<String>) -> Self {
+    pub fn daemon(message: impl Into<String>) -> Self {
         Self::new(Outcome::Error, StatusCode::BAD_GATEWAY, message)
     }
 
@@ -132,7 +121,7 @@ impl ApiError {
 #[derive(Debug, Clone)]
 pub struct ApiOk<T>(pub T);
 
-/// Headers upstream sets on every JSON response (`main.cpp:29-37`).
+/// Headers on every JSON response.
 fn api_headers() -> [(HeaderName, HeaderValue); 3] {
     [
         (
@@ -210,8 +199,7 @@ mod tests {
             })
     }
 
-    /// The body is upstream's, including the wording, which spells "Cant"
-    /// without an apostrophe.
+    /// The message is echoed as written, apostrophe-free "Cant" included.
     #[test]
     fn a_failure_is_data_title() {
         let r = ApiError::bad_request("Cant parse tx hash: abc").into_response();
@@ -229,7 +217,7 @@ mod tests {
         for (expected, built) in [
             (StatusCode::BAD_REQUEST, ApiError::bad_request("x")),
             (StatusCode::NOT_FOUND, ApiError::not_found("x")),
-            (StatusCode::BAD_GATEWAY, ApiError::upstream("x")),
+            (StatusCode::BAD_GATEWAY, ApiError::daemon("x")),
             (StatusCode::SERVICE_UNAVAILABLE, ApiError::unsupported("x")),
             (StatusCode::INTERNAL_SERVER_ERROR, ApiError::internal("x")),
         ] {
@@ -252,7 +240,7 @@ mod tests {
             );
         }
         for built in [
-            ApiError::upstream("x"),
+            ApiError::daemon("x"),
             ApiError::unsupported("x"),
             ApiError::internal("x"),
         ] {
@@ -265,8 +253,7 @@ mod tests {
         }
     }
 
-    /// The correction: `data` is null, not `{}`. A verifier compiled nlohmann
-    /// to establish this after the spec asserted the opposite.
+    /// `data` is null on the error form, not `{}`.
     #[test]
     fn an_error_carries_a_null_data_and_a_message() {
         let r = ApiError::internal("boom").into_response();
@@ -277,10 +264,10 @@ mod tests {
     }
 
     /// `/api/transactions` returns whatever blocks it had collected before the
-    /// failure, because upstream assigns the array before the loop.
+    /// failure.
     #[test]
     fn an_error_can_carry_partially_built_data() {
-        let r = ApiError::upstream("Cant get block: 99")
+        let r = ApiError::daemon("Cant get block: 99")
             .with_partial(serde_json::json!({"blocks": [{"height": 100}]}))
             .into_response();
         assert_eq!(
@@ -319,11 +306,11 @@ mod tests {
         );
     }
 
-    /// nlohmann stores objects in a `std::map`, so upstream emits keys in
-    /// byte-ascending order, recursively. serde emits struct fields in
-    /// *declaration* order, so every response struct must declare its fields
-    /// alphabetically. This checks the envelope itself; the response shapes
-    /// are covered by `shapes::tests::declaration_order_is_alphabetical`.
+    /// Keys are emitted in byte-ascending order, recursively. serde emits
+    /// struct fields in *declaration* order, so every response struct must
+    /// declare its fields alphabetically. This checks the envelope itself.
+    /// The response shapes are covered by
+    /// `shapes::tests::declaration_order_is_alphabetical`.
     #[test]
     fn envelope_keys_are_alphabetical() {
         let e = ApiError::internal("x").into_response();

@@ -820,9 +820,8 @@ pub struct GetTransactionPoolStats {
 /// serde ignores them.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PoolStats {
-    /// Sum of every pool transaction's `blob_size`, which is exactly what
-    /// upstream publishes as `tx_pool_size_kbytes` -- a byte count despite the
-    /// name.
+    /// Sum of every pool transaction's `blob_size`. The JSON API publishes it
+    /// as `tx_pool_size_kbytes`, which is a byte count despite the name.
     #[serde(default)]
     pub bytes_total: u64,
     #[serde(default)]

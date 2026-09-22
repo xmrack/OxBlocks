@@ -530,8 +530,7 @@ impl RpcChainSource {
     /// with one good one returns `status: "Failed"` and no `outs` key at all —
     /// so a batch cannot say which input was the bad one. One call per input
     /// can, which is how one unresolvable input avoids blanking every ring on
-    /// the page. Upstream drops just the offending input and renders the rest,
-    /// and so do we.
+    /// the page. The offending input is dropped and the rest are rendered.
     ///
     /// Never returns `Err` for an unresolvable ring: that is a per-input
     /// display state, not a page failure.
@@ -753,9 +752,7 @@ impl RpcChainSource {
 ///
 /// monerod returns the pool in its own internal order, which is neither
 /// arrival order nor stable between calls. Newest first is the only order a
-/// pool listing means anything in, and it is what upstream sorts to -- its own
-/// comment is "mempool txs are not sorted base on their arival time, so we
-/// sort it here".
+/// pool listing means anything in, so the pool is sorted here.
 fn newest_first(txs: &mut [monerod_rpc::types::PoolTxInfo]) {
     txs.sort_by_key(|t| std::cmp::Reverse(t.receive_time));
 }
@@ -868,11 +865,10 @@ mod tests {
     ///
     /// monerod fails an entire `get_outs` if any one index is out of range, so
     /// asking for a whole transaction's rings at once means one bad input can
-    /// take every other ring down with it. Upstream drops just the offending
-    /// input and renders the rest, and the fallback to one call per input
-    /// exists so that this does too. Built from a real transaction, because a
-    /// ring that resolves has to actually resolve for the test to mean
-    /// anything.
+    /// take every other ring down with it. The fallback to one call per input
+    /// exists so that one bad input costs only its own ring. Built from a real
+    /// transaction, because a ring that resolves has to actually resolve for
+    /// the test to mean anything.
     #[tokio::test]
     #[ignore = "needs the local testnet node on 127.0.0.1:28081"]
     async fn one_unresolvable_input_does_not_blank_the_rings_beside_it() {
@@ -1001,7 +997,7 @@ mod tests {
     }
 
     /// A coinbase has a `gen` input, which is not a spend and carries no key
-    /// image. Upstream reports no inputs for one, and so must this.
+    /// image. No inputs are reported for one.
     #[test]
     fn a_coinbase_input_is_not_listed_as_a_spend() {
         let tx: TxJson = serde_json::from_value(serde_json::json!({

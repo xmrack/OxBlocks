@@ -87,13 +87,13 @@ pub struct Config {
     /// Seconds before an inbound HTTP request is abandoned.
     ///
     /// Held below the RPC timeout on purpose: a request that has already
-    /// outlived its own deadline should not keep an upstream call alive.
+    /// outlived its own deadline should not keep an RPC call alive.
     #[arg(long, env = "OXBLOCKS_REQUEST_TIMEOUT", default_value_t = 25)]
     pub request_timeout_secs: u64,
 
     /// Maximum number of requests processed concurrently.
     ///
-    /// This is the backpressure valve. Every request costs upstream RPC calls,
+    /// This is the backpressure valve. Every request costs RPC calls,
     /// so an unbounded server would turn a traffic spike into a self-inflicted
     /// denial of service against its own daemon.
     #[arg(long, env = "OXBLOCKS_MAX_CONCURRENT", default_value_t = 128)]
@@ -241,7 +241,7 @@ mod tests {
         assert_eq!(c.bind.to_string(), "127.0.0.1:8081");
     }
 
-    /// The request deadline must stay under the upstream deadline, or a client
+    /// The request deadline must stay under the RPC deadline, or a client
     /// that has already given up still pins an RPC call open.
     #[test]
     fn request_timeout_is_shorter_than_rpc_timeout_by_default() {

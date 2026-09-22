@@ -16,8 +16,8 @@
 //! the answer instead of a replacement for it.
 //!
 //! The behaviours below are monerod's, quirks included. Where they look wrong
-//! they are still what the network and the C++ explorer do, and matching them
-//! is the whole point:
+//! they are still what the network does, and matching them is the whole
+//! point:
 //!
 //! * A length varint cut off by the end of the buffer is **accepted** with its
 //!   partially accumulated value, so `02 80` is a valid empty nonce. Only an
@@ -377,13 +377,11 @@ impl ParsedTxExtra {
         self.pub_keys().next()
     }
 
-    /// The transaction public key as the **C++ explorer** picks it: the second
-    /// `0x01` field when two or more exist, otherwise the first.
+    /// The transaction public key as the pages report it: the second `0x01`
+    /// field when two or more exist, otherwise the first.
     ///
-    /// This looks like a bug and is one — it dates to a wallet that wrote two
-    /// pubkeys — but the explorer's HTML pages show that value, so reproducing
-    /// it is what output compatibility means
-    /// (`xmreg::get_tx_pub_key_from_received_outs`).
+    /// The rule dates to a wallet that wrote two pubkeys. It is the value
+    /// every explorer of this API shows, so it is the value shown here.
     pub fn tx_pub_key_explorer_compat(&self) -> Option<Hash32> {
         let mut keys = self.pub_keys();
         let first = keys.next()?;
@@ -414,7 +412,7 @@ impl ParsedTxExtra {
         self.nonces().next()
     }
 
-    /// The payment id as the **C++ explorer** reports it (`xmreg::get_payment_id`).
+    /// The payment id as the pages and the JSON API report it.
     ///
     /// Two deliberate narrownesses, both of which change the answer:
     /// * a blob that failed to parse *anywhere* yields no payment id at all,
@@ -1606,9 +1604,8 @@ mod tests {
 
     #[test]
     fn the_payment_id_getter_refuses_partial_results_but_the_pubkey_getter_does_not() {
-        // The C++ explorer's asymmetry, and it is load-bearing for output
-        // compatibility: same blob, two different answers about whether the
-        // decoded prefix counts.
+        // The asymmetry is load-bearing for output compatibility: same blob,
+        // two different answers about whether the decoded prefix counts.
         let key = "11".repeat(32);
         let pid = "cd".repeat(32);
         let extra = bytes(&format!("01{key}022100{pid}05ff"));

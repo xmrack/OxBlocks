@@ -19,7 +19,7 @@ pub struct TxFacts {
     /// `rct_signatures.type`, or 0 where there is none -- every v1 transaction
     /// and every v2 coinbase.
     pub rct_type: u8,
-    /// The ring size of the first key input, which is what upstream calls
+    /// The ring size of the first key input, which the JSON API calls
     /// `mixin`. Not ring size minus one, and 0 for a coinbase.
     pub ring_size: usize,
     pub fee: u64,

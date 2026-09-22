@@ -4,25 +4,21 @@
 <h1>JSON API</h1>
 
 <p>
-  Every endpoint below is a <code class="lit">GET</code> and needs no key, no
-  header and no session. Responses are compatible field-for-field with
-  <em>onion-monero-blockchain-explorer</em> wherever an endpoint exists in both,
-  so a client written against that explorer works here unchanged.
+  Every endpoint below is a <code class="lit">GET</code>. None of them needs a
+  key, a header or a session. The response bodies match those of xmrblocks, so
+  a client written for that explorer reads these without changes.
 </p>
 
 <p>
-  Each endpoint below carries a runnable <code class="lit">curl</code> line.
-  They refer to <code class="lit">$OXBLOCKS</code> rather than a hostname: set
-  it to this explorer's base URL, scheme included, and the examples run as
-  written. No URL is printed on this page on purpose &mdash; an explorer is
-  often read over Tor, and a page that names a host gives the reader something
-  to click that leaves it.
+  Each endpoint carries a <code class="lit">curl</code> line. The lines name
+  <code class="lit">$OXBLOCKS</code> instead of a host. Set it to the base URL
+  of this explorer, scheme included, and the examples run as written.
 </p>
 
 <h2>The envelope</h2>
 
 <p>
-  Every answer this API produces is wrapped in one of three shapes.
+  Every answer takes one of three shapes.
 </p>
 
 <pre class="blob">{"data": { … }, "status": "success"}
@@ -31,21 +27,17 @@
 
 <p>
   <code class="lit">fail</code> means the caller asked for something this
-  explorer will not answer: an argument that will not parse, a height past the
-  tip. <code class="lit">error</code> means this explorer or its daemon could
-  not answer. Error messages are deliberately vague about internals: an
-  unreachable daemon reports &ldquo;the explorer could not reach its
-  daemon&rdquo; rather than naming the address it failed to reach.
+  explorer will not answer, such as an argument that does not parse or a height
+  past the tip. <code class="lit">error</code> means this explorer or its daemon
+  could not answer. Messages say little about internals. A daemon the explorer
+  cannot reach gives you &ldquo;the explorer could not reach its daemon&rdquo;
+  and no address.
 </p>
 
 <h3>Status codes</h3>
 
 <p>
-  The HTTP status says the same thing as the envelope. This is the one place
-  the API departs from upstream, which answers
-  <code class="lit">200</code> to everything and leaves the outcome to the
-  <code class="lit">status</code> member alone. A client that reads
-  <code class="lit">status</code> is unaffected.
+  The HTTP status says the same thing as the envelope.
 </p>
 
 <table>
@@ -56,46 +48,46 @@
     <tr><td class="num">404</td><td>The argument was well formed and the chain does not hold it.</td></tr>
     <tr><td class="num">500</td><td>A bug here.</td></tr>
     <tr><td class="num">502</td><td>The daemon could not be reached, or answered with something unusable.</td></tr>
-    <tr><td class="num">503</td><td>This deployment cannot serve the endpoint, because of how its daemon is built or configured.</td></tr>
+    <tr><td class="num">503</td><td>This deployment cannot serve the endpoint, because its daemon lacks the call.</td></tr>
   </tbody>
 </table>
 
 <p>
-  Keys are sorted alphabetically, recursively, throughout. Enveloped responses
-  carry <code class="lit">Content-Type: application/json</code> and
-  <code class="lit">Access-Control-Allow-Origin: *</code>, and are compressed
-  with gzip, deflate or brotli if the request offers one.
+  Keys are sorted alphabetically at every level. Enveloped responses carry
+  <code class="lit">Content-Type: application/json</code> and
+  <code class="lit">Access-Control-Allow-Origin: *</code>. The server compresses
+  them with gzip, deflate or brotli when the request offers one.
 </p>
 
 <p>
-  <strong>Three answers are not enveloped</strong>, because they are produced
-  above this API rather than by it: a request that outlives its deadline is a
-  bare <code class="lit">504</code>, a request body over the limit is a
-  <code class="lit">413</code>, and a panic caught in a handler is a
-  <code class="lit">500</code>. All three are <code class="lit">text/plain</code>
-  and carry no <code class="lit">status</code> member. Every one of them still
-  carries the security headers.
+  <strong>Three answers are not enveloped</strong>, because the layers above
+  this API produce them. A request that outlives its deadline gets a bare
+  <code class="lit">504</code>. A request body over the limit gets a
+  <code class="lit">413</code>. A panic caught in a handler gets a
+  <code class="lit">500</code>. All three are
+  <code class="lit">text/plain</code> and carry no
+  <code class="lit">status</code> member. All three still carry the security
+  headers.
 </p>
 
 <p>
-  <code class="lit">HEAD</code> is served wherever <code class="lit">GET</code>
-  is, with the body stripped. Any other method gets a bare
+  <code class="lit">HEAD</code> works wherever <code class="lit">GET</code>
+  works, without the body. Any other method gets a bare
   <code class="lit">405</code> with <code class="lit">Allow: GET,HEAD</code> and
-  <strong>no</strong> <code class="lit">Access-Control-*</code> headers &mdash;
-  there is no preflight handler, so a cross-origin request that triggers one
-  will fail. Simple cross-origin <code class="lit">GET</code>s work.
+  <strong>no</strong> <code class="lit">Access-Control-*</code> headers. There
+  is no preflight handler, so a cross-origin request that needs one fails. A
+  simple cross-origin <code class="lit">GET</code> works.
 </p>
 
 <h2>How arguments are read</h2>
 
 <p>
-  Arguments are read as given. A height is decimal digits, a hash is 64 hex
-  characters of either case, and a postfix is hex. Anything else is a
-  <code class="lit">400</code>, and so is a
-  <code class="lit">page</code> or <code class="lit">limit</code> that is not a
-  plain number. Nothing is stripped or repaired first, so
-  <code class="lit">/api/block/1,23</code> is refused rather than answered as
-  block 123.
+  The explorer reads arguments as given. A height is decimal digits. A hash is
+  64 hex characters in either case. A postfix is hex. Anything else gets a
+  <code class="lit">400</code>, and so does a <code class="lit">page</code> or
+  <code class="lit">limit</code> that is not a plain number. The explorer strips
+  nothing and repairs nothing, so <code class="lit">/api/block/1,23</code> gets
+  a <code class="lit">400</code> rather than block 123.
 </p>
 
 <h2>Endpoints</h2>
@@ -120,22 +112,20 @@
 <section class="endpoint" id="version">
   <h3><span class="verb">GET</span><code class="lit">/api/version</code></h3>
   <p>
-    The API revision and the daemon's version string. <code class="lit">api</code>
-    is <code class="lit">(major &lt;&lt; 16) | minor</code>; these are the 1.3
-    shapes, so it reads 65539. The three <code class="lit">git_*</code> fields
-    are always empty &mdash; oxblocks embeds no build metadata, and the keys
-    exist only because clients index them. <code class="lit">oxblocks_version</code>
-    is not an upstream key: a client should not have to infer which
-    implementation it is talking to from the absence of a commit hash.
+    The API revision and the version string of the daemon.
+    <code class="lit">api</code> is
+    <code class="lit">(major &lt;&lt; 16) | minor</code>, which reads 65539 for
+    these shapes. The three <code class="lit">git_*</code> fields are always
+    empty, because oxblocks embeds no build metadata. The keys stay because
+    clients index them. <code class="lit">oxblocks_version</code> is an extra
+    key, so a client can tell which explorer answered.
   </p>
   <p>
-    One caveat worth knowing: under <code class="lit">--restricted-rpc</code>
-    monerod <em>falsifies</em> several <code class="lit">get_info</code> fields
-    rather than omitting them, and <code class="lit">version</code> is one of
-    them &mdash; it becomes the empty string. So an empty
-    <code class="lit">monero_version_full</code> means either a restricted
-    daemon or one that reported no version, and this response cannot tell you
-    which. oxblocks expects an unrestricted daemon.
+    A daemon started with <code class="lit">--restricted-rpc</code> reports an
+    empty version string. An empty
+    <code class="lit">monero_version_full</code> therefore means either a
+    restricted daemon or one that reported nothing, and this response cannot
+    tell you which. oxblocks expects an unrestricted daemon.
   </p>
   <p><a href="/api/version">/api/version</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/api/version"</pre>
@@ -144,25 +134,31 @@
 <section class="endpoint" id="networkinfo">
   <h3><span class="verb">GET</span><code class="lit">/api/networkinfo</code></h3>
   <p>
-    Twenty-six fields of chain and node state. Three of them are easy to get
-    wrong: <code class="lit">difficulty</code> and
-    <code class="lit">cumulative_difficulty</code> are JSON <strong>strings</strong>,
-    because 128-bit values do not survive a double; <code class="lit">status</code>
-    is a <strong>boolean</strong> field of <code class="lit">data</code>, which is
-    a different thing from the envelope's <code class="lit">"status": "success"</code>;
-    and <code class="lit">tx_pool_size_kbytes</code> carries <strong>bytes</strong>
-    despite the name, which is upstream's bug and would break every consumer if
-    corrected here.
+    Twenty-six fields of chain and node state. Four of them are easy to
+    misread.
   </p>
   <p>
-    The string typing of the two difficulty fields is not decoration: a
-    JSON parser backed by doubles loses integers above 2<sup>53</sup>, and
-    cumulative difficulty passed that long ago. The same hazard applies to the
-    numeric fields that can grow large &mdash;
-    <code class="lit">hash_rate</code> is emitted as a JSON number and saturates
-    at <code class="lit">u64::MAX</code> rather than wrapping, so a
-    double-based client should read it as a string from the raw body if the
-    exact value matters.
+    <code class="lit">difficulty</code> and
+    <code class="lit">cumulative_difficulty</code> are JSON
+    <strong>strings</strong>. A parser that holds numbers as doubles loses
+    integers above 2<sup>53</sup>, and cumulative difficulty passed that point
+    long ago.
+  </p>
+  <p>
+    <code class="lit">status</code> is a <strong>boolean</strong> field of
+    <code class="lit">data</code>. It is not the envelope's
+    <code class="lit">"status": "success"</code>.
+  </p>
+  <p>
+    <code class="lit">tx_pool_size_kbytes</code> holds <strong>bytes</strong>.
+    The name is wrong and stays wrong, because a correction here would break
+    every client that reads it.
+  </p>
+  <p>
+    <code class="lit">hash_rate</code> is a JSON number. It stops at
+    <code class="lit">u64::MAX</code> instead of wrapping. A client backed by
+    doubles should read it as a string out of the raw body when the exact value
+    matters.
   </p>
   <p><a href="/api/networkinfo">/api/networkinfo</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/api/networkinfo"</pre>
@@ -172,15 +168,15 @@
   <h3><span class="verb">GET</span><code class="lit">/api/block/&lt;height|hash&gt;</code></h3>
   <p>
     One block and every transaction in it, coinbase first. The argument is a
-    height if it is eight characters or fewer, a block hash if it is exactly 64
-    hex characters, and rejected otherwise &mdash; the eight-character bound is
-    upstream's, and it bounds the <em>text</em> rather than the value.
+    height when it is eight characters or fewer, and a block hash when it is
+    exactly 64 hex characters. Anything else gets a
+    <code class="lit">400</code>. The bound of eight counts characters, not
+    value.
   </p>
   <p>
-    Returns a <a href="#shape-block">block object</a>. Note that
+    Returns a <a href="#shape-block">block object</a>.
     <code class="lit">size</code> is an integer here and a float in
-    <a href="#transactions">/api/transactions</a>, because upstream holds it in
-    two different C++ types.
+    <a href="#transactions">/api/transactions</a>.
   </p>
   <p><a href="/api/block/{{ sample_height }}">/api/block/{{ sample_height }}</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/api/block/{{ sample_height }}"</pre>
@@ -189,11 +185,8 @@
 <section class="endpoint" id="rawblock">
   <h3><span class="verb">GET</span><code class="lit">/api/rawblock/&lt;height|hash&gt;</code></h3>
   <p>
-    The block exactly as monerod decoded it &mdash; the daemon's own
-    <code class="lit">json</code> document, reparsed and re-emitted with its keys
-    sorted. The reparse is not ceremony: monerod emits that document in
-    declaration order, and forwarding the string verbatim would not match
-    upstream byte for byte.
+    The block as monerod decoded it. The explorer sorts the keys of the
+    daemon's own <code class="lit">json</code> document and adds nothing to it.
   </p>
   <p><a href="/api/rawblock/{{ sample_height }}">/api/rawblock/{{ sample_height }}</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/api/rawblock/{{ sample_height }}"</pre>
@@ -203,14 +196,15 @@
   <h3><span class="verb">GET</span><code class="lit">/api/blocks/&lt;start&gt;/&lt;end&gt;</code></h3>
   <p>
     A range of blocks, inclusive at both ends, as an array of
-    <a href="#shape-block">block objects</a>. Ask for a window and take the one
-    you meant, so the explorer never learns which block you wanted.
+    <a href="#shape-block">block objects</a>. Ask for a window and keep the
+    block you meant. The explorer then never learns which block that was.
   </p>
   <p>
-    <strong>Capped at {{ max_block_range }} blocks per request.</strong> Upstream
-    imposes no cap because it reads its own database; every block here costs the
-    operator's daemon a call, so an uncapped range would let one request make
-    millions of them. A wider range is refused rather than truncated.
+    <strong>This endpoint serves {{ max_block_range }} blocks at most.</strong>
+    Each block costs the daemon a call, so an unbounded range would let one
+    request make millions of them. A wider range gets a
+    <code class="lit">400</code>, and the refusal is arithmetic on the two
+    heights, so it costs the daemon nothing.
   </p>
   <p><a href="/api/blocks/{{ sample_range_start }}/{{ sample_height }}">/api/blocks/{{ sample_range_start }}/{{ sample_height }}</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/api/blocks/{{ sample_range_start }}/{{ sample_height }}"</pre>
@@ -219,16 +213,17 @@
 <section class="endpoint" id="transaction">
   <h3><span class="verb">GET</span><code class="lit">/api/transaction/&lt;hash&gt;</code></h3>
   <p>
-    One transaction, with <strong>every ring resolved</strong> &mdash; each input
-    lists its decoys with the height, one-time key and source transaction of
-    each. This is the only endpoint that expands rings, because doing it costs a
-    daemon call per input.
+    One transaction, with <strong>every ring resolved</strong>. Each input
+    lists its ring members with the height, one time key and source transaction
+    of each. This is the only endpoint that resolves rings, because it costs
+    one daemon call for each input.
   </p>
   <p>
-    Returns a <a href="#shape-txdetail">transaction detail object</a>. Works for
-    pool transactions too, which report <code class="lit">block_height</code> 0,
-    <code class="lit">confirmations</code> 0, and the time they arrived rather
-    than a block timestamp.
+    Returns a <a href="#shape-txdetail">transaction detail object</a>. It also
+    serves a transaction in the pool, which reports
+    <code class="lit">block_height</code> 0,
+    <code class="lit">confirmations</code> 0, and the time it arrived in place
+    of a block timestamp.
   </p>
   <pre class="blob">curl -s "$OXBLOCKS/api/transaction/&lt;hash&gt;"</pre>
 </section>
@@ -236,8 +231,8 @@
 <section class="endpoint" id="rawtransaction">
   <h3><span class="verb">GET</span><code class="lit">/api/rawtransaction/&lt;hash&gt;</code></h3>
   <p>
-    The transaction exactly as monerod decoded it, keys re-sorted, with no
-    interpretation of any kind.
+    The transaction as monerod decoded it, with the keys sorted and nothing
+    interpreted.
   </p>
   <pre class="blob">curl -s "$OXBLOCKS/api/rawtransaction/&lt;hash&gt;"</pre>
 </section>
@@ -245,40 +240,41 @@
 <section class="endpoint" id="private">
   <h3><span class="verb">GET</span><code class="lit">/api/transaction/private/&lt;postfix&gt;</code></h3>
   <p>
-    Every transaction whose hash <em>ends</em> with the given hex postfix. The
-    caller picks the one it wanted locally, so the explorer never learns which.
-    Returns <code class="lit">txs</code> and <code class="lit">missed_txs</code>.
+    Every transaction whose hash <em>ends</em> with the hex postfix you give.
+    The caller picks the one it wants on its own machine, so the explorer never
+    learns which one that was. Returns <code class="lit">txs</code> and
+    <code class="lit">missed_txs</code>.
   </p>
   <p>
-    Rings are deliberately <strong>not</strong> expanded: inputs are listed with
-    their amount and key image, and <code class="lit">mixins</code> is
-    <code class="lit">null</code>. Expanding every ring of an anonymity set would
-    be thousands of calls for a caller who wants one of them, and it can ask for
-    that one through <a href="#transaction">/api/transaction</a>.
+    Rings stay <strong>unresolved</strong> here. Each input carries its amount
+    and key image, and <code class="lit">mixins</code> is
+    <code class="lit">null</code>. Resolving every ring in the set would cost
+    thousands of calls for a caller that wants one transaction. Ask for that
+    one through <a href="#transaction">/api/transaction</a>.
   </p>
   <p>
-    A postfix must be {{ min_postfix_len }} to {{ max_postfix_len }} hex
-    characters, and must name a set large enough to hide in and small enough to
-    serve: between <strong>{{ min_anonymity_set }}</strong> and
-    <strong>{{ max_private_tx_matches }}</strong> expected matches. Both bounds
-    are counts rather than lengths, so which lengths qualify moves with the size
-    of the chain. On this chain that is
+    A postfix is {{ min_postfix_len }} to {{ max_postfix_len }} hex characters.
+    It must also name a set that is large enough to hide in and small enough to
+    serve, which is <strong>{{ min_anonymity_set }}</strong> to
+    <strong>{{ max_private_tx_matches }}</strong> expected matches. Those two
+    bounds count transactions rather than characters, so the lengths that
+    qualify move with the size of the chain. On this chain that is
     {% if postfix_lengths.is_empty() %}no length at all{% else %}{{ postfix_lengths }}{% endif %}.
   </p>
   {% if txids_loose %}
   <p>
-    This daemon provides <code class="lit">get_txids_loose</code>, so the
+    This daemon answers <code class="lit">get_txids_loose</code>, so the
     endpoint is <strong>available</strong>.
   </p>
   {% else %}
   <div class="notice">
     <strong>Unavailable on this deployment.</strong> The lookup needs a daemon
-    with <code class="lit">get_txids_loose</code>, which is in monerod
-    <code class="lit">master</code> and <code class="lit">release-v0.19</code> but
-    in no release build &mdash; v0.18.x answers <em>Method not found</em>. This
-    daemon did not answer the probe at startup, so this one endpoint refuses.
-    Everything else here, including
-    <a href="#blocks">/api/blocks</a>, works normally.
+    that answers <code class="lit">get_txids_loose</code>. monerod
+    <code class="lit">master</code> and <code class="lit">release-v0.19</code>
+    have the call. No released build has it, and v0.18.x answers
+    <em>Method not found</em>. This daemon did not answer the probe at startup,
+    so this one endpoint refuses. Everything else here works, including
+    <a href="#blocks">/api/blocks</a>.
   </div>
   {% endif %}
   <pre class="blob">curl -s "$OXBLOCKS/api/transaction/private/&lt;postfix&gt;"</pre>
@@ -293,21 +289,19 @@
   <table>
     <thead><tr><th>Parameter</th><th>Default</th><th>Maximum</th><th>Notes</th></tr></thead>
     <tbody>
-      <tr><td><code class="lit">page</code></td><td class="num">0</td><td>&mdash;</td><td>counts back from the tip</td></tr>
-      <tr><td><code class="lit">limit</code></td><td class="num">25</td><td class="num">{{ max_transactions_limit }}</td><td>clamped, not rejected</td></tr>
+      <tr><td><code class="lit">page</code></td><td class="num">0</td><td>none</td><td>counts back from the tip</td></tr>
+      <tr><td><code class="lit">limit</code></td><td class="num">25</td><td class="num">{{ max_transactions_limit }}</td><td>over the cap gets a 400</td></tr>
     </tbody>
   </table>
   </div>
   <p>
-    The clamp is a divergence from upstream, which does not have one. A page
-    here costs one header range, one call per block that holds transactions and
-    one batched fetch; unclamped, a single request could reach a thousand blocks
-    against the operator's daemon.
+    One page costs one header range, one call for each block that holds
+    transactions, and one batched fetch. The cap stops a single request from
+    reaching a thousand blocks of the operator's daemon.
   </p>
   <p>
-    <code class="lit">total_page_no</code> is a second divergence: it rounds
-    <em>up</em>. Upstream floors it, so a client that trusts the number stops one
-    page early and never sees the oldest blocks.
+    <code class="lit">total_page_no</code> rounds <em>up</em>, so the count
+    includes the last page even when it is only part full.
   </p>
   <p><a href="/api/transactions?page=0&amp;limit=5">/api/transactions?page=0&amp;limit=5</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/api/transactions?page=0&amp;limit=5"</pre>
@@ -316,23 +310,25 @@
 <section class="endpoint" id="mempool">
   <h3><span class="verb">GET</span><code class="lit">/api/mempool?page=&amp;limit=</code></h3>
   <p>
-    Unconfirmed transactions, newest first. monerod returns the pool in an order
-    that is neither arrival order nor stable between calls, so it is sorted here.
+    Transactions that wait to be mined, newest first. monerod returns the pool
+    in an order that is neither arrival order nor stable between calls, so the
+    explorer sorts it.
   </p>
   <div class="scroll">
   <table>
     <thead><tr><th>Parameter</th><th>Default</th><th>Maximum</th><th>Notes</th></tr></thead>
     <tbody>
-      <tr><td><code class="lit">page</code></td><td class="num">0</td><td>&mdash;</td><td></td></tr>
-      <tr><td><code class="lit">limit</code></td><td class="num">{{ max_mempool_limit }}</td><td class="num">{{ max_mempool_limit }}</td><td>clamped, not rejected</td></tr>
+      <tr><td><code class="lit">page</code></td><td class="num">0</td><td>none</td><td>counts back from the newest</td></tr>
+      <tr><td><code class="lit">limit</code></td><td class="num">{{ max_mempool_limit }}</td><td class="num">{{ max_mempool_limit }}</td><td>over the cap gets a 400</td></tr>
     </tbody>
   </table>
   </div>
   <p>
     Each entry is a <a href="#shape-txsummary">transaction summary</a> with
-    <code class="lit">timestamp</code> and <code class="lit">timestamp_utc</code>
-    added, carrying the time the transaction arrived.
-    <strong>Needs an unrestricted daemon.</strong>
+    <code class="lit">timestamp</code> and
+    <code class="lit">timestamp_utc</code> added. Those two carry the time the
+    transaction arrived. <strong>This endpoint needs an unrestricted
+    daemon.</strong>
   </p>
   <p><a href="/api/mempool">/api/mempool</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/api/mempool"</pre>
@@ -342,14 +338,14 @@
   <h3><span class="verb">GET</span><code class="lit">/api/transactions/recent</code></h3>
   <p>
     Every transaction from the last {{ recent_blocks }} blocks, plus the whole
-    pool, in one answer and with no parameters. The point is that everyone asks
-    for the same window, so asking reveals nothing about which transaction the
-    caller cares about. Rings are not expanded, for the same reason as
+    pool, in one answer. It takes no parameters. Every caller asks for the same
+    window, so the request says nothing about which transaction the caller
+    wants. Rings stay unresolved, for the same reason as
     <a href="#private">the private lookup</a>.
   </p>
   <p>
-    The block window is bounded; the pool is not. During a mempool flood this is
-    the most expensive endpoint here.
+    The block window is fixed. The pool is not. During a flood of unconfirmed
+    transactions this is the most expensive endpoint here.
   </p>
   <p><a href="/api/transactions/recent">/api/transactions/recent</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/api/transactions/recent"</pre>
@@ -358,17 +354,16 @@
 <section class="endpoint" id="search">
   <h3><span class="verb">GET</span><code class="lit">/api/search/&lt;height|hash&gt;</code></h3>
   <p>
-    Dispatches on the shape of the argument: a short number is a height, and 64
-    hex characters are tried as a block hash and then as a transaction hash. The
-    matching object comes back with a <code class="lit">title</code> field naming
-    which it is &mdash; <code class="lit">"block"</code> or
-    <code class="lit">"tx"</code> &mdash; so a client can tell them apart without
-    re-inspecting the fields.
+    Reads the shape of the argument. A short number is a height. 64 hex
+    characters are tried as a block hash and then as a transaction hash. The
+    object that matches comes back with a <code class="lit">title</code> field
+    naming what it is, either <code class="lit">"block"</code> or
+    <code class="lit">"tx"</code>, so a client does not have to inspect the
+    fields to find out.
   </p>
   <p>
-    <strong>Addresses are not searchable.</strong> Monero has no address index
-    and cannot have one without scanning with a view key, which this explorer
-    deliberately never asks for.
+    <strong>Addresses are not searchable.</strong> Monero has no address index.
+    Building one needs a secret view key, which this explorer never asks for.
   </p>
   <pre class="blob">curl -s "$OXBLOCKS/api/search/&lt;height|hash&gt;"</pre>
 </section>
@@ -376,10 +371,11 @@
 <section class="endpoint" id="feeestimate">
   <h3><span class="verb">GET</span><code class="lit">/api/feeestimate?grace_blocks=</code></h3>
   <p>
-    The daemon's per-byte fee estimate. <code class="lit">grace_blocks</code>
-    defaults to 10. <code class="lit">fee</code> and
-    <code class="lit">fee_per_kb</code> report the same number: the estimate has
-    been per-byte since 2019, and the second key kept its old name.
+    The fee per byte that the daemon estimates.
+    <code class="lit">grace_blocks</code> defaults to 10.
+    <code class="lit">fee</code> and <code class="lit">fee_per_kb</code> report
+    the same number. The estimate has been per byte since 2019, and the second
+    key kept its old name.
   </p>
   <p><a href="/api/feeestimate">/api/feeestimate</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/api/feeestimate"</pre>
@@ -388,15 +384,15 @@
 <section class="endpoint" id="health">
   <h3><span class="verb">GET</span><code class="lit">/health</code></h3>
   <p>
-    Liveness and cache occupancy. Not under <code class="lit">/api</code> and
-    <strong>not enveloped</strong> &mdash; it answers a bare object.
-    <code class="lit">rpc_calls</code> counts outbound calls to the daemon since
-    start, which is not the same as cache misses: one batched fetch carrying
-    forty hashes is forty misses and one call.
+    Liveness and cache occupancy. It sits outside <code class="lit">/api</code>
+    and is <strong>not enveloped</strong>. It answers a plain object.
+    <code class="lit">rpc_calls</code> counts calls to the daemon since start,
+    which is not the same as cache misses. One batched fetch of forty hashes is
+    forty misses and one call.
   </p>
   <p>
-    Deliberately says nothing about the daemon. A health check that fails when an
-    upstream is slow turns one degraded dependency into an outage.
+    The answer says nothing about the daemon. A health check that fails when
+    the daemon is slow turns one slow dependency into an outage.
   </p>
   <p><a href="/health">/health</a></p>
   <pre class="blob">curl -s "$OXBLOCKS/health"</pre>
@@ -405,8 +401,8 @@
 <h2>Shared shapes</h2>
 
 <p>
-  Three objects appear inside several responses. They are documented once here
-  rather than repeated under each endpoint.
+  Three objects appear inside more than one response. They are described here
+  once rather than under each endpoint.
 </p>
 
 <section class="endpoint" id="shape-block">
@@ -416,9 +412,10 @@
     <code class="lit">hash</code>, <code class="lit">size</code>,
     <code class="lit">timestamp</code>, <code class="lit">timestamp_utc</code>,
     and <code class="lit">txs</code>, an array of
-    <a href="#shape-txsummary">transaction summaries</a> with the coinbase first.
-    <code class="lit">current_height</code> is the chain height, derived from this
-    block's own depth rather than a second round trip.
+    <a href="#shape-txsummary">transaction summaries</a> with the coinbase
+    first. <code class="lit">current_height</code> is the height of the chain.
+    The explorer works it out from the depth of this block, so it costs no
+    second call.
   </p>
 </section>
 
@@ -434,18 +431,18 @@
     <code class="lit">xmr_outputs</code>.
   </p>
   <p>
-    <code class="lit">mixin</code> is the <strong>ring size</strong>, not ring
-    size minus one, and is 0 for a coinbase.
-    <code class="lit">xmr_inputs</code> and <code class="lit">xmr_outputs</code>
-    are 0 wherever the amount is hidden, which the <em>protocol</em> does rather
-    than this explorer. They carry real values in two cases: pre-RingCT
-    transactions, where the chain itself is in the clear, and <strong>every
-    coinbase</strong> &mdash; including a version 2 one, because a block reward
-    is public by construction. A version number alone therefore does not tell you
-    whether an amount is visible; <code class="lit">rct_type</code> and
-    <code class="lit">coinbase</code> together do.
-    <code class="lit">unlock_time</code> comes from upstream's devel branch;
-    master does not emit it.
+    <code class="lit">mixin</code> is the <strong>ring size</strong>, not the
+    ring size minus one, and it is 0 for a coinbase.
+  </p>
+  <p>
+    <code class="lit">xmr_inputs</code> and
+    <code class="lit">xmr_outputs</code> are 0 wherever the protocol hides the
+    amount. They carry real values in two cases: a pre-RingCT transaction,
+    where the chain itself is in the clear, and <strong>every
+    coinbase</strong>, because a block reward is public. A version 2 coinbase
+    is still in the clear, so the version number alone does not tell you
+    whether an amount is visible. Read <code class="lit">rct_type</code> and
+    <code class="lit">coinbase</code> together.
   </p>
 </section>
 
@@ -458,24 +455,25 @@
     <code class="lit">inputs</code> and <code class="lit">outputs</code>.
   </p>
   <p>
-    <code class="lit">inputs</code> is <code class="lit">null</code> &mdash; not
-    <code class="lit">[]</code> &mdash; for a coinbase transaction, which spends
-    nothing. Each input carries <code class="lit">amount</code>,
-    <code class="lit">key_image</code> and <code class="lit">mixins</code>;
-    <code class="lit">mixins</code> is itself <code class="lit">null</code> when
-    the ring was not resolved, either because the endpoint did not ask or because
-    the daemon refused the lookup. An empty array would claim the input has no
-    ring members, which is a different statement.
+    <code class="lit">inputs</code> is <code class="lit">null</code> for a
+    coinbase transaction, which spends nothing. It is not
+    <code class="lit">[]</code>. Each input carries
+    <code class="lit">amount</code>, <code class="lit">key_image</code> and
+    <code class="lit">mixins</code>. <code class="lit">mixins</code> is itself
+    <code class="lit">null</code> when the ring was not resolved, either
+    because the endpoint does not resolve rings or because the daemon refused
+    the lookup. An empty array would say the input has no ring members, which
+    is a different statement.
   </p>
 </section>
 
 <h2>Limits</h2>
 
 <p>
-  Each of these is a deliberate divergence from upstream, which has none of them.
-  Upstream reads its own database; every request here costs the operator's daemon
-  network calls, so an unbounded request is a denial-of-service amplifier
-  reachable by anyone who can make an HTTP request.
+  Each request costs the operator's daemon network calls. These bounds stop one
+  request from making thousands of them. The numbers below are the ones this
+  deployment enforces. The operator sets the postfix length, the block span and
+  the recent window at startup.
 </p>
 
 <div class="scroll">
@@ -496,18 +494,17 @@
 
 <p>
   <code class="lit">/api/outputs</code> and
-  <code class="lit">/api/outputsblocks</code> are not implemented, along with the
+  <code class="lit">/api/outputsblocks</code> do not exist here, nor do the
   <code class="lit">/myoutputs</code>, <code class="lit">/prove</code>,
-  <code class="lit">/rawtx</code> and <code class="lit">/checkandpush</code> pages
-  they belong to. They require pasting a secret view key into a server that could
-  log it, and in the reference implementation they are the only routes that feed
-  attacker-supplied hex into a deserializer. Omitting them removes the threat
-  class rather than reimplementing it more carefully.
+  <code class="lit">/rawtx</code> and <code class="lit">/checkandpush</code>
+  pages that use them. They need a secret view key or raw transaction hex in a
+  request to a server that could log it. Leaving them out removes that risk
+  instead of managing it.
 </p>
 
 <p>
-  <code class="lit">/api/emission</code> is absent for a different reason: it
-  needs either a background scanner or a full-chain scan, and this explorer keeps
-  no state on disk.
+  <code class="lit">/api/emission</code> is absent for another reason. It needs
+  a full chain scan or a background scanner, and this explorer keeps no state
+  on disk.
 </p>
 {% endblock %}
