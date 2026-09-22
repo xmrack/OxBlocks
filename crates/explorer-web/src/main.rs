@@ -237,6 +237,10 @@ async fn shutdown_signal() {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::parse();
 
+    // Before the first request: the stylesheet is built once and cached by
+    // browsers for a day.
+    html::set_theme(config.theme);
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_new(&config.log)?)
         .init();

@@ -1,6 +1,7 @@
 /* oxblocks
  *
- * One stylesheet, served from this binary. No web fonts, no images, no
+ * The rules, served from this binary after a palette (light.css, dark.css
+ * or both) that defines every colour they use. No web fonts, no images, no
  * JavaScript, no external requests of any kind -- the Content-Security-Policy
  * is `default-src 'none'; style-src 'self'`, so anything else would be blocked
  * anyway. That is deliberate: an explorer is often read over Tor, and a page
@@ -8,38 +9,7 @@
  */
 
 :root {
-  color-scheme: light dark;
-
-  --bg: #fbfbfa;
-  --bg-raised: #ffffff;
-  --bg-sunken: #f2f1ee;
-  --fg: #1c1b19;
-  --fg-muted: #6b6862;
-  --fg-faint: #8f8b84;
-  --line: #e3e1dc;
-  --accent: #b8621b;
-  --accent-fg: #ffffff;
-  --coinbase: #2f6f4f;
-  --warn-bg: #fdf3e3;
-  --warn-line: #e0b877;
   --radius: 6px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #17181a;
-    --bg-raised: #1e2023;
-    --bg-sunken: #131416;
-    --fg: #e6e4e0;
-    --fg-muted: #9b9791;
-    --fg-faint: #6f6b66;
-    --line: #2b2e32;
-    --accent: #e8893f;
-    --accent-fg: #17181a;
-    --coinbase: #6bbd92;
-    --warn-bg: #2a2317;
-    --warn-line: #6b5427;
-  }
 }
 
 *, *::before, *::after { box-sizing: border-box; }

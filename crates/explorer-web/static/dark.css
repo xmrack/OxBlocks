@@ -1,0 +1,23 @@
+/* Dark palette.
+ *
+ * Served on its own under `--theme dark`, and under `--theme auto` wrapped in
+ * `@media (prefers-color-scheme: dark)`, which is why it is one `:root` rule
+ * and nothing else.
+ */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #17181a;
+  --bg-raised: #1e2023;
+  --bg-sunken: #131416;
+  --fg: #e6e4e0;
+  --fg-muted: #9b9791;
+  --fg-faint: #6f6b66;
+  --line: #2b2e32;
+  --accent: #e8893f;
+  --accent-fg: #17181a;
+  --coinbase: #6bbd92;
+  --warn-bg: #2a2317;
+  --warn-line: #6b5427;
+}

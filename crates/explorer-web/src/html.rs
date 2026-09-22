@@ -10,6 +10,8 @@
 //! Content-Security-Policy is `default-src 'none'; style-src 'self'`, so the
 //! browser enforces that independently of what these templates emit.
 
+use std::sync::OnceLock;
+
 use askama::Template;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
@@ -19,6 +21,7 @@ use explorer_core::{Amount, BlockId, ChainError, Hash32, TxFacts};
 use monerod_rpc::types::TxOutTarget;
 
 use crate::api::handlers::{AppState, Shared};
+use crate::config::Theme;
 
 /// The chain summary strip shown on every page.
 pub struct ChainStatus {
@@ -519,9 +522,53 @@ struct ErrorPage {
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The stylesheet's bytes, embedded at compile time.
+///
+/// In three parts because the colours are settled at startup: the rules name
+/// every colour through a variable, and a palette defines them.
 const STYLESHEET: &str = include_str!("../static/style.css");
+const LIGHT_PALETTE: &str = include_str!("../static/light.css");
+const DARK_PALETTE: &str = include_str!("../static/dark.css");
 
-/// A cache key derived from the stylesheet's own contents.
+/// The stylesheet as served: a palette, then the rules.
+struct Sheet {
+    body: String,
+    version: u64,
+}
+
+impl Sheet {
+    fn new(theme: Theme) -> Self {
+        // dark.css is one `:root` rule and nothing else, so deferring it to
+        // the reader's system preference is a matter of nesting it.
+        let body = match theme {
+            Theme::Auto => format!(
+                "{LIGHT_PALETTE}\n@media (prefers-color-scheme: dark) {{\n{DARK_PALETTE}}}\n{STYLESHEET}"
+            ),
+            Theme::Light => format!("{LIGHT_PALETTE}{STYLESHEET}"),
+            Theme::Dark => format!("{DARK_PALETTE}{STYLESHEET}"),
+        };
+        Self {
+            version: fnv1a(body.as_bytes()),
+            body,
+        }
+    }
+}
+
+static SHEET: OnceLock<Sheet> = OnceLock::new();
+
+/// Fix the colour scheme for the life of the process.
+///
+/// Called by `main` from the command line before the first request is served.
+/// There is no per-reader toggle to change it later: that would need a cookie
+/// or a script, and this explorer serves neither.
+pub fn set_theme(theme: Theme) {
+    let _ = SHEET.set(Sheet::new(theme));
+}
+
+fn sheet() -> &'static Sheet {
+    SHEET.get_or_init(|| Sheet::new(Theme::default()))
+}
+
+/// A cache key derived from the served stylesheet's own contents.
 ///
 /// The stylesheet is served with a day-long `max-age` and carries no `ETag`,
 /// so a returning browser reuses whatever it already has. At a fixed URL that
@@ -529,10 +576,14 @@ const STYLESHEET: &str = include_str!("../static/style.css");
 /// against an old stylesheet, which is how a `<details>` hint came out as a
 /// bare disclosure triangle and a black blob. Changing the *URL* whenever the
 /// bytes change makes the long cache lifetime correct instead of harmful.
+/// The palette is part of those bytes, so restarting under another `--theme`
+/// moves the URL too.
 ///
 /// FNV-1a, and deliberately not a cryptographic hash: this is a cache key, not
 /// a signature, and nothing is trusted on the strength of it.
-pub const STYLESHEET_VERSION: u64 = fnv1a(STYLESHEET.as_bytes());
+pub fn stylesheet_version() -> u64 {
+    sheet().version
+}
 
 const fn fnv1a(mut bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -1189,7 +1240,7 @@ pub async fn stylesheet() -> Response {
             (header::CONTENT_TYPE, "text/css; charset=utf-8"),
             (header::CACHE_CONTROL, "public, max-age=86400"),
         ],
-        STYLESHEET,
+        sheet().body.as_str(),
     )
         .into_response()
 }
@@ -1265,6 +1316,8 @@ mod tests {
         clippy::cast_precision_loss,
         clippy::cast_sign_loss
     )]
+
+    use std::collections::BTreeSet;
 
     use super::*;
 
@@ -1812,6 +1865,114 @@ mod tests {
         }
     }
 
+    /// Every colour name the rules use has to exist in whichever palette is
+    /// served with them, or that theme renders a page of `initial` colours --
+    /// black text on transparent, with no error anywhere.
+    #[test]
+    fn every_colour_the_rules_name_is_defined_by_both_palettes() {
+        let used = variables_used(STYLESHEET);
+        assert!(used.len() > 5, "the rules no longer name their colours");
+
+        // The rules define a couple of their own, which no palette repeats.
+        let own = variables_declared(STYLESHEET);
+        for (name, palette) in [("light", LIGHT_PALETTE), ("dark", DARK_PALETTE)] {
+            let declared: BTreeSet<String> =
+                variables_declared(palette).union(&own).cloned().collect();
+            let missing: Vec<&String> = used.difference(&declared).collect();
+            assert!(
+                missing.is_empty(),
+                "the {name} palette defines no {missing:?}"
+            );
+        }
+    }
+
+    /// A pinned theme is pinned: the reader's system setting must not reach it.
+    #[test]
+    fn a_pinned_theme_serves_its_own_palette_and_no_other() {
+        for (name, theme, mine, theirs) in [
+            ("light", Theme::Light, "#fbfbfa", "#17181a"),
+            ("dark", Theme::Dark, "#17181a", "#fbfbfa"),
+        ] {
+            let body = rules_only(&Sheet::new(theme).body);
+            assert!(body.contains(mine), "--theme {name} serves no palette");
+            assert!(
+                !body.contains(theirs),
+                "--theme {name} serves both palettes"
+            );
+            assert!(
+                !body.contains("prefers-color-scheme"),
+                "--theme {name} still defers to the browser"
+            );
+            assert!(
+                body.contains("box-sizing"),
+                "--theme {name} serves no rules"
+            );
+        }
+    }
+
+    #[test]
+    fn following_the_system_preference_puts_only_the_dark_palette_behind_the_query() {
+        let body = rules_only(&Sheet::new(Theme::Auto).body);
+        let query = body
+            .find("@media (prefers-color-scheme: dark)")
+            .expect("the dark palette is not conditional");
+        let light = body.find("#fbfbfa").expect("no light palette");
+        let dark = body.find("#17181a").expect("no dark palette");
+        assert!(
+            light < query,
+            "the light palette is not the unconditional one"
+        );
+        assert!(dark > query, "the dark palette is not behind the query");
+
+        // The wrap is hand-written, so the brace it opens has to close.
+        let depth = body.chars().fold(0_i32, |d, c| match c {
+            '{' => d + 1,
+            '}' => d - 1,
+            _ => d,
+        });
+        assert_eq!(depth, 0, "wrapping the palette left an unbalanced brace");
+    }
+
+    /// Restarting under a different `--theme` changes the bytes at a URL a
+    /// browser holds for a day, so it has to change the URL as well.
+    #[test]
+    fn the_cache_key_tells_the_palettes_apart() {
+        let keys = [Theme::Auto, Theme::Light, Theme::Dark].map(|t| Sheet::new(t).version);
+        let distinct: BTreeSet<u64> = keys.iter().copied().collect();
+        assert_eq!(distinct.len(), keys.len(), "two themes share a cache key");
+    }
+
+    /// The stylesheet with its comments removed, so that a comment quoting a
+    /// rule is not mistaken for the rule.
+    fn rules_only(css: &str) -> String {
+        let mut out = String::new();
+        let mut rest = css;
+        while let Some((before, after)) = rest.split_once("/*") {
+            out.push_str(before);
+            rest = after.split_once("*/").map_or("", |(_, tail)| tail);
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// Names in `var(--name)`, fallback syntax included.
+    fn variables_used(css: &str) -> BTreeSet<String> {
+        css.split("var(")
+            .skip(1)
+            .filter_map(|rest| rest.split([',', ')']).next())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Names on the left of a `--name: value` declaration.
+    fn variables_declared(css: &str) -> BTreeSet<String> {
+        css.lines()
+            .filter_map(|line| line.trim().strip_prefix("--"))
+            .filter_map(|decl| decl.split(':').next())
+            .map(|name| format!("--{name}"))
+            .collect()
+    }
+
     /// The stylesheet link carries a key derived from the stylesheet itself.
     ///
     /// Without it, the day-long `max-age` means a returning browser renders
@@ -1833,9 +1994,9 @@ mod tests {
         assert_ne!(fnv1a(b"a { color: red }"), fnv1a(b"a { color: blue }"));
         assert_ne!(fnv1a(b""), fnv1a(b" "));
         assert_eq!(fnv1a(b"same"), fnv1a(b"same"));
-        assert_ne!(STYLESHEET_VERSION, 0);
+        assert_ne!(stylesheet_version(), 0);
 
-        let expected = format!("/static/style.css?v={STYLESHEET_VERSION}");
+        let expected = format!("/static/style.css?v={}", stylesheet_version());
         for (name, html) in [
             ("index", index_page().render().expect("renders")),
             ("block", block_page().render().expect("renders")),

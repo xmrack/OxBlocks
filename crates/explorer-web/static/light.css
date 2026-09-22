@@ -1,0 +1,22 @@
+/* Light palette.
+ *
+ * Served on its own under `--theme light`, and under `--theme auto` as the
+ * default that a dark system preference overrides with dark.css.
+ */
+
+:root {
+  color-scheme: light;
+
+  --bg: #fbfbfa;
+  --bg-raised: #ffffff;
+  --bg-sunken: #f2f1ee;
+  --fg: #1c1b19;
+  --fg-muted: #6b6862;
+  --fg-faint: #8f8b84;
+  --line: #e3e1dc;
+  --accent: #b8621b;
+  --accent-fg: #ffffff;
+  --coinbase: #2f6f4f;
+  --warn-bg: #fdf3e3;
+  --warn-line: #e0b877;
+}

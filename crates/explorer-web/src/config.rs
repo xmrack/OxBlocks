@@ -3,7 +3,21 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+
+/// Which palette the stylesheet carries.
+///
+/// A per-reader toggle would need a cookie or a script, and this explorer
+/// serves neither, so the choice is the operator's: `auto` hands it back to
+/// the reader's browser, the other two pin it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum Theme {
+    /// Follow the reader's `prefers-color-scheme`.
+    #[default]
+    Auto,
+    Light,
+    Dark,
+}
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -70,6 +84,10 @@ pub struct Config {
     #[arg(long, env = "OXBLOCKS_MAX_BODY", default_value_t = 8 * 1024)]
     pub max_body_bytes: usize,
 
+    /// Colour scheme: auto, light or dark.
+    #[arg(long, env = "OXBLOCKS_THEME", value_enum, default_value = "auto")]
+    pub theme: Theme,
+
     /// Log filter, e.g. "info", "oxblocks=debug,tower_http=debug".
     #[arg(long, env = "OXBLOCKS_LOG", default_value = "info")]
     pub log: String,
@@ -128,6 +146,22 @@ mod tests {
         assert_eq!(c.max_inflight_rpc, explorer_core::DEFAULT_MAX_INFLIGHT_RPC);
         let c = Config::parse_from(["oxblocks", "--max-inflight-rpc", "4"]);
         assert_eq!(c.max_inflight_rpc, 4);
+    }
+
+    /// `auto` is the only default that respects a reader's own setting; the
+    /// other two exist for an operator who wants one look regardless.
+    #[test]
+    fn the_theme_defaults_to_the_readers_own_preference() {
+        assert_eq!(Config::parse_from(["oxblocks"]).theme, Theme::Auto);
+        assert_eq!(
+            Config::parse_from(["oxblocks", "--theme", "light"]).theme,
+            Theme::Light
+        );
+        assert_eq!(
+            Config::parse_from(["oxblocks", "--theme", "dark"]).theme,
+            Theme::Dark
+        );
+        assert!(Config::try_parse_from(["oxblocks", "--theme", "sepia"]).is_err());
     }
 
     #[test]
