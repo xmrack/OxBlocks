@@ -1371,32 +1371,18 @@ mod tests {
         assert!(!is_pool_payout(false, 2));
     }
 
-    /// Explanations are collected into one disclosure per section, labelled in
-    /// words, and none of it needs script.
-    ///
-    /// They used to be a "?" bubble on each field: seven on one transaction,
-    /// several of them explaining things that page did not have -- a coinbase
-    /// got a ring-size hint next to a ring size of "—". A reader who wants the
-    /// terms opens one; everyone else sees a quiet page.
+    /// The hints are plain markup: no script, no external reference, and they
+    /// work with JavaScript off, which is the only way they can work here.
     #[test]
-    fn the_transaction_page_explains_itself_without_script_or_clutter() {
+    fn the_transaction_page_hints_need_no_script() {
         let mut page = tx_page();
         page.payment_id8 = "1234567890abcdef".to_owned();
         let html = page.render().expect("renders");
 
         assert!(
-            !html.contains("<summary>?</summary>"),
-            "a bare question-mark affordance is back:\n{html}"
+            html.matches("<details class=\"hint\">").count() >= 6,
+            "the explanatory hints are missing:\n{html}"
         );
-        let glossaries = html.matches(r#"<details class="glossary">"#).count();
-        assert_eq!(
-            glossaries, 3,
-            "expected one glossary for the summary, the inputs and the outputs"
-        );
-        for summary in ["What do these fields mean?", "What am I looking at?"] {
-            assert!(html.contains(summary), "{summary} is not offered");
-        }
-
         assert!(!html.to_lowercase().contains("<script"));
         assert!(!html.contains("onclick"));
         // The key image was an unlabelled hash next to the ring member count,
@@ -1406,27 +1392,6 @@ mod tests {
             html.contains("tx_extra"),
             "the Extra heading does not say what it is"
         );
-    }
-
-    /// A coinbase has no inputs, so it must not be offered the input
-    /// glossary -- explaining ring members beside "this has no ring members"
-    /// is what made the old per-field hints read as noise.
-    #[test]
-    fn a_coinbase_is_not_told_about_rings_it_does_not_have() {
-        let mut page = tx_page();
-        page.coinbase = true;
-        page.inputs = Vec::new();
-        let html = page.render().expect("renders");
-
-        assert_eq!(
-            html.matches(r#"<details class="glossary">"#).count(),
-            2,
-            "the inputs glossary is showing on a transaction with no inputs"
-        );
-        assert!(!html.contains("Key image</dt>"));
-        assert!(!html.contains("Ring members</dt>"));
-        // The outputs glossary is still there, because outputs it does have.
-        assert!(html.contains("One-time key</dt>"));
     }
 
     /// No page may carry a `style=` attribute.
@@ -1664,15 +1629,9 @@ mod tests {
             html.contains("2.0 XMR"),
             "the pre-RingCT input's visible amount was dropped"
         );
-        // Scoped to the output table: the glossary below it also uses the
-        // word, and counting the whole page would pass on the wrong markup.
-        let table = html
-            .split_once("<h2>Outputs")
-            .and_then(|(_, rest)| rest.split_once("</table>"))
-            .map(|(t, _)| t)
-            .expect("the output table is on the page");
+        // The output column says so in words rather than printing a zero.
         assert_eq!(
-            table.matches(r#"<span class="tag">hidden</span>"#).count(),
+            html.matches(r#"<span class="tag">hidden</span>"#).count(),
             1,
             "exactly one of the two outputs is a hidden RingCT amount"
         );

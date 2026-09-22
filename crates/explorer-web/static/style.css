@@ -323,45 +323,37 @@ footer.site a { color: var(--fg-muted); }
   dl.kv dd { padding-top: 0.05rem; padding-bottom: 0.55rem; }
 }
 
-/* ---------- glossaries ---------- */
+/* ---------- inline hints ---------- */
 
-/* One disclosure per section, labelled in words. An earlier version put a "?"
-   bubble beside every field; a transaction page carried seven of them, several
-   explaining things that page did not have. A reader who wants the terms opens
-   one; everyone else sees a quiet page. */
-details.glossary {
-  margin: 0.9rem 0 0;
-  font-size: 0.88rem;
+/* An information affordance that works without JavaScript and on touch.
+   <abbr title> would be invisible on a phone; a <details> is tappable. */
+details.hint { display: inline; }
+details.hint > summary {
+  display: inline;
+  list-style: none;
+  cursor: help;
+  color: var(--fg-faint);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0 0.32rem;
+  margin-left: 0.3rem;
+  user-select: none;
 }
-details.glossary > summary {
-  cursor: pointer;
-  color: var(--fg-muted);
-  width: fit-content;
-  padding: 0.1rem 0;
-}
-details.glossary > summary:hover { color: var(--accent); }
-details.glossary[open] > summary { color: var(--fg); margin-bottom: 0.5rem; }
-details.glossary > dl {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 0.55rem 1.4rem;
-  margin: 0;
-  padding: 0.85rem 1.05rem;
-  background: var(--bg-raised);
+details.hint > summary::-webkit-details-marker { display: none; }
+details.hint > summary:hover { color: var(--fg); border-color: var(--fg-faint); }
+details.hint[open] > summary { color: var(--accent); border-color: var(--accent); }
+details.hint > p {
+  margin: 0.45rem 0 0.2rem;
+  padding: 0.55rem 0.75rem;
+  background: var(--bg-sunken);
   border: 1px solid var(--line);
   border-left: 2px solid var(--accent);
   border-radius: var(--radius);
-  max-width: 62rem;
-}
-details.glossary dt { color: var(--fg); font-weight: 600; white-space: nowrap; }
-details.glossary dd { margin: 0; color: var(--fg-muted); }
-
-/* A short explanatory paragraph under a heading. */
-p.lede {
+  font-size: 0.85rem;
   color: var(--fg-muted);
-  font-size: 0.9rem;
-  margin: 0 0 0.9rem;
-  max-width: 62rem;
+  max-width: 46rem;
 }
 
 /* ---------- ring age chart ---------- */
@@ -382,5 +374,6 @@ p.lede {
 /* Replaces three `style=` attributes. The Content-Security-Policy is
    `style-src 'self'` with no 'unsafe-inline', so the browser was dropping
    them and the spacing they asked for never applied. */
+.empty.tight { padding: 0.3rem 0 0; }
 .empty.indented { padding-left: 0.6rem; }
 dl.kv.spaced { margin-top: 0.8rem; }
