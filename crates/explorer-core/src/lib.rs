@@ -8,6 +8,7 @@ pub mod cache;
 pub mod chain;
 pub mod fmt;
 pub mod hash;
+pub mod hex;
 pub mod rpc_source;
 pub mod tx;
 pub mod tx_extra;

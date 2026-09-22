@@ -118,7 +118,7 @@ impl fmt::Debug for TxExtraField {
         match self {
             Self::Padding { size } => write!(f, "Padding {{ size: {size} }}"),
             Self::PubKey(key) => write!(f, "PubKey({key})"),
-            Self::Nonce(data) => write!(f, "Nonce({})", hex::encode(data)),
+            Self::Nonce(data) => write!(f, "Nonce({})", crate::hex::encode(data)),
             Self::MergeMining { depth, merkle_root } => {
                 write!(
                     f,
@@ -135,7 +135,7 @@ impl fmt::Debug for TxExtraField {
                 }
                 write!(f, "])")
             }
-            Self::MinerGate(data) => write!(f, "MinerGate({})", hex::encode(data)),
+            Self::MinerGate(data) => write!(f, "MinerGate({})", crate::hex::encode(data)),
         }
     }
 }
@@ -211,7 +211,7 @@ impl PaymentId8 {
     }
 
     pub fn to_hex(self) -> String {
-        hex::encode(self.0)
+        crate::hex::encode(self.0)
     }
 }
 
@@ -226,7 +226,7 @@ impl std::str::FromStr for PaymentId8 {
             return Err(PaymentId8ParseError::NotHex(c));
         }
         let mut out = [0u8; PAYMENT_ID8_LEN];
-        hex::decode_to_slice(s, &mut out)
+        crate::hex::decode_to_slice(s, &mut out)
             // Unreachable: length and alphabet are checked above.
             .map_err(|_| PaymentId8ParseError::WrongLength(s.len()))?;
         Ok(Self(out))
@@ -1189,7 +1189,7 @@ mod tests {
     ];
 
     fn bytes(hex_str: &str) -> Vec<u8> {
-        hex::decode(hex_str).expect("test vector is valid hex")
+        crate::hex::decode(hex_str).expect("test vector is valid hex")
     }
 
     fn hash(hex_str: &str) -> Hash32 {
@@ -1227,7 +1227,7 @@ mod tests {
                 TxExtraField::Padding { size } => write!(line, "P{size},"),
                 TxExtraField::PubKey(key) => write!(line, "K:{key},"),
                 TxExtraField::Nonce(data) => {
-                    write!(line, "N{}:{},", data.len(), hex::encode(data))
+                    write!(line, "N{}:{},", data.len(), crate::hex::encode(data))
                 }
                 TxExtraField::MergeMining { depth, merkle_root } => {
                     write!(line, "M:{depth}:{merkle_root},")
@@ -1237,7 +1237,7 @@ mod tests {
                     write!(line, "A{}:{joined},", keys.len())
                 }
                 TxExtraField::MinerGate(data) => {
-                    write!(line, "G{}:{},", data.len(), hex::encode(data))
+                    write!(line, "G{}:{},", data.len(), crate::hex::encode(data))
                 }
             };
         }
@@ -2075,7 +2075,7 @@ mod tests {
             assert!(
                 parsed.is_complete(),
                 "{source}: {} failed at {:?}",
-                hex::encode(extra),
+                crate::hex::encode(extra),
                 parsed.error()
             );
             assert_eq!(parsed.consumed(), extra.len(), "{source}");
@@ -2168,7 +2168,7 @@ mod tests {
         // tx f0d450ad…ce53: a 0xDE field, which is one raw tag byte.
         let parsed = parse(&bytes(REAL_CORPUS[2].0));
         assert_eq!(
-            parsed.minergate_fields().next().map(hex::encode),
+            parsed.minergate_fields().next().map(crate::hex::encode),
             Some("6de0332d02832042ee8b7d7839bfc10d3b4e38307ea1cc14825b1fcac2df1021".to_owned())
         );
 
@@ -2381,7 +2381,7 @@ mod tests {
             assert!(
                 again.is_complete(),
                 "re-encoded blob no longer parses: {}",
-                hex::encode(&reencoded)
+                crate::hex::encode(&reencoded)
             );
             assert_eq!(again.fields(), parsed.fields());
         }
@@ -2600,7 +2600,7 @@ mod tests {
                         parsed.fields(),
                         expected.as_slice(),
                         "seed {seed} case {case}: {} decoded to different values",
-                        hex::encode(extra)
+                        crate::hex::encode(extra)
                     );
                 }
 
@@ -2760,7 +2760,7 @@ mod tests {
                 assert!(
                     parsed.is_complete(),
                     "{}: {:?}",
-                    hex::encode(extra),
+                    crate::hex::encode(extra),
                     parsed.error()
                 );
                 // The testnet chain predates everything but the pubkey tag.
@@ -2788,7 +2788,7 @@ mod tests {
             for extra in &extras {
                 let parsed = parse(extra);
                 if !parsed.is_complete() {
-                    failures.push(hex::encode(extra));
+                    failures.push(crate::hex::encode(extra));
                 }
                 decoded += 1;
             }
@@ -2818,7 +2818,7 @@ mod tests {
         ));
         let mut file = std::fs::File::create(&path).expect("temp file");
         for extra in inputs {
-            writeln!(file, "{}", hex::encode(extra)).expect("write");
+            writeln!(file, "{}", crate::hex::encode(extra)).expect("write");
         }
         drop(file);
 
@@ -2839,7 +2839,7 @@ mod tests {
                 if mismatches <= 10 {
                     println!(
                         "MISMATCH {}\n  ours: {ours}\n  cpp:  {expected}",
-                        hex::encode(extra)
+                        crate::hex::encode(extra)
                     );
                 }
             }
@@ -3046,7 +3046,7 @@ mod tests {
     #[test]
     fn minergate_fields_come_back_in_the_order_they_appear() {
         let parsed = parse(&bytes("de02aaaade02bbbb"));
-        let seen: Vec<String> = parsed.minergate_fields().map(hex::encode).collect();
+        let seen: Vec<String> = parsed.minergate_fields().map(crate::hex::encode).collect();
         assert_eq!(
             seen,
             vec!["aaaa".to_owned(), "bbbb".to_owned()],

@@ -68,3 +68,14 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans licenses sources
+
+  # A tree nobody counts is a tree that only grows. Fails when a crate enters
+  # or leaves without deps-baseline.txt being updated in the same commit.
+  dependency-tree:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Dependency tree matches the committed baseline
+        run: ./tools/check-deps.sh

@@ -129,7 +129,7 @@ impl TxFacts {
 
     #[must_use]
     pub fn extra_hex(&self) -> String {
-        hex::encode(&self.extra_bytes)
+        crate::hex::encode(&self.extra_bytes)
     }
 }
 

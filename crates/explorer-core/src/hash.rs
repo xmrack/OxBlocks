@@ -45,7 +45,7 @@ impl Hash32 {
     }
 
     pub fn to_hex(self) -> String {
-        hex::encode(self.0)
+        crate::hex::encode(self.0)
     }
 }
 
@@ -53,7 +53,7 @@ impl FromStr for Hash32 {
     type Err = HashParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Check length before decoding. hex::decode would also reject these, but
+        // Check length before decoding. crate::hex::decode would also reject these, but
         // the length is the useful half of the error message for a user who
         // pasted a truncated hash.
         if s.len() != HASH_HEX_LEN {
@@ -64,7 +64,7 @@ impl FromStr for Hash32 {
         }
 
         let mut out = [0u8; HASH_LEN];
-        hex::decode_to_slice(s, &mut out)
+        crate::hex::decode_to_slice(s, &mut out)
             // Unreachable: length and alphabet are both checked above. Returning
             // an error rather than panicking keeps this total regardless.
             .map_err(|_| HashParseError::WrongLength(s.len()))?;

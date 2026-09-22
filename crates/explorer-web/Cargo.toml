@@ -17,13 +17,12 @@ monerod-rpc = { path = "../monerod-rpc", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-hex.workspace = true
 
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
 tower = { version = "0.5", features = ["limit", "timeout"] }
 tower-http = { version = "0.6", features = ["trace", "limit", "set-header", "timeout", "catch-panic", "compression-gzip", "compression-deflate", "compression-br"] }
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4", default-features = false, features = ["derive", "env", "std", "help", "usage", "error-context"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 askama = "0.16"
 

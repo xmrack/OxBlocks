@@ -65,18 +65,21 @@ contain `unsafe`, and claiming otherwise would be false. What the project actual
 guarantees is narrower and worth stating plainly — no consensus code, no database
 handle, and no C++ in the web process, and no `unsafe` in the code we wrote.
 
-The tree is **144 third-party crates**, of which 10 are proc-macros. That is ordinary
+The tree is **136 third-party crates**, of which 10 are proc-macros. That is ordinary
 for an async HTTP service and it is not small in absolute terms; quoting the number
 is more useful than calling it lean. Count it yourself with `cargo tree --workspace
--e normal`, deduplicated by name and version — the figure here was 138 before response
-compression was added, so it is worth re-deriving rather than trusting. Two levers
-reduce it:
+-e normal`, deduplicated by name and version. Three things hold it in place:
 
-* `monerod-rpc` builds without the `tls` feature (`--no-default-features`), dropping
-  12 crates. A loopback daemon does not need TLS, so a typical deployment can take
-  that saving.
+* `deps-baseline.txt` lists every crate in the tree, and `tools/check-deps.sh` fails
+  in CI when one enters or leaves without that file being updated in the same commit.
+  It compares names rather than versions, so routine upgrades stay quiet.
 * `cargo deny` runs in CI over advisories, licences, duplicate versions and source
-  registries, so the tree cannot grow or change licence without someone noticing.
+  registries, and denies unmaintained crates outright.
+* `monerod-rpc` on its own builds without the `tls` feature, dropping 12 crates. The
+  `oxblocks` binary always links TLS: `explorer-web` depends on `monerod-rpc` with
+  default features and exposes no way to turn it off, which is deliberate — a
+  production explorer reaching a remote daemon should not need a flag to get
+  encryption.
 
 `.github/workflows/ci.yml` also runs `tools/check-unsafe.sh`, which fails if any
 crate stops inheriting the workspace lint. It is checked in a state where removing

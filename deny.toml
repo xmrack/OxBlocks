@@ -7,12 +7,24 @@
 # Any advisory against anything we ship is a build failure. An explorer is
 # public-facing; there is no "we will get to it" tier.
 yanked = "deny"
+# An unmaintained crate has no one to report a vulnerability to. This caught
+# `hex`, last released in 2021 and since replaced by explorer-core::hex.
+unmaintained = "all"
 
 [bans]
 # Two versions of the same crate means two copies of its bugs, and it is
 # usually an unnoticed transitive upgrade rather than a decision.
 multiple-versions = "warn"
 wildcards = "deny"
+deny = [
+    # TLS is rustls-only; the C library and its bindings are not in the tree
+    # and a transitive dependency must not quietly put them there.
+    { crate = "openssl", reason = "rustls is the only TLS stack here" },
+    { crate = "openssl-sys", reason = "rustls is the only TLS stack here" },
+    { crate = "native-tls", reason = "rustls is the only TLS stack here" },
+    # Replaced by explorer-core::hex; unmaintained since 2021.
+    { crate = "hex", reason = "replaced by explorer-core::hex" },
+]
 
 [licenses]
 # Permissive licences only. The project is MIT; a copyleft dependency would
