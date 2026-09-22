@@ -510,21 +510,22 @@
 <p>
   Each request costs the operator's daemon network calls. These bounds stop one
   request from making thousands of them. The numbers below are the ones this
-  deployment enforces. The operator sets the postfix length, the block span and
-  the recent window at startup. A request that asks for more than a bound
-  allows gets a 400 that names the bound it crossed.
+  deployment enforces, set by the operator at startup. A request that asks for
+  more than one of them allows gets a 400 that names the bound it crossed. The
+  recent window is not a request parameter at all. It is fixed for every
+  caller.
 </p>
 
 <div class="scroll">
 <table>
-  <thead><tr><th>Where</th><th class="num">Limit</th><th>Asking for more</th></tr></thead>
+  <thead><tr><th>Where</th><th class="num">Limit</th></tr></thead>
   <tbody>
-    <tr><td><code class="lit">/api/transactions</code> limit</td><td class="num">{{ max_transactions_limit }}</td><td>400</td></tr>
-    <tr><td><code class="lit">/api/mempool</code> limit</td><td class="num">{{ max_mempool_limit }}</td><td>400</td></tr>
-    <tr><td><code class="lit">/api/blocks</code> span</td><td class="num">{{ max_block_range }}</td><td>400</td></tr>
-    <tr><td>private lookup, postfix length</td><td class="num">{{ min_postfix_len }}&ndash;{{ max_postfix_len }}</td><td>400</td></tr>
-    <tr><td>private lookup, expected matches</td><td class="num">{{ min_anonymity_set }}&ndash;{{ max_private_tx_matches }}</td><td>400</td></tr>
-    <tr><td><code class="lit">/api/transactions/recent</code> window</td><td class="num">{{ recent_blocks }}</td><td>no parameter to set</td></tr>
+    <tr><td><code class="lit">/api/transactions</code> limit</td><td class="num">{{ max_transactions_limit }}</td></tr>
+    <tr><td><code class="lit">/api/mempool</code> limit</td><td class="num">{{ max_mempool_limit }}</td></tr>
+    <tr><td><code class="lit">/api/blocks</code> span</td><td class="num">{{ max_block_range }}</td></tr>
+    <tr><td>private lookup, postfix length</td><td class="num">{{ min_postfix_len }}&ndash;{{ max_postfix_len }}</td></tr>
+    <tr><td>private lookup, expected matches</td><td class="num">{{ min_anonymity_set }}&ndash;{{ max_private_tx_matches }}</td></tr>
+    <tr><td><code class="lit">/api/transactions/recent</code> window</td><td class="num">{{ recent_blocks }}</td></tr>
   </tbody>
 </table>
 </div>
