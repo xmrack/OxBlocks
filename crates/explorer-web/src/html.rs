@@ -318,15 +318,138 @@ struct MempoolPage {
     version: &'static str,
     query: Option<String>,
     chain: Option<ChainStatus>,
+    waiting_sort: ColumnSort,
+    fee_sort: ColumnSort,
+    size_sort: ColumnSort,
     txs: Vec<PoolRow>,
 }
 
 struct PoolRow {
     hash: String,
     age: String,
+    waiting_secs: u64,
     fee: String,
+    fee_atomic: u64,
     ring: usize,
     size: u64,
+}
+
+/// Which mempool column a page was sorted by, if any.
+///
+/// Only the columns backed by a plain number are sortable. `Hash` has no
+/// useful order and `Ring` was not asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortKey {
+    Waiting,
+    Fee,
+    Size,
+}
+
+impl SortKey {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "waiting" => Some(Self::Waiting),
+            "fee" => Some(Self::Fee),
+            "size" => Some(Self::Size),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Waiting => "waiting",
+            Self::Fee => "fee",
+            Self::Size => "size",
+        }
+    }
+
+    fn of(self, row: &PoolRow) -> u64 {
+        match self {
+            Self::Waiting => row.waiting_secs,
+            Self::Fee => row.fee_atomic,
+            Self::Size => row.size,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortDir {
+    Asc,
+    Desc,
+}
+
+impl SortDir {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "asc" => Some(Self::Asc),
+            "desc" => Some(Self::Desc),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Asc => "asc",
+            Self::Desc => "desc",
+        }
+    }
+
+    fn flipped(self) -> Self {
+        match self {
+            Self::Asc => Self::Desc,
+            Self::Desc => Self::Asc,
+        }
+    }
+}
+
+/// A column header's link: where clicking it goes, and whether an arrow
+/// shows it is the column currently in effect.
+///
+/// No JavaScript runs on this page, so "clicking a header to sort" has to be
+/// an ordinary link to a URL that already carries the answer.
+struct ColumnSort {
+    href: String,
+    arrow: &'static str,
+}
+
+/// The header link for `key`, given the sort currently in effect (if any).
+///
+/// A column not currently sorted links to itself descending, largest or
+/// longest-waiting first, which is normally the more interesting read. The
+/// active column instead links to its own reverse, so a second click flips
+/// it, and carries an arrow showing which way it is sorted now.
+fn column_sort(key: SortKey, active: Option<(SortKey, SortDir)>) -> ColumnSort {
+    let dir = match active {
+        Some((k, d)) if k == key => d.flipped(),
+        _ => SortDir::Desc,
+    };
+    let arrow = match active {
+        Some((k, SortDir::Asc)) if k == key => " \u{25b2}",
+        Some((k, SortDir::Desc)) if k == key => " \u{25bc}",
+        _ => "",
+    };
+    ColumnSort {
+        href: format!("/mempool?sort={}&dir={}", key.as_str(), dir.as_str()),
+        arrow,
+    }
+}
+
+/// How long a pool transaction has been waiting, in seconds.
+fn waiting_secs(asked_at: u64, receive_time: u64) -> u64 {
+    asked_at.abs_diff(receive_time)
+}
+
+/// Orders rows by `key`, stably: rows equal under `key` keep the order the
+/// daemon returned them in, whichever direction is asked for.
+fn sort_pool_rows(rows: &mut [PoolRow], key: SortKey, dir: SortDir) {
+    rows.sort_by(|a, b| {
+        let ord = key.of(a).cmp(&key.of(b));
+        if dir == SortDir::Desc {
+            ord.reverse()
+        } else {
+            ord
+        }
+    });
 }
 
 #[derive(Template)]
@@ -494,6 +617,15 @@ fn xmr(atomic: u64) -> String {
     Amount::from_atomic(atomic).to_trimmed_xmr_string()
 }
 
+/// XMR with every decimal place shown.
+///
+/// `xmr` trims for a value read on its own; a table column is read against
+/// its neighbours, and a fee of `0.6` above one of `0.00003064` does not
+/// align on the decimal point unless both carry the same number of places.
+fn xmr_aligned(atomic: u64) -> String {
+    Amount::from_atomic(atomic).to_xmr_string()
+}
+
 /// The XMR value of an input or output, when there is one to show.
 ///
 /// A RingCT amount is committed, not published: the cleartext field is zero
@@ -600,7 +732,7 @@ async fn render_page(State(state): Shared, page: u64) -> Page {
             // cannot be a fee column without inventing the number. It was
             // headed "Fees" and showed this value, which read as a plausible
             // fee and was not one.
-            reward: xmr(h.reward),
+            reward: xmr_aligned(h.reward),
             hash: h.hash.to_lowercase(),
         })
         .collect();
@@ -664,7 +796,7 @@ pub async fn block(State(state): Shared, Path(raw): Path<String>) -> Page {
                 coinbase: f.coinbase,
                 pool_payout: is_pool_payout(f.coinbase, tx.vout.len()),
                 outputs: tx.vout.len(),
-                fee: xmr(f.fee),
+                fee: xmr_aligned(f.fee),
                 ring: f.ring_size,
                 size: f.size,
             })
@@ -879,8 +1011,25 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
     )
 }
 
-pub async fn mempool(State(state): Shared) -> Page {
+#[derive(serde::Deserialize)]
+pub struct MempoolQuery {
+    sort: Option<String>,
+    dir: Option<String>,
+}
+
+/// The sort a `/mempool` request asked for, from its query string.
+///
+/// An unrecognised `sort` or `dir` -- a stale link, a typo -- is treated as
+/// unsorted rather than failing the page. A `dir` with no `sort` names
+/// nothing to reverse and is ignored.
+fn active_sort(sort: Option<&str>, dir: Option<&str>) -> Option<(SortKey, SortDir)> {
+    let key = SortKey::parse(sort?)?;
+    Some((key, dir.and_then(SortDir::parse).unwrap_or(SortDir::Desc)))
+}
+
+pub async fn mempool(State(state): Shared, Query(q): Query<MempoolQuery>) -> Page {
     let chain = status_of(&state).await;
+    let active = active_sort(q.sort.as_deref(), q.dir.as_deref());
 
     let pool = match state.chain.mempool().await {
         Ok(p) => p,
@@ -903,7 +1052,7 @@ pub async fn mempool(State(state): Shared) -> Page {
     // time at all, even on a pool nothing has arrived in for an hour.
     let asked_at = now();
 
-    let txs = pool
+    let mut txs: Vec<PoolRow> = pool
         .transactions
         .iter()
         .filter_map(|t| {
@@ -912,12 +1061,17 @@ pub async fn mempool(State(state): Shared) -> Page {
             Some(PoolRow {
                 hash: t.id_hash.to_lowercase(),
                 age: age(asked_at, t.receive_time),
-                fee: xmr(f.fee),
+                waiting_secs: waiting_secs(asked_at, t.receive_time),
+                fee: xmr_aligned(f.fee),
+                fee_atomic: f.fee,
                 ring: f.ring_size,
                 size: f.size,
             })
         })
         .collect();
+    if let Some((key, dir)) = active {
+        sort_pool_rows(&mut txs, key, dir);
+    }
 
     render(
         StatusCode::OK,
@@ -925,6 +1079,9 @@ pub async fn mempool(State(state): Shared) -> Page {
             version: VERSION,
             query: None,
             chain,
+            waiting_sort: column_sort(SortKey::Waiting, active),
+            fee_sort: column_sort(SortKey::Fee, active),
+            size_sort: column_sort(SortKey::Size, active),
             txs,
         },
     )
@@ -1641,6 +1798,12 @@ mod tests {
             ("block", block_page().render().expect("renders")),
             ("tx", tx.render().expect("renders")),
             ("api", api_page().render().expect("renders")),
+            (
+                "mempool",
+                mempool_page(Some((SortKey::Size, SortDir::Desc)))
+                    .render()
+                    .expect("renders"),
+            ),
         ] {
             assert!(
                 !html.contains("style=\""),
@@ -1791,6 +1954,189 @@ mod tests {
         }
     }
 
+    fn pool_row(waiting_secs: u64, fee_atomic: u64, size: u64) -> PoolRow {
+        PoolRow {
+            hash: "e".repeat(64),
+            age: "00:00:00".to_owned(),
+            waiting_secs,
+            fee: "0.0".to_owned(),
+            fee_atomic,
+            ring: 16,
+            size,
+        }
+    }
+
+    fn mempool_page(active: Option<(SortKey, SortDir)>) -> MempoolPage {
+        let txs = vec![
+            pool_row(10, 300, 2_000),
+            pool_row(30, 100, 1_000),
+            pool_row(20, 200, 3_000),
+        ];
+        MempoolPage {
+            version: VERSION,
+            query: None,
+            chain: status(),
+            waiting_sort: column_sort(SortKey::Waiting, active),
+            fee_sort: column_sort(SortKey::Fee, active),
+            size_sort: column_sort(SortKey::Size, active),
+            txs,
+        }
+    }
+
+    #[test]
+    fn waiting_time_is_the_gap_since_the_transaction_was_received() {
+        assert_eq!(waiting_secs(1_000, 400), 600);
+        assert_eq!(
+            waiting_secs(400, 1_000),
+            600,
+            "the same gap either way round"
+        );
+        assert_eq!(waiting_secs(500, 500), 0);
+    }
+
+    #[test]
+    fn the_query_string_is_parsed_into_a_sort_that_defaults_to_descending() {
+        assert_eq!(
+            active_sort(Some("fee"), Some("asc")),
+            Some((SortKey::Fee, SortDir::Asc))
+        );
+        assert_eq!(
+            active_sort(Some("fee"), None),
+            Some((SortKey::Fee, SortDir::Desc)),
+            "no dir defaults to descending"
+        );
+        assert_eq!(
+            active_sort(Some("fee"), Some("sideways")),
+            Some((SortKey::Fee, SortDir::Desc)),
+            "a bad dir falls back to descending rather than failing the page"
+        );
+        assert_eq!(
+            active_sort(Some("hash"), Some("asc")),
+            None,
+            "hash has no useful order to sort by"
+        );
+        assert_eq!(
+            active_sort(None, Some("asc")),
+            None,
+            "a dir with no sort names nothing to reverse"
+        );
+    }
+
+    #[test]
+    fn sort_key_and_dir_round_trip_through_their_query_strings() {
+        for k in [SortKey::Waiting, SortKey::Fee, SortKey::Size] {
+            assert_eq!(SortKey::parse(k.as_str()), Some(k));
+        }
+        assert_eq!(SortKey::parse("hash"), None, "hash has no useful order");
+        assert_eq!(
+            SortKey::parse("ring"),
+            None,
+            "sorting by ring was not asked for"
+        );
+
+        for d in [SortDir::Asc, SortDir::Desc] {
+            assert_eq!(SortDir::parse(d.as_str()), Some(d));
+        }
+        assert_eq!(SortDir::parse("sideways"), None);
+    }
+
+    /// An unsorted column links to itself descending -- largest, or
+    /// longest-waiting, first -- and carries no arrow, because nothing is
+    /// active yet to point in a direction.
+    #[test]
+    fn an_unsorted_column_links_to_itself_descending_with_no_arrow() {
+        let c = column_sort(SortKey::Fee, None);
+        assert_eq!(c.href, "/mempool?sort=fee&dir=desc");
+        assert_eq!(c.arrow, "");
+
+        let c = column_sort(SortKey::Size, Some((SortKey::Fee, SortDir::Asc)));
+        assert_eq!(
+            c.href, "/mempool?sort=size&dir=desc",
+            "a column sorted by something else is still unsorted itself"
+        );
+        assert_eq!(c.arrow, "");
+    }
+
+    /// The active column links to its own reverse, so a second click flips
+    /// it, and its arrow names the direction it is sorted in right now.
+    #[test]
+    fn the_active_column_links_to_its_reverse_and_names_its_direction() {
+        let desc = column_sort(SortKey::Waiting, Some((SortKey::Waiting, SortDir::Desc)));
+        assert_eq!(desc.href, "/mempool?sort=waiting&dir=asc");
+        assert_eq!(desc.arrow, " \u{25bc}");
+
+        let asc = column_sort(SortKey::Waiting, Some((SortKey::Waiting, SortDir::Asc)));
+        assert_eq!(asc.href, "/mempool?sort=waiting&dir=desc");
+        assert_eq!(asc.arrow, " \u{25b2}");
+    }
+
+    #[test]
+    fn rows_sort_by_the_requested_column_in_the_requested_direction() {
+        let mut rows = vec![
+            pool_row(10, 300, 2_000),
+            pool_row(30, 100, 1_000),
+            pool_row(20, 200, 3_000),
+        ];
+
+        sort_pool_rows(&mut rows, SortKey::Fee, SortDir::Asc);
+        assert_eq!(
+            rows.iter().map(|r| r.fee_atomic).collect::<Vec<_>>(),
+            vec![100, 200, 300]
+        );
+
+        sort_pool_rows(&mut rows, SortKey::Waiting, SortDir::Desc);
+        assert_eq!(
+            rows.iter().map(|r| r.waiting_secs).collect::<Vec<_>>(),
+            vec![30, 20, 10]
+        );
+
+        sort_pool_rows(&mut rows, SortKey::Size, SortDir::Asc);
+        assert_eq!(
+            rows.iter().map(|r| r.size).collect::<Vec<_>>(),
+            vec![1_000, 2_000, 3_000]
+        );
+    }
+
+    /// A stable sort: rows tied on the sort key keep the daemon's own order,
+    /// whichever direction was asked for, rather than flipping arbitrarily.
+    #[test]
+    fn rows_tied_on_the_sort_key_keep_their_original_order() {
+        let mut rows = vec![
+            pool_row(5, 100, 1),
+            pool_row(5, 200, 2),
+            pool_row(5, 300, 3),
+        ];
+        sort_pool_rows(&mut rows, SortKey::Waiting, SortDir::Desc);
+        assert_eq!(
+            rows.iter().map(|r| r.fee_atomic).collect::<Vec<_>>(),
+            vec![100, 200, 300]
+        );
+    }
+
+    #[test]
+    fn the_mempool_headers_link_to_the_sort_state_they_were_given() {
+        let html = mempool_page(Some((SortKey::Fee, SortDir::Asc)))
+            .render()
+            .expect("renders");
+        assert!(
+            html.contains(r#"href="/mempool?sort=fee&#38;dir=desc""#),
+            "the active column should link to its own reverse:\n{html}"
+        );
+        assert!(
+            html.contains("Fee \u{25b2}"),
+            "the active column should show which way it is sorted:\n{html}"
+        );
+        assert!(
+            html.contains(r#"href="/mempool?sort=waiting&#38;dir=desc""#),
+            "an inactive column should default to descending:\n{html}"
+        );
+        assert!(
+            !html.contains("Waiting [h:m:s] \u{25b2}")
+                && !html.contains("Waiting [h:m:s] \u{25bc}"),
+            "an inactive column must not carry an arrow:\n{html}"
+        );
+    }
+
     /// One RingCT input and output, one pre-RingCT input and output. Both
     /// states have to be present or the distinction is unobservable.
     fn tx_page() -> TxPage {
@@ -1872,6 +2218,20 @@ mod tests {
         assert_eq!(visible_amount(1), Some("0.000000000001".to_owned()));
         // The trap: the formatter's rendering of zero is not the digit zero.
         assert_eq!(xmr(0), "0.0");
+    }
+
+    /// A fee column mixes tiny fees and large ones; trimmed, `xmr` gives them
+    /// different numbers of decimal places and a right-aligned column stops
+    /// lining up on the decimal point. `xmr_aligned` always shows all twelve.
+    #[test]
+    fn a_column_amount_keeps_every_decimal_place_so_the_column_aligns() {
+        assert_eq!(xmr_aligned(0), "0.000000000000");
+        assert_eq!(xmr_aligned(600_000_000_000), "0.600000000000");
+        assert_eq!(
+            xmr_aligned(30_600),
+            "0.000000030600",
+            "trimmed, this would be shorter than the row above and misalign"
+        );
     }
 
     /// Bulletproofs hide the amount; the page must not print a figure for it.
