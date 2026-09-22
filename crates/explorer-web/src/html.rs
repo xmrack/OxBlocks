@@ -81,6 +81,8 @@ struct BlockPage {
     nonce: u32,
     major_version: u8,
     minor_version: u8,
+    fee_sort: ColumnSort,
+    size_sort: ColumnSort,
     txs: Vec<BlockTxRow>,
 }
 
@@ -90,6 +92,7 @@ struct BlockTxRow {
     p2pool: bool,
     outputs: usize,
     fee: String,
+    fee_atomic: u64,
     ring: usize,
     size: u64,
 }
@@ -341,10 +344,11 @@ struct PoolRow {
     size: u64,
 }
 
-/// Which mempool column a page was sorted by, if any.
+/// Which table column a page was sorted by, if any.
 ///
 /// Only the columns backed by a plain number are sortable. `Hash` has no
-/// useful order and `Ring` was not asked for.
+/// useful order and `Ring` was not asked for. `Waiting` exists only on the
+/// mempool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SortKey {
     Waiting,
@@ -429,7 +433,7 @@ struct ColumnSort {
 /// Every sortable column carries an arrow. The active one points the way it
 /// is sorted now, and the rest carry an up and down arrow, because a header
 /// that looks like every other header does not say that it can be clicked.
-fn column_sort(key: SortKey, active: Option<(SortKey, SortDir)>) -> ColumnSort {
+fn column_sort(page: &str, key: SortKey, active: Option<(SortKey, SortDir)>) -> ColumnSort {
     let dir = match active {
         Some((k, d)) if k == key => d.flipped(),
         _ => SortDir::Desc,
@@ -440,7 +444,7 @@ fn column_sort(key: SortKey, active: Option<(SortKey, SortDir)>) -> ColumnSort {
         _ => " \u{2195}",
     };
     ColumnSort {
-        href: format!("/mempool?sort={}&dir={}", key.as_str(), dir.as_str()),
+        href: format!("{page}?sort={}&dir={}", key.as_str(), dir.as_str()),
         arrow,
     }
 }
@@ -450,17 +454,32 @@ fn waiting_secs(asked_at: u64, receive_time: u64) -> u64 {
     asked_at.abs_diff(receive_time)
 }
 
-/// Orders rows by `key`, stably: rows equal under `key` keep the order the
+/// Orders rows by `value`, stably: rows equal under it keep the order the
 /// daemon returned them in, whichever direction is asked for.
-fn sort_pool_rows(rows: &mut [PoolRow], key: SortKey, dir: SortDir) {
+fn sort_rows<T>(rows: &mut [T], dir: SortDir, value: impl Fn(&T) -> u64) {
     rows.sort_by(|a, b| {
-        let ord = key.of(a).cmp(&key.of(b));
+        let ord = value(a).cmp(&value(b));
         if dir == SortDir::Desc {
             ord.reverse()
         } else {
             ord
         }
     });
+}
+
+fn sort_pool_rows(rows: &mut [PoolRow], key: SortKey, dir: SortDir) {
+    sort_rows(rows, dir, |r| key.of(r));
+}
+
+/// Orders a block's rows. A block has no `Waiting` column, so that key is
+/// refused before it gets here.
+fn sort_block_rows(rows: &mut [BlockTxRow], key: SortKey, dir: SortDir) {
+    let value: fn(&BlockTxRow) -> u64 = if key == SortKey::Size {
+        |r| r.size
+    } else {
+        |r| r.fee_atomic
+    };
+    sort_rows(rows, dir, value);
 }
 
 #[derive(Template)]
@@ -821,8 +840,14 @@ async fn render_page(State(state): Shared, page: u64) -> Page {
     )
 }
 
-pub async fn block(State(state): Shared, Path(raw): Path<String>) -> Page {
+pub async fn block(
+    State(state): Shared,
+    Path(raw): Path<String>,
+    Query(q): Query<SortQuery>,
+) -> Page {
     let chain = status_of(&state).await;
+    let active = active_sort(q.sort.as_deref(), q.dir.as_deref())
+        .filter(|(key, _)| *key != SortKey::Waiting);
 
     let Ok(id) = BlockId::parse(&raw) else {
         return error_page(
@@ -856,7 +881,7 @@ pub async fn block(State(state): Shared, Path(raw): Path<String>) -> Page {
         // partial one.
         Err(e) => return chain_error_page(chain, &e, "Could not load this block's transactions"),
     };
-    let txs = fetched
+    let mut txs = fetched
         .txs
         .iter()
         .filter_map(|e| {
@@ -872,12 +897,19 @@ pub async fn block(State(state): Shared, Path(raw): Path<String>) -> Page {
                 ),
                 outputs: tx.vout.len(),
                 fee: xmr_aligned(f.fee),
+                fee_atomic: f.fee,
                 ring: f.ring_size,
                 size: f.size,
             })
         })
         .collect::<Vec<_>>();
     let tx_count = table_tx_count(&txs);
+    if let Some((key, dir)) = active {
+        sort_block_rows(&mut txs, key, dir);
+    }
+    // By height rather than by whatever the request named, so a sorted link
+    // from a page reached by hash still lands on this block.
+    let page = format!("/block/{}", header.height);
 
     render(
         StatusCode::OK,
@@ -900,6 +932,8 @@ pub async fn block(State(state): Shared, Path(raw): Path<String>) -> Page {
             nonce: header.nonce,
             major_version: header.major_version,
             minor_version: header.minor_version,
+            fee_sort: column_sort(&page, SortKey::Fee, active),
+            size_sort: column_sort(&page, SortKey::Size, active),
             txs,
         },
     )
@@ -1090,12 +1124,12 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
 }
 
 #[derive(serde::Deserialize)]
-pub struct MempoolQuery {
+pub struct SortQuery {
     sort: Option<String>,
     dir: Option<String>,
 }
 
-/// The sort a `/mempool` request asked for, from its query string.
+/// The sort a request asked for, from its query string.
 ///
 /// An unrecognised `sort` or `dir` -- a stale link, a typo -- is treated as
 /// unsorted rather than failing the page. A `dir` with no `sort` names
@@ -1105,7 +1139,7 @@ fn active_sort(sort: Option<&str>, dir: Option<&str>) -> Option<(SortKey, SortDi
     Some((key, dir.and_then(SortDir::parse).unwrap_or(SortDir::Desc)))
 }
 
-pub async fn mempool(State(state): Shared, Query(q): Query<MempoolQuery>) -> Page {
+pub async fn mempool(State(state): Shared, Query(q): Query<SortQuery>) -> Page {
     let chain = status_of(&state).await;
     let active = active_sort(q.sort.as_deref(), q.dir.as_deref());
 
@@ -1157,9 +1191,9 @@ pub async fn mempool(State(state): Shared, Query(q): Query<MempoolQuery>) -> Pag
             version: VERSION,
             query: None,
             chain,
-            waiting_sort: column_sort(SortKey::Waiting, active),
-            fee_sort: column_sort(SortKey::Fee, active),
-            size_sort: column_sort(SortKey::Size, active),
+            waiting_sort: column_sort("/mempool", SortKey::Waiting, active),
+            fee_sort: column_sort("/mempool", SortKey::Fee, active),
+            size_sort: column_sort("/mempool", SortKey::Size, active),
             txs,
         },
     )
@@ -2515,6 +2549,7 @@ mod tests {
             p2pool: is_p2pool(coinbase, 2, coinbase),
             outputs: 2,
             fee: if coinbase { "0.0" } else { "0.00071136" }.to_owned(),
+            fee_atomic: if coinbase { 0 } else { 711_360_000 },
             ring: if coinbase { 0 } else { 16 },
             size: 2_223,
         }
@@ -2541,6 +2576,8 @@ mod tests {
             nonce: 7,
             major_version: 16,
             minor_version: 16,
+            fee_sort: column_sort("/block/3185430", SortKey::Fee, None),
+            size_sort: column_sort("/block/3185430", SortKey::Size, None),
             txs,
         }
     }
@@ -2567,9 +2604,9 @@ mod tests {
             version: VERSION,
             query: None,
             chain: status(),
-            waiting_sort: column_sort(SortKey::Waiting, active),
-            fee_sort: column_sort(SortKey::Fee, active),
-            size_sort: column_sort(SortKey::Size, active),
+            waiting_sort: column_sort("/mempool", SortKey::Waiting, active),
+            fee_sort: column_sort("/mempool", SortKey::Fee, active),
+            size_sort: column_sort("/mempool", SortKey::Size, active),
             txs,
         }
     }
@@ -2635,11 +2672,15 @@ mod tests {
     /// longest-waiting, first -- and says it can be sorted at all.
     #[test]
     fn an_unsorted_column_links_to_itself_descending_and_offers_both_directions() {
-        let c = column_sort(SortKey::Fee, None);
+        let c = column_sort("/mempool", SortKey::Fee, None);
         assert_eq!(c.href, "/mempool?sort=fee&dir=desc");
         assert_eq!(c.arrow, " \u{2195}", "the column does not say it sorts");
 
-        let c = column_sort(SortKey::Size, Some((SortKey::Fee, SortDir::Asc)));
+        let c = column_sort(
+            "/mempool",
+            SortKey::Size,
+            Some((SortKey::Fee, SortDir::Asc)),
+        );
         assert_eq!(
             c.href, "/mempool?sort=size&dir=desc",
             "a column sorted by something else is still unsorted itself"
@@ -2651,11 +2692,19 @@ mod tests {
     /// it, and its arrow names the direction it is sorted in right now.
     #[test]
     fn the_active_column_links_to_its_reverse_and_names_its_direction() {
-        let desc = column_sort(SortKey::Waiting, Some((SortKey::Waiting, SortDir::Desc)));
+        let desc = column_sort(
+            "/mempool",
+            SortKey::Waiting,
+            Some((SortKey::Waiting, SortDir::Desc)),
+        );
         assert_eq!(desc.href, "/mempool?sort=waiting&dir=asc");
         assert_eq!(desc.arrow, " \u{25bc}");
 
-        let asc = column_sort(SortKey::Waiting, Some((SortKey::Waiting, SortDir::Asc)));
+        let asc = column_sort(
+            "/mempool",
+            SortKey::Waiting,
+            Some((SortKey::Waiting, SortDir::Asc)),
+        );
         assert_eq!(asc.href, "/mempool?sort=waiting&dir=desc");
         assert_eq!(asc.arrow, " \u{25b2}");
     }
@@ -2685,6 +2734,64 @@ mod tests {
             rows.iter().map(|r| r.size).collect::<Vec<_>>(),
             vec![1_000, 2_000, 3_000]
         );
+    }
+
+    /// A block's table sorts by fee and by size, and its headers link back to
+    /// the block by height.
+    #[test]
+    fn a_block_sorts_its_transactions_by_fee_or_size() {
+        let row = |fee_atomic, size| BlockTxRow {
+            fee_atomic,
+            size,
+            ..block_tx(false)
+        };
+        let mut rows = vec![row(300, 2_000), row(100, 1_000), row(200, 3_000)];
+
+        sort_block_rows(&mut rows, SortKey::Fee, SortDir::Desc);
+        assert_eq!(
+            rows.iter().map(|r| r.fee_atomic).collect::<Vec<_>>(),
+            vec![300, 200, 100]
+        );
+        sort_block_rows(&mut rows, SortKey::Size, SortDir::Asc);
+        assert_eq!(
+            rows.iter().map(|r| r.size).collect::<Vec<_>>(),
+            vec![1_000, 2_000, 3_000]
+        );
+
+        let mut page = block_page();
+        let active = Some((SortKey::Fee, SortDir::Asc));
+        page.fee_sort = column_sort("/block/3185430", SortKey::Fee, active);
+        page.size_sort = column_sort("/block/3185430", SortKey::Size, active);
+        let html = page.render().expect("renders");
+        assert!(
+            html.contains("href=\"/block/3185430?sort=fee&#38;dir=desc\">Fee \u{25b2}"),
+            "the active column does not flip:\n{html}"
+        );
+        assert!(
+            html.contains("href=\"/block/3185430?sort=size&#38;dir=desc\">Size \u{2195}"),
+            "the size column does not offer to sort:\n{html}"
+        );
+        assert!(!html.contains("Ring \u{2195}"), "ring is not sortable");
+    }
+
+    /// A transaction page marks what it is about: its own hash and the key
+    /// images its inputs spend. Other hashes on it stay plain.
+    #[test]
+    fn a_transaction_marks_its_hash_and_key_images() {
+        let html = tx_page().render().expect("renders");
+        assert!(html.contains(&format!(r#"<p class="hash mark">{}</p>"#, "e".repeat(64))));
+        assert_eq!(
+            html.matches(r#"Key image <span class="hash mark">"#)
+                .count(),
+            2,
+            "every key image should be marked:\n{html}"
+        );
+        assert_eq!(
+            html.matches(r#"class="hash mark""#).count(),
+            3,
+            "something other than the hash and key images is marked"
+        );
+        assert!(STYLESHEET.contains(".hash.mark { color: var(--accent); }"));
     }
 
     /// A stable sort: rows tied on the sort key keep the daemon's own order,
