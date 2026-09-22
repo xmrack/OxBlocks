@@ -86,6 +86,7 @@ struct BlockPage {
 struct BlockTxRow {
     hash: String,
     coinbase: bool,
+    pool_payout: bool,
     outputs: usize,
     fee: String,
     ring: usize,
@@ -100,6 +101,7 @@ struct TxPage {
     chain: Option<ChainStatus>,
     hash: String,
     coinbase: bool,
+    pool_payout: bool,
     in_pool: bool,
     pruned: bool,
     block_height: u64,
@@ -128,12 +130,113 @@ struct InputView {
     amount: Option<String>,
     unavailable: bool,
     ring: Vec<RingView>,
+    age_bars: Vec<AgeBar>,
+    /// Width of the age chart, so the SVG viewBox matches the bars in it.
+    chart_width: u32,
+    chart_height: u32,
 }
 
 struct RingView {
     height: u64,
     public_key: String,
     tx_hash: String,
+}
+
+/// One column of an input's ring-age chart.
+struct AgeBar {
+    /// Human label for the age range, e.g. "1-2d".
+    label: String,
+    count: usize,
+    /// Bar geometry, in the chart's own coordinate space. Computed here
+    /// because the Content-Security-Policy forbids inline styles, so the SVG
+    /// carries presentation attributes rather than a `style=`.
+    x: u32,
+    y: u32,
+    height: u32,
+}
+
+/// Whether a coinbase pays many recipients at once.
+///
+/// A solo miner or a custodial pool takes the reward to one output and
+/// distributes off-chain, so its coinbase has exactly one. A decentralised
+/// pool pays every participant in the coinbase itself, which is why p2pool
+/// blocks carry dozens. That shape is visible from chain data alone and costs
+/// nothing to check, but it identifies the *shape*, not the software: this
+/// says "paid many recipients", not "was mined by p2pool".
+///
+/// Attributing a payout to a particular pool, or telling which ring member is
+/// a payout being swept, needs that pool's own sidechain records. None of it
+/// is on the Monero chain, so this explorer cannot and does not infer it.
+fn is_pool_payout(coinbase: bool, outputs: usize) -> bool {
+    coinbase && outputs > 1
+}
+
+/// Blocks per day at Monero's two-minute target.
+const BLOCKS_PER_DAY: u64 = 720;
+
+/// Age buckets, in days, with the last one open-ended.
+///
+/// Doubling rather than linear: decoys are chosen from a gamma distribution
+/// that strongly favours recent outputs, so a linear axis puts almost every
+/// ring member in the first bucket and shows nothing.
+const AGE_BUCKET_DAYS: [u64; 9] = [1, 2, 4, 8, 16, 32, 64, 128, 256];
+
+const CHART_HEIGHT: u32 = 44;
+const BAR_WIDTH: u32 = 18;
+const BAR_GAP: u32 = 3;
+
+/// Buckets a ring's members by how old each output was when this transaction
+/// spent it.
+///
+/// `spent_at` is the height of the block holding the spending transaction, or
+/// the current tip for one still in the pool. A member mined *after* that --
+/// which the daemon should never return -- contributes an age of zero rather
+/// than wrapping.
+fn age_bars(ring: &[RingView], spent_at: u64) -> Vec<AgeBar> {
+    let mut counts = [0usize; AGE_BUCKET_DAYS.len() + 1];
+    for member in ring {
+        let days = spent_at.saturating_sub(member.height) / BLOCKS_PER_DAY;
+        let slot = AGE_BUCKET_DAYS
+            .iter()
+            .position(|&edge| days < edge)
+            .unwrap_or(AGE_BUCKET_DAYS.len());
+        if let Some(c) = counts.get_mut(slot) {
+            *c += 1;
+        }
+    }
+
+    let tallest = counts.iter().copied().max().unwrap_or(0).max(1);
+    counts
+        .iter()
+        .enumerate()
+        .map(|(i, &count)| {
+            let label = match (
+                i,
+                AGE_BUCKET_DAYS.get(i),
+                i.checked_sub(1).and_then(|p| AGE_BUCKET_DAYS.get(p)),
+            ) {
+                (0, Some(top), _) => format!("<{top}d"),
+                (_, Some(top), Some(bottom)) => format!("{bottom}-{top}d"),
+                (_, None, Some(bottom)) => format!("{bottom}d+"),
+                _ => String::new(),
+            };
+            // Integer arithmetic throughout: a zero-count bucket must render
+            // as no bar at all, not as a one-pixel sliver.
+            let height = if count == 0 {
+                0
+            } else {
+                let scaled = (count as u64 * u64::from(CHART_HEIGHT)) / tallest as u64;
+                u32::try_from(scaled).unwrap_or(CHART_HEIGHT).max(1)
+            };
+            AgeBar {
+                label,
+                count,
+                x: u32::try_from(i).unwrap_or(0) * (BAR_WIDTH + BAR_GAP),
+                y: CHART_HEIGHT.saturating_sub(height),
+                height,
+            }
+        })
+        .collect()
 }
 
 struct OutputView {
@@ -469,6 +572,7 @@ pub async fn block(State(state): Shared, Path(raw): Path<String>) -> Page {
             Some(BlockTxRow {
                 hash: e.tx_hash.to_lowercase(),
                 coinbase: f.coinbase,
+                pool_payout: is_pool_payout(f.coinbase, tx.vout.len()),
                 outputs: tx.vout.len(),
                 fee: xmr(f.fee),
                 ring: f.ring_size,
@@ -570,13 +674,18 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
         entry.block_timestamp
     };
 
-    let inputs = rings
+    // Ring ages are measured against the block that spent them, or the tip
+    // for a transaction still in the pool.
+    let spent_at = if entry.in_pool {
+        chain.as_ref().map_or(0, |c| c.height)
+    } else {
+        entry.block_height
+    };
+
+    let inputs: Vec<InputView> = rings
         .iter()
-        .map(|r| InputView {
-            key_image: r.key_image.to_hex(),
-            amount: visible_amount(r.amount),
-            unavailable: r.ring_unavailable,
-            ring: r
+        .map(|r| {
+            let ring: Vec<RingView> = r
                 .ring
                 .iter()
                 .map(|m| RingView {
@@ -584,7 +693,17 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
                     public_key: m.public_key.to_hex(),
                     tx_hash: m.tx_hash.to_hex(),
                 })
-                .collect(),
+                .collect();
+            let age_bars = age_bars(&ring, spent_at);
+            InputView {
+                key_image: r.key_image.to_hex(),
+                amount: visible_amount(r.amount),
+                unavailable: r.ring_unavailable,
+                ring,
+                chart_width: u32::try_from(age_bars.len()).unwrap_or(0) * (BAR_WIDTH + BAR_GAP),
+                chart_height: CHART_HEIGHT,
+                age_bars,
+            }
         })
         .collect();
 
@@ -638,6 +757,7 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
             chain,
             hash: entry.tx_hash.to_lowercase(),
             coinbase: f.coinbase,
+            pool_payout: is_pool_payout(f.coinbase, tx.vout.len()),
             in_pool: entry.in_pool,
             pruned: entry.prunable_missing(&tx),
             block_height: entry.block_height,
@@ -1135,6 +1255,145 @@ mod tests {
         );
     }
 
+    fn ring_at(heights: &[u64]) -> Vec<RingView> {
+        heights
+            .iter()
+            .map(|&h| RingView {
+                height: h,
+                public_key: "2".repeat(64),
+                tx_hash: "3".repeat(64),
+            })
+            .collect()
+    }
+
+    /// Ages are bucketed by how old each member was when it was spent, on a
+    /// doubling scale, and the bars are proportional to the counts.
+    #[test]
+    fn ring_ages_land_in_the_bucket_their_age_calls_for() {
+        let spent_at = 3_000_000;
+        let day = BLOCKS_PER_DAY;
+        let bars = age_bars(
+            &ring_at(&[
+                spent_at,             // 0 days -> "<1d"
+                spent_at - day + 1,   // just under a day -> "<1d"
+                spent_at - day,       // exactly one day -> "1-2d"
+                spent_at - 3 * day,   // -> "2-4d"
+                spent_at - 300 * day, // -> "256d+"
+            ]),
+            spent_at,
+        );
+
+        let by_label: Vec<(String, usize)> =
+            bars.iter().map(|b| (b.label.clone(), b.count)).collect();
+        assert_eq!(by_label.first(), Some(&("<1d".to_owned(), 2)));
+        assert_eq!(by_label.get(1), Some(&("1-2d".to_owned(), 1)));
+        assert_eq!(by_label.get(2), Some(&("2-4d".to_owned(), 1)));
+        assert_eq!(by_label.last(), Some(&("256d+".to_owned(), 1)));
+        assert_eq!(
+            bars.iter().map(|b| b.count).sum::<usize>(),
+            5,
+            "every ring member is counted exactly once"
+        );
+    }
+
+    /// The tallest bucket fills the chart and an empty one draws nothing, so
+    /// a reader cannot mistake a zero for a small value.
+    #[test]
+    fn bar_heights_are_proportional_and_a_zero_bucket_is_absent() {
+        let spent_at = 3_000_000;
+        let bars = age_bars(&ring_at(&[spent_at, spent_at, spent_at]), spent_at);
+
+        let first = bars.first().expect("a first bucket");
+        assert_eq!(first.count, 3);
+        assert_eq!(first.height, CHART_HEIGHT, "the tallest bucket fills it");
+        assert_eq!(first.y, 0, "and is drawn from the top");
+
+        for bar in bars.iter().skip(1) {
+            assert_eq!(bar.count, 0);
+            assert_eq!(bar.height, 0, "an empty bucket draws no bar");
+        }
+    }
+
+    /// A ring member mined after the spending block would underflow an
+    /// unchecked subtraction. The daemon should never return one; the page
+    /// must not render a wrong chart if it does.
+    #[test]
+    fn a_ring_member_newer_than_the_spend_does_not_wrap() {
+        let bars = age_bars(&ring_at(&[3_000_100]), 3_000_000);
+        assert_eq!(
+            bars.first().map(|b| b.count),
+            Some(1),
+            "it counts as brand new rather than as ancient"
+        );
+        assert_eq!(bars.iter().map(|b| b.count).sum::<usize>(), 1);
+    }
+
+    /// A coinbase paying many recipients is the shape a decentralised pool
+    /// leaves. Reported as a shape, not as an attribution to any software.
+    #[test]
+    fn only_a_multi_output_coinbase_reads_as_a_pool_payout() {
+        assert!(is_pool_payout(true, 51), "p2pool-shaped coinbase");
+        assert!(!is_pool_payout(true, 1), "solo or custodial pool coinbase");
+        assert!(
+            !is_pool_payout(false, 51),
+            "an ordinary transaction with many outputs is not a payout"
+        );
+        assert!(!is_pool_payout(false, 2));
+    }
+
+    /// The hints are plain markup: no script, no external reference, and they
+    /// work with JavaScript off, which is the only way they can work here.
+    #[test]
+    fn the_transaction_page_hints_need_no_script() {
+        let mut page = tx_page();
+        page.payment_id8 = "1234567890abcdef".to_owned();
+        let html = page.render().expect("renders");
+
+        assert!(
+            html.matches("<details class=\"hint\">").count() >= 6,
+            "the explanatory hints are missing:\n{html}"
+        );
+        assert!(!html.to_lowercase().contains("<script"));
+        assert!(!html.contains("onclick"));
+        // The key image was an unlabelled hash next to the ring member count,
+        // which is what made it read as an output key.
+        assert!(html.contains("Key image"), "the key image is unlabelled");
+        assert!(
+            html.contains("tx_extra"),
+            "the Extra heading does not say what it is"
+        );
+    }
+
+    /// No page may carry a `style=` attribute.
+    ///
+    /// The policy is `style-src 'self'` with no `'unsafe-inline'`, so a
+    /// browser drops inline styles silently -- the markup looks right, the
+    /// rule never applies, and nothing reports it. Three had accumulated this
+    /// way before this test existed.
+    #[test]
+    fn no_page_styles_itself_inline() {
+        let mut tx = tx_page();
+        tx.pool_payout = true;
+        tx.pruned = true;
+        tx.extra_fields = vec![ExtraField {
+            name: "Transaction public key".to_owned(),
+            value: "a".repeat(64),
+        }];
+        tx.inputs.iter_mut().for_each(|i| i.unavailable = true);
+
+        for (name, html) in [
+            ("index", index_page().render().expect("renders")),
+            ("block", block_page().render().expect("renders")),
+            ("tx", tx.render().expect("renders")),
+            ("api", api_page().render().expect("renders")),
+        ] {
+            assert!(
+                !html.contains("style=\""),
+                "{name} carries an inline style, which the policy discards:\n{html}"
+            );
+        }
+    }
+
     /// The documentation page is subject to the same rule as every other page:
     /// nothing external, no script, one stylesheet. Example requests are shown
     /// as paths rather than absolute URLs partly for this reason -- a page read
@@ -1207,6 +1466,7 @@ mod tests {
         BlockTxRow {
             hash: if coinbase { "c" } else { "d" }.repeat(64),
             coinbase,
+            pool_payout: is_pool_payout(coinbase, 2),
             outputs: 2,
             fee: if coinbase { "0.0" } else { "0.00071136" }.to_owned(),
             ring: if coinbase { 0 } else { 16 },
@@ -1248,6 +1508,7 @@ mod tests {
             chain: status(),
             hash: "e".repeat(64),
             coinbase: false,
+            pool_payout: false,
             in_pool: false,
             pruned: false,
             block_height: 3_185_430,
@@ -1273,12 +1534,18 @@ mod tests {
                         public_key: "2".repeat(64),
                         tx_hash: "3".repeat(64),
                     }],
+                    age_bars: Vec::new(),
+                    chart_width: 0,
+                    chart_height: CHART_HEIGHT,
                 },
                 InputView {
                     key_image: "4".repeat(64),
                     amount: visible_amount(2_000_000_000_000),
                     unavailable: false,
                     ring: Vec::new(),
+                    age_bars: Vec::new(),
+                    chart_width: 0,
+                    chart_height: CHART_HEIGHT,
                 },
             ],
             outputs: vec![

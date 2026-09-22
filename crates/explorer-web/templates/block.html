@@ -34,6 +34,7 @@
       <td>
         <a class="hash" href="/tx/{{ t.hash }}">{{ t.hash }}</a>
         {% if t.coinbase %}<span class="tag coinbase">coinbase</span>{% endif %}
+        {% if t.pool_payout %}<span class="tag coinbase">{{ t.outputs }} recipients</span>{% endif %}
       </td>
       <td class="num">{{ t.outputs }}</td>
       <td class="num">{{ t.fee }}</td>

@@ -322,3 +322,58 @@ footer.site a { color: var(--fg-muted); }
   dl.kv dt { padding-bottom: 0; color: var(--fg-faint); font-size: 0.78rem; }
   dl.kv dd { padding-top: 0.05rem; padding-bottom: 0.55rem; }
 }
+
+/* ---------- inline hints ---------- */
+
+/* An information affordance that works without JavaScript and on touch.
+   <abbr title> would be invisible on a phone; a <details> is tappable. */
+details.hint { display: inline; }
+details.hint > summary {
+  display: inline;
+  list-style: none;
+  cursor: help;
+  color: var(--fg-faint);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0 0.32rem;
+  margin-left: 0.3rem;
+  user-select: none;
+}
+details.hint > summary::-webkit-details-marker { display: none; }
+details.hint > summary:hover { color: var(--fg); border-color: var(--fg-faint); }
+details.hint[open] > summary { color: var(--accent); border-color: var(--accent); }
+details.hint > p {
+  margin: 0.45rem 0 0.2rem;
+  padding: 0.55rem 0.75rem;
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+  max-width: 46rem;
+}
+
+/* ---------- ring age chart ---------- */
+
+.ring-ages { padding: 0.55rem 0.7rem 0.2rem; }
+.ring-ages figcaption {
+  font-size: 0.78rem;
+  color: var(--fg-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.045em;
+  margin-bottom: 0.4rem;
+}
+.ring-ages svg { display: block; overflow: visible; }
+.ring-ages .bar { fill: var(--accent); }
+.ring-ages .tick { fill: var(--fg-faint); font-size: 6px; }
+.ring-ages .axis { stroke: var(--line); stroke-width: 1; }
+
+/* Replaces three `style=` attributes. The Content-Security-Policy is
+   `style-src 'self'` with no 'unsafe-inline', so the browser was dropping
+   them and the spacing they asked for never applied. */
+.empty.tight { padding: 0.3rem 0 0; }
+.empty.indented { padding-left: 0.6rem; }
+dl.kv.spaced { margin-top: 0.8rem; }
