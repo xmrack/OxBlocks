@@ -2060,8 +2060,8 @@ mod tests {
         // which is what made it read as an output key.
         assert!(html.contains("Key image"), "the key image is unlabelled");
         assert!(
-            html.contains("tx_extra"),
-            "the Extra heading does not say what it is"
+            html.contains("Tx_Extra"),
+            "the heading does not name the field"
         );
     }
 
