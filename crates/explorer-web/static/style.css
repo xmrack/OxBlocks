@@ -365,18 +365,29 @@ details.hint > p {
 
 /* ---------- ring age chart ---------- */
 
-.ring-ages { padding: 0.55rem 0.7rem 0.2rem; }
+/* One mark per ring member on a logarithmic time axis: the oldest member at
+   the left, the spend at the right. Marks are translucent, so members of a
+   similar age overlap into a darker band -- the density is the chart. */
+.ring-ages { margin: 0 0 0.7rem; padding: 0.6rem 0.75rem 0.45rem; }
 .ring-ages figcaption {
   font-size: 0.78rem;
   color: var(--fg-faint);
   text-transform: uppercase;
   letter-spacing: 0.045em;
-  margin-bottom: 0.4rem;
+  margin-bottom: 0.5rem;
 }
-.ring-ages svg { display: block; overflow: visible; }
-.ring-ages .bar { fill: var(--accent); }
-.ring-ages .tick { fill: var(--fg-faint); font-size: 6px; }
-.ring-ages .axis { stroke: var(--line); stroke-width: 1; }
+/* Drawn at the size it was designed for and scrolled sideways when the window
+   is narrower, like the tables: scaled down to fit, the axis labels stop being
+   readable. `svg.strip` and not `svg`, or this also inflates the 13px icon in
+   the caption above it. */
+.ring-ages .strip { display: block; width: 760px; height: auto; overflow: visible; }
+.ring-ages .track { fill: var(--bg-sunken); }
+.ring-ages .frame { fill: none; stroke: var(--line); stroke-width: 1; }
+.ring-ages .grid { stroke: var(--line); stroke-width: 1; }
+.ring-ages .halo { fill: var(--accent); opacity: 0.26; }
+.ring-ages .stem { fill: var(--accent); opacity: 0.85; }
+.ring-ages .tick { fill: var(--fg-faint); font-size: 10px; }
+.ring-ages .tick.edge { fill: var(--fg-muted); }
 
 /* Replaces three `style=` attributes. The Content-Security-Policy is
    `style-src 'self'` with no 'unsafe-inline', so the browser was dropping

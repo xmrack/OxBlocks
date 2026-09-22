@@ -101,22 +101,27 @@
       <figure class="ring-ages">
         <figcaption>Ring member ages
           <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
-          <p>How old each of this input's ring members was when it was spent,
-          in days. Monero picks decoys from a gamma distribution that favours
-          recent outputs, because real spends are usually recent too &mdash; so
-          a healthy ring leans left, and the real output is not distinguishable
-          by age. The buckets double in width because a linear axis would put
-          nearly every member in the first one.</p></details>
+          <p>How old each of this input's ring members was when it was spent.
+          The spend is the right edge, older members sit further left, and the
+          scale is logarithmic: Monero draws decoys from a gamma distribution
+          that strongly favours recent outputs, so on a linear axis almost the
+          whole ring would pile against that edge. Members close in age overlap
+          into a darker band, and every input on this page is drawn against the
+          same axis. One of these members is the real output, and it is not
+          meant to be distinguishable by age.</p></details>
         </figcaption>
-        <svg viewBox="0 0 {{ i.chart_width }} {{ i.chart_height + 10 }}"
-             width="{{ i.chart_width }}" height="{{ i.chart_height + 10 }}"
-             role="img" aria-label="Distribution of ring member ages">
-          {% for b in i.age_bars %}
-          {% if b.count > 0 %}<rect class="bar" x="{{ b.x }}" y="{{ b.y }}" width="15" height="{{ b.height }}"><title>{{ b.label }}: {{ b.count }}</title></rect>{% endif %}
-          <text class="tick" x="{{ b.x }}" y="{{ i.chart_height + 7 }}">{{ b.label }}</text>
-          {% endfor %}
-          <line class="axis" x1="0" y1="{{ i.chart_height }}" x2="{{ i.chart_width }}" y2="{{ i.chart_height }}"/>
+        <div class="scroll">
+        <svg class="strip" viewBox="0 0 {{ crate::html::STRIP_WIDTH }} {{ crate::html::STRIP_HEIGHT }}"
+             role="img" aria-label="Ring member ages, oldest at the left and the spend at the right">
+          <rect class="track" x="0" y="0" rx="3" width="{{ crate::html::STRIP_WIDTH }}" height="{{ crate::html::STRIP_BAND }}"/>
+          {% for t in i.ages.ticks %}<line class="grid" x1="{{ t.x }}" y1="0" x2="{{ t.x }}" y2="{{ crate::html::STRIP_BAND }}"/>{% endfor %}
+          {% for m in i.ages.marks %}<rect class="halo" x="{{ m.halo }}" y="0" rx="2" width="{{ crate::html::HALO_WIDTH }}" height="{{ crate::html::STRIP_BAND }}"><title>{{ m.label }} old</title></rect>{% endfor %}
+          {% for m in i.ages.marks %}<rect class="stem" x="{{ m.stem }}" y="0" width="{{ crate::html::STEM_WIDTH }}" height="{{ crate::html::STRIP_BAND }}"/>{% endfor %}
+          <rect class="frame" x="0" y="0" rx="3" width="{{ crate::html::STRIP_WIDTH }}" height="{{ crate::html::STRIP_BAND }}"/>
+          {% for t in i.ages.ticks %}<text class="tick" x="{{ t.x }}" y="{{ crate::html::TICK_BASELINE }}" text-anchor="middle">{{ t.label }}</text>{% endfor %}
+          <text class="tick edge" x="{{ crate::html::STRIP_WIDTH }}" y="{{ crate::html::TICK_BASELINE }}" text-anchor="end">spent</text>
         </svg>
+        </div>
       </figure>
       <div class="scroll">
       <table>

@@ -130,10 +130,7 @@ struct InputView {
     amount: Option<String>,
     unavailable: bool,
     ring: Vec<RingView>,
-    age_bars: Vec<AgeBar>,
-    /// Width of the age chart, so the SVG viewBox matches the bars in it.
-    chart_width: u32,
-    chart_height: u32,
+    ages: AgeStrip,
 }
 
 struct RingView {
@@ -142,17 +139,29 @@ struct RingView {
     tx_hash: String,
 }
 
-/// One column of an input's ring-age chart.
-struct AgeBar {
-    /// Human label for the age range, e.g. "1-2d".
+/// An input's ring laid out along a time axis.
+struct AgeStrip {
+    marks: Vec<AgeMark>,
+    ticks: Vec<AgeTick>,
+}
+
+/// One ring member's place on the strip: a hairline at its own age, under a
+/// wide translucent halo. Halos of members close in age overlap into a darker
+/// band, which is what makes the clustering visible at a glance.
+struct AgeMark {
+    /// Left edges, in the strip's own coordinate space. Computed here because
+    /// the Content-Security-Policy forbids inline styles, so the SVG carries
+    /// presentation attributes rather than a `style=`.
+    halo: u32,
+    stem: u32,
+    /// The age this mark stands for, e.g. "4 h".
     label: String,
-    count: usize,
-    /// Bar geometry, in the chart's own coordinate space. Computed here
-    /// because the Content-Security-Policy forbids inline styles, so the SVG
-    /// carries presentation attributes rather than a `style=`.
+}
+
+/// One labelled point on the strip's time axis.
+struct AgeTick {
     x: u32,
-    y: u32,
-    height: u32,
+    label: String,
 }
 
 /// Whether a coinbase pays many recipients at once.
@@ -171,72 +180,125 @@ fn is_pool_payout(coinbase: bool, outputs: usize) -> bool {
     coinbase && outputs > 1
 }
 
-/// Blocks per day at Monero's two-minute target.
+/// Blocks per hour and per day at Monero's two-minute target.
+const BLOCKS_PER_HOUR: u64 = 30;
 const BLOCKS_PER_DAY: u64 = 720;
 
-/// Age buckets, in days, with the last one open-ended.
-///
-/// Doubling rather than linear: decoys are chosen from a gamma distribution
-/// that strongly favours recent outputs, so a linear axis puts almost every
-/// ring member in the first bucket and shows nothing.
-const AGE_BUCKET_DAYS: [u64; 9] = [1, 2, 4, 8, 16, 32, 64, 128, 256];
+/// The strip's coordinate space, in the pixels it occupies at full size. The
+/// stylesheet lets it shrink with a narrow window but never enlarges it, so
+/// the axis labels stay the size they were drawn at.
+const STRIP_WIDTH: u32 = 760;
+const STRIP_BAND: u32 = 26;
+const STRIP_HEIGHT: u32 = 44;
+const HALO_WIDTH: u32 = 26;
+const STEM_WIDTH: u32 = 2;
+/// Baseline for the axis labels: below the band, with room for descenders.
+const TICK_BASELINE: u32 = STRIP_HEIGHT - 5;
 
-const CHART_HEIGHT: u32 = 44;
-const BAR_WIDTH: u32 = 18;
-const BAR_GAP: u32 = 3;
+/// Axis labels, spaced widely enough on a log scale that two never collide.
+const AGE_TICKS: [(u64, &str); 7] = [
+    (BLOCKS_PER_HOUR, "1h"),
+    (6 * BLOCKS_PER_HOUR, "6h"),
+    (BLOCKS_PER_DAY, "1d"),
+    (7 * BLOCKS_PER_DAY, "1w"),
+    (30 * BLOCKS_PER_DAY, "1mo"),
+    (365 * BLOCKS_PER_DAY, "1y"),
+    (1825 * BLOCKS_PER_DAY, "5y"),
+];
 
-/// Buckets a ring's members by how old each output was when this transaction
-/// spent it.
+/// The axis every strip on a transaction shares: the oldest age any of its
+/// inputs reaches. Drawn to its own scale, each input would put the same
+/// cluster in a different place, and the strips could not be compared.
+fn axis_span(heights: impl Iterator<Item = u64>, spent_at: u64) -> u64 {
+    heights
+        .map(|h| spent_at.saturating_sub(h))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Lays a ring out on a time axis running from `oldest` at the left to the
+/// spend itself at the right.
 ///
 /// `spent_at` is the height of the block holding the spending transaction, or
 /// the current tip for one still in the pool. A member mined *after* that --
-/// which the daemon should never return -- contributes an age of zero rather
-/// than wrapping.
-fn age_bars(ring: &[RingView], spent_at: u64) -> Vec<AgeBar> {
-    let mut counts = [0usize; AGE_BUCKET_DAYS.len() + 1];
-    for member in ring {
-        let days = spent_at.saturating_sub(member.height) / BLOCKS_PER_DAY;
-        let slot = AGE_BUCKET_DAYS
+/// which the daemon should never return -- reads as brand new rather than
+/// wrapping.
+///
+/// `oldest` is the axis, in blocks, and is the oldest age reached by any of
+/// the transaction's inputs rather than by this one alone.
+fn age_strip(ring: &[RingView], spent_at: u64, oldest: u64) -> AgeStrip {
+    let ages = ring.iter().map(|m| spent_at.saturating_sub(m.height));
+
+    AgeStrip {
+        marks: ages
+            .map(|age| {
+                let x = strip_x(age, oldest);
+                AgeMark {
+                    halo: centred(x, HALO_WIDTH),
+                    stem: centred(x, STEM_WIDTH),
+                    label: age_label(age),
+                }
+            })
+            .collect(),
+        // Only the range the ring covers: a label with nothing under it
+        // invites the reader to look for members that are not there.
+        ticks: AGE_TICKS
             .iter()
-            .position(|&edge| days < edge)
-            .unwrap_or(AGE_BUCKET_DAYS.len());
-        if let Some(c) = counts.get_mut(slot) {
-            *c += 1;
-        }
+            .filter(|&&(age, _)| age <= oldest)
+            .map(|&(age, label)| AgeTick {
+                x: strip_x(age, oldest),
+                label: label.to_owned(),
+            })
+            .collect(),
+    }
+}
+
+/// Left edge of a mark of `width` centred on `x`, held inside the strip so a
+/// member at either extreme is drawn whole rather than half outside the band.
+fn centred(x: u32, width: u32) -> u32 {
+    x.saturating_sub(width / 2).min(STRIP_WIDTH - width)
+}
+
+/// Where an age sits along the strip: 0 is the oldest member, `STRIP_WIDTH`
+/// the moment of the spend.
+///
+/// Logarithmic, because decoys are drawn from a gamma distribution that
+/// strongly favours recent outputs. On a linear axis nearly every member of a
+/// healthy ring lands within a unit or two of the right edge, and the shape
+/// worth looking at is the one that disappears.
+fn strip_x(age: u64, oldest: u64) -> u32 {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a chart coordinate, not chain arithmetic"
+    )]
+    let (age, oldest) = (age as f64, oldest as f64);
+
+    let span = (oldest + 1.0).ln();
+    if span <= 0.0 {
+        // No member is older than the spend, so there is no axis to spread
+        // them along; they all belong at the spend end.
+        return STRIP_WIDTH;
     }
 
-    let tallest = counts.iter().copied().max().unwrap_or(0).max(1);
-    counts
-        .iter()
-        .enumerate()
-        .map(|(i, &count)| {
-            let label = match (
-                i,
-                AGE_BUCKET_DAYS.get(i),
-                i.checked_sub(1).and_then(|p| AGE_BUCKET_DAYS.get(p)),
-            ) {
-                (0, Some(top), _) => format!("<{top}d"),
-                (_, Some(top), Some(bottom)) => format!("{bottom}-{top}d"),
-                (_, None, Some(bottom)) => format!("{bottom}d+"),
-                _ => String::new(),
-            };
-            // Integer arithmetic throughout: a zero-count bucket must render
-            // as no bar at all, not as a one-pixel sliver.
-            let height = if count == 0 {
-                0
-            } else {
-                let scaled = (count as u64 * u64::from(CHART_HEIGHT)) / tallest as u64;
-                u32::try_from(scaled).unwrap_or(CHART_HEIGHT).max(1)
-            };
-            AgeBar {
-                label,
-                count,
-                x: u32::try_from(i).unwrap_or(0) * (BAR_WIDTH + BAR_GAP),
-                y: CHART_HEIGHT.saturating_sub(height),
-                height,
-            }
-        })
-        .collect()
+    let from_left = f64::from(STRIP_WIDTH) * (1.0 - (age + 1.0).ln() / span);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to the strip before the cast"
+    )]
+    let x = from_left.clamp(0.0, f64::from(STRIP_WIDTH)).round() as u32;
+    x
+}
+
+/// An age written the way a reader would say it.
+fn age_label(blocks: u64) -> String {
+    let minutes = blocks.saturating_mul(2);
+    match minutes {
+        0..60 => format!("{minutes} min"),
+        60..1440 => format!("{} h", minutes / 60),
+        1440..43200 => format!("{} d", minutes / 1440),
+        _ => format!("{} mo", minutes / 43200),
+    }
 }
 
 struct OutputView {
@@ -710,6 +772,11 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
         entry.block_height
     };
 
+    let oldest = axis_span(
+        rings.iter().flat_map(|r| &r.ring).map(|m| m.block_height),
+        spent_at,
+    );
+
     let inputs: Vec<InputView> = rings
         .iter()
         .map(|r| {
@@ -722,15 +789,12 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
                     tx_hash: m.tx_hash.to_hex(),
                 })
                 .collect();
-            let age_bars = age_bars(&ring, spent_at);
             InputView {
                 key_image: r.key_image.to_hex(),
                 amount: visible_amount(r.amount),
                 unavailable: r.ring_unavailable,
+                ages: age_strip(&ring, spent_at, oldest),
                 ring,
-                chart_width: u32::try_from(age_bars.len()).unwrap_or(0) * (BAR_WIDTH + BAR_GAP),
-                chart_height: CHART_HEIGHT,
-                age_bars,
             }
         })
         .collect();
@@ -1294,52 +1358,156 @@ mod tests {
             .collect()
     }
 
-    /// Ages are bucketed by how old each member was when it was spent, on a
-    /// doubling scale, and the bars are proportional to the counts.
+    /// The strip runs oldest-left, spend-right.
     #[test]
-    fn ring_ages_land_in_the_bucket_their_age_calls_for() {
+    fn the_oldest_member_anchors_the_left_edge_and_the_newest_the_spend() {
         let spent_at = 3_000_000;
-        let day = BLOCKS_PER_DAY;
-        let bars = age_bars(
-            &ring_at(&[
-                spent_at,             // 0 days -> "<1d"
-                spent_at - day + 1,   // just under a day -> "<1d"
-                spent_at - day,       // exactly one day -> "1-2d"
-                spent_at - 3 * day,   // -> "2-4d"
-                spent_at - 300 * day, // -> "256d+"
-            ]),
-            spent_at,
-        );
+        let axis = 40 * BLOCKS_PER_DAY;
+        let strip = age_strip(&ring_at(&[spent_at, spent_at - axis]), spent_at, axis);
 
-        let by_label: Vec<(String, usize)> =
-            bars.iter().map(|b| (b.label.clone(), b.count)).collect();
-        assert_eq!(by_label.first(), Some(&("<1d".to_owned(), 2)));
-        assert_eq!(by_label.get(1), Some(&("1-2d".to_owned(), 1)));
-        assert_eq!(by_label.get(2), Some(&("2-4d".to_owned(), 1)));
-        assert_eq!(by_label.last(), Some(&("256d+".to_owned(), 1)));
         assert_eq!(
-            bars.iter().map(|b| b.count).sum::<usize>(),
-            5,
-            "every ring member is counted exactly once"
+            strip.marks.first().map(|m| m.stem),
+            Some(STRIP_WIDTH - STEM_WIDTH),
+            "a member as new as the spend sits at the right edge"
+        );
+        assert_eq!(
+            strip.marks.last().map(|m| m.stem),
+            Some(0),
+            "and the oldest at the left"
         );
     }
 
-    /// The tallest bucket fills the chart and an empty one draws nothing, so
-    /// a reader cannot mistake a zero for a small value.
+    /// Older is always further left. Nothing else on the strip means anything
+    /// if this does not hold.
     #[test]
-    fn bar_heights_are_proportional_and_a_zero_bucket_is_absent() {
+    fn marks_run_in_age_order_along_the_strip() {
         let spent_at = 3_000_000;
-        let bars = age_bars(&ring_at(&[spent_at, spent_at, spent_at]), spent_at);
+        let heights: Vec<u64> = [0, BLOCKS_PER_HOUR, BLOCKS_PER_DAY, 30 * BLOCKS_PER_DAY]
+            .iter()
+            .map(|age| spent_at - age)
+            .collect();
+        let strip = age_strip(&ring_at(&heights), spent_at, 30 * BLOCKS_PER_DAY);
 
-        let first = bars.first().expect("a first bucket");
-        assert_eq!(first.count, 3);
-        assert_eq!(first.height, CHART_HEIGHT, "the tallest bucket fills it");
-        assert_eq!(first.y, 0, "and is drawn from the top");
-
-        for bar in bars.iter().skip(1) {
-            assert_eq!(bar.count, 0);
-            assert_eq!(bar.height, 0, "an empty bucket draws no bar");
+        let mut checked = 0;
+        for pair in strip.marks.windows(2) {
+            if let [newer, older] = pair {
+                assert!(
+                    older.stem < newer.stem,
+                    "an older member drawn at {} is not left of a newer one at {}",
+                    older.stem,
+                    newer.stem
+                );
+                checked += 1;
+            }
         }
+        assert_eq!(checked, 3, "every neighbouring pair was compared");
+    }
+
+    /// The point of the log axis: a real ring clusters in the last day while
+    /// one member may be a year old. A linear axis would put those two recent
+    /// members less than a unit apart.
+    #[test]
+    fn a_recent_cluster_stays_legible_beside_a_year_old_member() {
+        let spent_at = 3_000_000;
+        let strip = age_strip(
+            &ring_at(&[
+                spent_at - BLOCKS_PER_HOUR,
+                spent_at - 6 * BLOCKS_PER_HOUR,
+                spent_at - 365 * BLOCKS_PER_DAY,
+            ]),
+            spent_at,
+            365 * BLOCKS_PER_DAY,
+        );
+
+        let (one_hour, six_hours) = (
+            strip.marks.first().map_or(0, |m| m.stem),
+            strip.marks.get(1).map_or(0, |m| m.stem),
+        );
+        assert!(
+            one_hour.abs_diff(six_hours) > HALO_WIDTH,
+            "one hour and six hours are {} apart, so their halos merge into one",
+            one_hour.abs_diff(six_hours)
+        );
+    }
+
+    /// The halo stands for its member's age, so it has to sit around that age
+    /// rather than beside it: offset by half a halo, every cluster on the
+    /// strip is drawn newer than the ring it came from.
+    #[test]
+    fn a_halo_is_centred_on_the_member_it_belongs_to() {
+        let spent_at = 3_000_000;
+        let strip = age_strip(
+            &ring_at(&[spent_at - BLOCKS_PER_DAY, spent_at - 365 * BLOCKS_PER_DAY]),
+            spent_at,
+            365 * BLOCKS_PER_DAY,
+        );
+
+        let mark = strip.marks.first().expect("the day-old member");
+        assert_eq!(mark.halo + HALO_WIDTH / 2, mark.stem + STEM_WIDTH / 2);
+    }
+
+    /// A strip two days wide must not carry a "1y" label with nothing under it.
+    #[test]
+    fn the_axis_is_labelled_only_across_the_range_it_covers() {
+        let spent_at = 3_000_000;
+        let strip = age_strip(
+            &ring_at(&[spent_at, spent_at - 2 * BLOCKS_PER_DAY]),
+            spent_at,
+            2 * BLOCKS_PER_DAY,
+        );
+
+        let labels: Vec<&str> = strip.ticks.iter().map(|t| t.label.as_str()).collect();
+        assert_eq!(labels, ["1h", "6h", "1d"]);
+        assert!(
+            strip.ticks.iter().all(|t| t.x <= STRIP_WIDTH),
+            "a tick fell outside the strip it labels"
+        );
+    }
+
+    #[test]
+    fn the_axis_reaches_the_oldest_member_of_any_input() {
+        let spent_at = 3_000_000;
+        assert_eq!(
+            axis_span(
+                [spent_at - 10, spent_at - 4000, spent_at - 700].into_iter(),
+                spent_at
+            ),
+            4000
+        );
+        assert_eq!(
+            axis_span([spent_at + 50].into_iter(), spent_at),
+            0,
+            "a member newer than the spend does not stretch the axis backwards"
+        );
+        assert_eq!(axis_span([].into_iter(), spent_at), 0);
+    }
+
+    /// Every input of a transaction is drawn against the same axis, so the
+    /// same cluster sits in the same place on each. An input whose ring is
+    /// younger than the widest one therefore stops short of the left edge.
+    #[test]
+    fn an_input_is_drawn_against_the_transactions_axis_not_its_own() {
+        let spent_at = 3_000_000;
+        let ring = ring_at(&[spent_at, spent_at - BLOCKS_PER_DAY]);
+
+        let alone = age_strip(&ring, spent_at, BLOCKS_PER_DAY);
+        let beside_an_older_input = age_strip(&ring, spent_at, 365 * BLOCKS_PER_DAY);
+
+        assert_eq!(alone.marks.last().map(|m| m.stem), Some(0));
+        assert!(
+            beside_an_older_input.marks.last().map_or(0, |m| m.stem) > HALO_WIDTH,
+            "a day-old member is drawn as though it were the oldest on the page"
+        );
+    }
+
+    #[test]
+    fn an_age_is_labelled_in_the_unit_a_reader_would_use() {
+        assert_eq!(age_label(0), "0 min");
+        assert_eq!(age_label(5), "10 min");
+        assert_eq!(age_label(BLOCKS_PER_HOUR), "1 h");
+        assert_eq!(age_label(BLOCKS_PER_DAY), "1 d");
+        assert_eq!(age_label(29 * BLOCKS_PER_DAY), "29 d");
+        assert_eq!(age_label(45 * BLOCKS_PER_DAY), "1 mo");
     }
 
     /// A ring member mined after the spending block would underflow an
@@ -1347,13 +1515,31 @@ mod tests {
     /// must not render a wrong chart if it does.
     #[test]
     fn a_ring_member_newer_than_the_spend_does_not_wrap() {
-        let bars = age_bars(&ring_at(&[3_000_100]), 3_000_000);
+        let strip = age_strip(&ring_at(&[3_000_100]), 3_000_000, 0);
+
         assert_eq!(
-            bars.first().map(|b| b.count),
-            Some(1),
-            "it counts as brand new rather than as ancient"
+            strip.marks.first().map(|m| m.stem),
+            Some(STRIP_WIDTH - STEM_WIDTH),
+            "it reads as brand new rather than as ancient"
         );
-        assert_eq!(bars.iter().map(|b| b.count).sum::<usize>(), 1);
+        assert_eq!(strip.marks.len(), 1);
+        assert!(strip.ticks.is_empty(), "there is no age range to label");
+    }
+
+    /// The info icon in the caption is an `<svg>` inside `.ring-ages` as well,
+    /// so a rule meant for the strip has to name the strip. Written as
+    /// `.ring-ages svg`, it stretched a 13px icon to the width of the page.
+    #[test]
+    fn the_strip_is_styled_by_its_own_class_rather_than_by_being_an_svg() {
+        let html = tx_page().render().expect("renders");
+        assert!(
+            html.contains(r#"<svg class="strip""#),
+            "the strip does not carry the class its rules are written for"
+        );
+        assert!(
+            !STYLESHEET.contains(".ring-ages svg"),
+            "a rule for every svg under .ring-ages also sizes the caption icon"
+        );
     }
 
     /// The tag states what was inferred, not the output count.
@@ -1640,18 +1826,14 @@ mod tests {
                         public_key: "2".repeat(64),
                         tx_hash: "3".repeat(64),
                     }],
-                    age_bars: Vec::new(),
-                    chart_width: 0,
-                    chart_height: CHART_HEIGHT,
+                    ages: age_strip(&[], 0, 0),
                 },
                 InputView {
                     key_image: "4".repeat(64),
                     amount: visible_amount(2_000_000_000_000),
                     unavailable: false,
                     ring: Vec::new(),
-                    age_bars: Vec::new(),
-                    chart_width: 0,
-                    chart_height: CHART_HEIGHT,
+                    ages: age_strip(&[], 0, 0),
                 },
             ],
             outputs: vec![
