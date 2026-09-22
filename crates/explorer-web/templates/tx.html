@@ -1,19 +1,19 @@
 {% extends "base.html" %}
 {% block title %}Transaction {{ hash }} &mdash; oxblocks{% endblock %}
 {% block content %}
-<h1>Transaction{% if coinbase %} <span class="tag coinbase">coinbase</span>{% endif %}{% if pool_payout %} <span class="tag coinbase">pool payout</span>{% endif %}</h1>
-{% if pool_payout %}
+<h1>Transaction{% if coinbase %} <span class="tag coinbase">coinbase</span>{% endif %}{% if p2pool %} <span class="tag coinbase">p2pool</span>{% endif %}</h1>
+{% if p2pool %}
 <p class="empty tight">
-  The reward is split directly among the outputs below rather than paid to a
-  single address, which is how a decentralised pool such as p2pool settles
-  with its miners on-chain.
+  The reward is split among the outputs below rather than paid to one
+  address, which is how p2pool pays its miners.
   <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
-  <p>This coinbase pays more than one address. A solo miner, or a pool that
-  settles with its miners off the chain, takes the reward to a single output.
-  A pool that pays its miners on the chain, such as p2pool, pays every one of
-  them in the coinbase. The tag reports that shape, not the software. Naming
-  the pool would need its own sidechain records, which are not on the Monero
-  chain.</p></details>
+  <p>p2pool is a mining pool with no operator. Miners run it themselves and
+  it pays them in the coinbase of the block it finds, so the reward reaches
+  them without anyone holding it first. A solo miner, or a pool that pays from
+  its own wallet later, needs one output instead. This block is tagged because
+  its coinbase pays several addresses and carries the commitment p2pool writes
+  to tie the block to its sidechain. Which miner got which output is not on
+  the Monero chain.</p></details>
 </p>
 {% endif %}
 <p class="hash">{{ hash }}</p>

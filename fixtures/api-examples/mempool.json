@@ -1,0 +1,28 @@
+{
+  "data": {
+    "limit": 1,
+    "page": 0,
+    "total_page_no": 50,
+    "txs": [
+      {
+        "coinbase": false,
+        "extra": "01d3d0925db532a12b5d16eef8627f9aaf224aeaa5fdd7dc3f47d92616eb49c38e020901141684dabcbc8734",
+        "mixin": 16,
+        "payment_id": "",
+        "payment_id8": "141684dabcbc8734",
+        "rct_type": 6,
+        "timestamp": 1790092581,
+        "timestamp_utc": "2026-09-22 15:56:21",
+        "tx_fee": 30660000,
+        "tx_hash": "6eb969e26200f074001924129a1a00bf9894cc6e9877a89791c990b2a7dc7da7",
+        "tx_size": 1533,
+        "tx_version": 2,
+        "unlock_time": 0,
+        "xmr_inputs": 0,
+        "xmr_outputs": 0
+      }
+    ],
+    "txs_no": 50
+  },
+  "status": "success"
+}

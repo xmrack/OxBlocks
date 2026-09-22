@@ -87,7 +87,7 @@ struct BlockPage {
 struct BlockTxRow {
     hash: String,
     coinbase: bool,
-    pool_payout: bool,
+    p2pool: bool,
     outputs: usize,
     fee: String,
     ring: usize,
@@ -102,7 +102,7 @@ struct TxPage {
     chain: Option<ChainStatus>,
     hash: String,
     coinbase: bool,
-    pool_payout: bool,
+    p2pool: bool,
     in_pool: bool,
     pruned: bool,
     block_height: u64,
@@ -165,20 +165,26 @@ struct AgeTick {
     label: String,
 }
 
-/// Whether a coinbase pays many recipients at once.
+/// Whether a coinbase was paid out by p2pool.
 ///
-/// A solo miner or a custodial pool takes the reward to one output and
-/// distributes off-chain, so its coinbase has exactly one. A decentralised
-/// pool pays every participant in the coinbase itself, which is why p2pool
-/// blocks carry dozens. That shape is visible from chain data alone and costs
-/// nothing to check, but it identifies the *shape*, not the software: this
-/// says "paid many recipients", not "was mined by p2pool".
+/// Two marks together, both on the chain and free to read. A coinbase with
+/// more than one output paid its miners directly, which is what a
+/// decentralised pool does and what a solo miner or a custodial pool never
+/// needs to do. A merge-mining tag beside it is the commitment p2pool writes
+/// to tie the block to its sidechain.
 ///
-/// Attributing a payout to a particular pool, or telling which ring member is
-/// a payout being swept, needs that pool's own sidechain records. None of it
-/// is on the Monero chain, so this explorer cannot and does not infer it.
-fn is_pool_payout(coinbase: bool, outputs: usize) -> bool {
-    coinbase && outputs > 1
+/// Measured over 300 consecutive mainnet blocks: 21 coinbases paid more than
+/// one output and all 21 carried the tag, in the same order every time. Of
+/// the 279 single-output coinbases, 142 carried a merge-mining tag on its own
+/// and none paid a second address, so neither mark identifies a payout by
+/// itself.
+///
+/// This reads the payout, not the software. Another decentralised pool that
+/// paid on chain and committed to a sidechain the same way would read the
+/// same, and which miner received which output is not on the Monero chain at
+/// all.
+fn is_p2pool(coinbase: bool, outputs: usize, merge_mined: bool) -> bool {
+    coinbase && outputs > 1 && merge_mined
 }
 
 /// Blocks per hour and per day at Monero's two-minute target.
@@ -501,22 +507,22 @@ struct ApiPage {
     min_anonymity_set: u64,
     max_private_tx_matches: u64,
     recent_blocks: u64,
-    /// Illustrative response bodies, shown collapsed under each endpoint.
-    /// Fabricated rather than fetched: an unreachable daemon should not blank
-    /// the documentation for the endpoint that would have called it.
-    example_version: String,
-    example_network_info: String,
-    example_block: String,
-    example_blocks_range: String,
-    example_transaction: String,
-    example_transaction_private: String,
-    example_transactions: String,
-    example_mempool: String,
-    example_transactions_recent: String,
-    example_search_block: String,
-    example_search_tx: String,
-    example_feeestimate: String,
-    example_health: String,
+    /// Recorded response bodies, shown collapsed under each endpoint. See
+    /// [`example`]: these are answers the chain really gave, not fabrications,
+    /// and they cost no daemon call to render.
+    example_version: &'static str,
+    example_network_info: &'static str,
+    example_block: &'static str,
+    example_blocks_range: &'static str,
+    example_transaction: &'static str,
+    example_transaction_private: &'static str,
+    example_transactions: &'static str,
+    example_mempool: &'static str,
+    example_transactions_recent: &'static str,
+    example_search_block: &'static str,
+    example_search_tx: &'static str,
+    example_feeestimate: &'static str,
+    example_health: &'static str,
 }
 
 #[derive(Template)]
@@ -857,7 +863,11 @@ pub async fn block(State(state): Shared, Path(raw): Path<String>) -> Page {
             Some(BlockTxRow {
                 hash: e.tx_hash.to_lowercase(),
                 coinbase: f.coinbase,
-                pool_payout: is_pool_payout(f.coinbase, tx.vout.len()),
+                p2pool: is_p2pool(
+                    f.coinbase,
+                    tx.vout.len(),
+                    f.extra.merge_mining_tag().is_some(),
+                ),
                 outputs: tx.vout.len(),
                 fee: xmr_aligned(f.fee),
                 ring: f.ring_size,
@@ -1043,7 +1053,11 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
             chain,
             hash: entry.tx_hash.to_lowercase(),
             coinbase: f.coinbase,
-            pool_payout: is_pool_payout(f.coinbase, tx.vout.len()),
+            p2pool: is_p2pool(
+                f.coinbase,
+                tx.vout.len(),
+                f.extra.merge_mining_tag().is_some(),
+            ),
             in_pool: entry.in_pool,
             pruned: entry.prunable_missing(&tx),
             block_height: entry.block_height,
@@ -1267,38 +1281,55 @@ fn describe_lengths(lengths: &[usize]) -> String {
     }
 }
 
-/// An illustrative `/health` body, not a live one.
+/// The example responses shown on the documentation page.
 ///
-/// `/health` carries no daemon data to fabricate, but the cache names and
-/// their capacities are real: read from the running cache rather than typed
-/// out a second time, so a renamed or resized cache shows up here too. Only
-/// the occupancy and hit counts, which change on every request, are made up.
+/// Recorded from a synced explorer rather than invented, so every hash,
+/// amount and height a reader sees is one the chain really holds. Refresh
+/// them with `tools/capture-api-examples.py` when a response shape changes.
 ///
-/// Takes the stats array rather than `&AppState`, so a test can supply its
-/// own without building a whole application state around it.
-fn health_example(stats: [(&'static str, explorer_core::cache::Stats); 5]) -> String {
-    let caches: serde_json::Map<String, serde_json::Value> = stats
-        .into_iter()
-        .map(|(name, s)| {
-            (
-                name.to_owned(),
-                serde_json::json!({
-                    "len": s.capacity.min(2),
-                    "capacity": s.capacity,
-                    "hits": 5,
-                    "misses": 7,
-                }),
-            )
-        })
-        .collect();
+/// Two are shortened by that tool rather than reproduced whole, because the
+/// endpoints answer with as much as the chain has: `/api/transactions/recent`
+/// carries the entire pool, and the recording keeps one transaction from it
+/// and one from the block, with the pool count corrected to match.
+mod example {
+    macro_rules! recorded {
+        ($name:ident, $file:literal) => {
+            pub const $name: &str =
+                include_str!(concat!("../../../fixtures/api-examples/", $file, ".json"));
+        };
+    }
 
-    serde_json::to_string_pretty(&serde_json::json!({
-        "status": "ok",
-        "version": VERSION,
-        "rpc_calls": 18,
-        "caches": caches,
-    }))
-    .unwrap_or_default()
+    recorded!(VERSION, "version");
+    recorded!(NETWORK_INFO, "networkinfo");
+    recorded!(BLOCK, "block");
+    recorded!(BLOCKS_RANGE, "blocks_range");
+    recorded!(TRANSACTION, "transaction");
+    recorded!(TRANSACTION_PRIVATE, "transaction_private");
+    recorded!(TRANSACTIONS, "transactions");
+    recorded!(MEMPOOL, "mempool");
+    recorded!(TRANSACTIONS_RECENT, "transactions_recent");
+    recorded!(SEARCH_BLOCK, "search_block");
+    recorded!(SEARCH_TX, "search_tx");
+    recorded!(FEE_ESTIMATE, "feeestimate");
+    recorded!(HEALTH, "health");
+
+    /// Every recording, for the tests that read all of them.
+    #[cfg(test)]
+    pub const ALL: [(&str, &str); 13] = [
+        ("version", VERSION),
+        ("networkinfo", NETWORK_INFO),
+        ("block", BLOCK),
+        ("blocks_range", BLOCKS_RANGE),
+        ("transaction", TRANSACTION),
+        ("transaction_private", TRANSACTION_PRIVATE),
+        ("transactions", TRANSACTIONS),
+        ("mempool", MEMPOOL),
+        ("transactions_recent", TRANSACTIONS_RECENT),
+        ("search_block", SEARCH_BLOCK),
+        ("search_tx", SEARCH_TX),
+        ("feeestimate", FEE_ESTIMATE),
+        ("health", HEALTH),
+    ];
 }
 
 /// The API documentation, which is what the `API` link in the header points at.
@@ -1337,19 +1368,19 @@ pub async fn api_docs(State(state): Shared) -> Page {
             min_anonymity_set: crate::api::handlers::MIN_ANONYMITY_SET,
             max_private_tx_matches: crate::api::handlers::MAX_PRIVATE_TX_MATCHES,
             recent_blocks: state.limits.recent_blocks,
-            example_version: crate::api::handlers::example::version(),
-            example_network_info: crate::api::handlers::example::network_info(),
-            example_block: crate::api::handlers::example::block(),
-            example_blocks_range: crate::api::handlers::example::blocks_range(),
-            example_transaction: crate::api::handlers::example::transaction(),
-            example_transaction_private: crate::api::handlers::example::transaction_private(),
-            example_transactions: crate::api::handlers::example::transactions(),
-            example_mempool: crate::api::handlers::example::mempool(),
-            example_transactions_recent: crate::api::handlers::example::transactions_recent(),
-            example_search_block: crate::api::handlers::example::search_block(),
-            example_search_tx: crate::api::handlers::example::search_tx(),
-            example_feeestimate: crate::api::handlers::example::fee_estimate(),
-            example_health: health_example(state.chain.cache_stats()),
+            example_version: example::VERSION,
+            example_network_info: example::NETWORK_INFO,
+            example_block: example::BLOCK,
+            example_blocks_range: example::BLOCKS_RANGE,
+            example_transaction: example::TRANSACTION,
+            example_transaction_private: example::TRANSACTION_PRIVATE,
+            example_transactions: example::TRANSACTIONS,
+            example_mempool: example::MEMPOOL,
+            example_transactions_recent: example::TRANSACTIONS_RECENT,
+            example_search_block: example::SEARCH_BLOCK,
+            example_search_tx: example::SEARCH_TX,
+            example_feeestimate: example::FEE_ESTIMATE,
+            example_health: example::HEALTH,
         },
     )
 }
@@ -1476,33 +1507,19 @@ mod tests {
             min_anonymity_set: h::MIN_ANONYMITY_SET,
             max_private_tx_matches: h::MAX_PRIVATE_TX_MATCHES,
             recent_blocks: limits.recent_blocks,
-            example_version: h::example::version(),
-            example_network_info: h::example::network_info(),
-            example_block: h::example::block(),
-            example_blocks_range: h::example::blocks_range(),
-            example_transaction: h::example::transaction(),
-            example_transaction_private: h::example::transaction_private(),
-            example_transactions: h::example::transactions(),
-            example_mempool: h::example::mempool(),
-            example_transactions_recent: h::example::transactions_recent(),
-            example_search_block: h::example::search_block(),
-            example_search_tx: h::example::search_tx(),
-            example_feeestimate: h::example::fee_estimate(),
-            example_health: health_example({
-                let s = explorer_core::cache::Stats {
-                    len: 0,
-                    capacity: 1,
-                    hits: 0,
-                    misses: 0,
-                };
-                [
-                    ("blocks_by_hash", s),
-                    ("blocks_by_height", s),
-                    ("info", s),
-                    ("outs", s),
-                    ("txs", s),
-                ]
-            }),
+            example_version: example::VERSION,
+            example_network_info: example::NETWORK_INFO,
+            example_block: example::BLOCK,
+            example_blocks_range: example::BLOCKS_RANGE,
+            example_transaction: example::TRANSACTION,
+            example_transaction_private: example::TRANSACTION_PRIVATE,
+            example_transactions: example::TRANSACTIONS,
+            example_mempool: example::MEMPOOL,
+            example_transactions_recent: example::TRANSACTIONS_RECENT,
+            example_search_block: example::SEARCH_BLOCK,
+            example_search_tx: example::SEARCH_TX,
+            example_feeestimate: example::FEE_ESTIMATE,
+            example_health: example::HEALTH,
         }
     }
 
@@ -1734,6 +1751,40 @@ mod tests {
         );
     }
 
+    /// The examples are recordings, so their hashes are the chain's own.
+    ///
+    /// They were invented once, and a reader met
+    /// `a1a1a1a1a1a1...` where a hash belonged. A repeated two-character
+    /// pattern is what that mistake looks like, and no real hash carries one
+    /// across all 64 characters.
+    #[test]
+    fn the_examples_carry_real_hashes() {
+        let mut hashes = 0;
+        for (name, body) in example::ALL {
+            for hash in hex_runs_of_64(body) {
+                hashes += 1;
+                let pair = hash.get(..2).unwrap_or_default();
+                assert!(
+                    !hash.chars().eq(pair.chars().cycle().take(64)),
+                    "{name} carries an invented hash: {hash}"
+                );
+            }
+        }
+        assert!(
+            hashes > 50,
+            "only {hashes} hashes were examined, so this test is not reading \
+             the recordings"
+        );
+    }
+
+    /// Every 64-character hex run in a body, which is every hash in it.
+    fn hex_runs_of_64(body: &str) -> Vec<String> {
+        body.split(|c: char| !c.is_ascii_hexdigit())
+            .filter(|run| run.len() == 64)
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
     fn ring_at(heights: &[u64]) -> Vec<RingView> {
         heights
             .iter()
@@ -1935,10 +1986,10 @@ mod tests {
     /// already said -- a tag that repeats an adjacent cell costs a reader
     /// attention and tells them nothing.
     #[test]
-    fn the_pool_payout_tag_says_more_than_the_output_count_does() {
+    fn the_p2pool_tag_says_more_than_the_output_count_does() {
         let html = block_page().render().expect("renders");
         assert!(
-            html.contains(r#"<span class="tag coinbase">pool payout</span>"#),
+            html.contains(r#"<span class="tag coinbase">p2pool</span>"#),
             "the inference is not stated:\n{html}"
         );
 
@@ -1950,26 +2001,34 @@ mod tests {
 
         let mut tx = tx_page();
         tx.coinbase = true;
-        tx.pool_payout = true;
+        tx.p2pool = true;
         let tx_html = tx.render().expect("renders");
-        assert!(tx_html.contains(r#"<span class="tag coinbase">pool payout</span>"#));
+        assert!(tx_html.contains(r#"<span class="tag coinbase">p2pool</span>"#));
         assert!(
             !tx_html.contains("recipients</span>"),
             "the transaction heading still counts recipients in its tag"
         );
     }
 
-    /// A coinbase paying many recipients is the shape a decentralised pool
-    /// leaves. Reported as a shape, not as an attribution to any software.
+    /// Both marks are needed, because each one alone is common on mainnet:
+    /// 142 of 279 single-output coinbases in one 300-block sample carried a
+    /// merge-mining tag, and the tag says nothing about who was paid.
     #[test]
-    fn only_a_multi_output_coinbase_reads_as_a_pool_payout() {
-        assert!(is_pool_payout(true, 51), "p2pool-shaped coinbase");
-        assert!(!is_pool_payout(true, 1), "solo or custodial pool coinbase");
+    fn a_p2pool_payout_pays_many_outputs_and_commits_to_a_sidechain() {
+        assert!(is_p2pool(true, 51, true), "p2pool pays its miners on chain");
         assert!(
-            !is_pool_payout(false, 51),
+            !is_p2pool(true, 1, true),
+            "a merge-mined solo or custodial coinbase pays one address"
+        );
+        assert!(
+            !is_p2pool(true, 51, false),
+            "many outputs without a sidechain commitment is not p2pool"
+        );
+        assert!(
+            !is_p2pool(false, 51, true),
             "an ordinary transaction with many outputs is not a payout"
         );
-        assert!(!is_pool_payout(false, 2));
+        assert!(!is_p2pool(false, 2, false));
     }
 
     /// The hints are plain markup: no script, no external reference, and they
@@ -2048,7 +2107,7 @@ mod tests {
     #[test]
     fn no_page_styles_itself_inline() {
         let mut tx = tx_page();
-        tx.pool_payout = true;
+        tx.p2pool = true;
         tx.pruned = true;
         tx.extra_fields = vec![ExtraField {
             name: "Transaction public key".to_owned(),
@@ -2323,7 +2382,7 @@ mod tests {
         BlockTxRow {
             hash: if coinbase { "c" } else { "d" }.repeat(64),
             coinbase,
-            pool_payout: is_pool_payout(coinbase, 2),
+            p2pool: is_p2pool(coinbase, 2, coinbase),
             outputs: 2,
             fee: if coinbase { "0.0" } else { "0.00071136" }.to_owned(),
             ring: if coinbase { 0 } else { 16 },
@@ -2548,7 +2607,7 @@ mod tests {
             chain: status(),
             hash: "e".repeat(64),
             coinbase: false,
-            pool_payout: false,
+            p2pool: false,
             in_pool: false,
             pruned: false,
             block_height: 3_185_430,

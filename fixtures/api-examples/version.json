@@ -1,0 +1,12 @@
+{
+  "data": {
+    "api": 65539,
+    "blockchain_height": 3768159,
+    "git_branch_name": "",
+    "last_git_commit_date": "",
+    "last_git_commit_hash": "",
+    "monero_version_full": "0.18.5.1-release",
+    "oxblocks_version": "0.1.0"
+  },
+  "status": "success"
+}

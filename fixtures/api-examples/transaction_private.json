@@ -1,0 +1,45 @@
+{
+  "data": {
+    "missed_txs": [],
+    "txs": [
+      {
+        "block_height": 3767835,
+        "coinbase": false,
+        "confirmations": 324,
+        "current_height": 3768159,
+        "extra": "0164a27d78443dfefd27cf5e8a879116e408f1564360b33dbe9341ce6fe8d75784020901c042db09a03c1486",
+        "inputs": [
+          {
+            "amount": 0,
+            "key_image": "b4bf4cad96846eabab65a0c2c528ce2f11471e724398626692436ff7e9ce371a",
+            "mixins": null
+          }
+        ],
+        "mixin": 16,
+        "outputs": [
+          {
+            "amount": 0,
+            "public_key": "d8e6951e54306136a15807990682d109781960034e41b15819e220a3ac3101a6"
+          },
+          {
+            "amount": 0,
+            "public_key": "5a14c8923d7898db56ab782a2c759eb5ff3a98110e712e49c29872ed45d04595"
+          }
+        ],
+        "payment_id": "",
+        "payment_id8": "c042db09a03c1486",
+        "rct_type": 6,
+        "timestamp": 1790055155,
+        "timestamp_utc": "2026-09-22 05:32:35",
+        "tx_fee": 30700000,
+        "tx_hash": "bae9ea23fd1aa7d8f6c59b44432075288a9b00b0f4973ce60dda89d6c5519ef3",
+        "tx_size": 1535,
+        "tx_version": 2,
+        "unlock_time": 0,
+        "xmr_inputs": 0,
+        "xmr_outputs": 0
+      }
+    ]
+  },
+  "status": "success"
+}

@@ -139,23 +139,6 @@ fn api_headers() -> [(HeaderName, HeaderValue); 3] {
     ]
 }
 
-/// The success envelope, pretty-printed, for the illustrative examples on the
-/// documentation page. The real response path renders a [`Response`] through
-/// [`ApiOk`]; this returns a string instead, and indents it for reading.
-#[must_use]
-pub fn example_envelope(data: impl Serialize) -> String {
-    #[derive(Serialize)]
-    struct Envelope<T> {
-        data: T,
-        status: &'static str,
-    }
-    serde_json::to_string_pretty(&Envelope {
-        data,
-        status: "success",
-    })
-    .unwrap_or_default()
-}
-
 fn render(status: StatusCode, value: &serde_json::Value) -> Response {
     // `dump()` with no arguments is compact, and serde_json's default writer
     // matches: no spaces after `,` or `:`.
@@ -339,15 +322,5 @@ mod tests {
             assert!(at >= last, "{k} is out of alphabetical order");
             last = at;
         }
-    }
-
-    /// The example builder wraps its argument in the same shape a real
-    /// `success` response takes, pretty-printed for the documentation page.
-    #[test]
-    fn the_example_envelope_matches_the_real_success_shape() {
-        let pretty = example_envelope(serde_json::json!({"height": 7}));
-        let compact: String = pretty.chars().filter(|c| !c.is_whitespace()).collect();
-        assert_eq!(compact, r#"{"data":{"height":7},"status":"success"}"#);
-        assert!(pretty.contains('\n'), "not pretty-printed: {pretty}");
     }
 }

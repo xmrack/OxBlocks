@@ -1,0 +1,37 @@
+{
+  "caches": {
+    "blocks_by_hash": {
+      "capacity": 512,
+      "hits": 0,
+      "len": 77,
+      "misses": 0
+    },
+    "blocks_by_height": {
+      "capacity": 2048,
+      "hits": 1,
+      "len": 77,
+      "misses": 77
+    },
+    "info": {
+      "capacity": 1,
+      "hits": 3,
+      "len": 1,
+      "misses": 1
+    },
+    "outs": {
+      "capacity": 65536,
+      "hits": 0,
+      "len": 0,
+      "misses": 0
+    },
+    "txs": {
+      "capacity": 8192,
+      "hits": 5,
+      "len": 2383,
+      "misses": 2383
+    }
+  },
+  "rpc_calls": 163,
+  "status": "ok",
+  "version": "0.1.0"
+}
