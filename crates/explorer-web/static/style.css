@@ -428,7 +428,7 @@ dl.kv.spaced { margin-top: 0.8rem; }
   border-radius: var(--radius);
   background: var(--bg-raised);
 }
-.curve-tree .funnel { display: block; width: 760px; height: auto; overflow: visible; }
+.curve-tree .funnel { display: block; width: 760px; margin: 0 auto; height: auto; overflow: visible; }
 .curve-tree .web { fill: var(--accent); opacity: 0.10; }
 .curve-tree .bar { fill: var(--accent); opacity: 0.55; }
 .curve-tree .bar.root { opacity: 1; }
