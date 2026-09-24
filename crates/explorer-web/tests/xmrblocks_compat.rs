@@ -10,6 +10,11 @@
 //! Because both come from one chain at one moment, there is nothing
 //! tip-relative to excuse: `current_height` and `confirmations` must match
 //! exactly, and any difference at all is a real difference.
+//!
+//! With one exception: the keys in [`EXTENSIONS`], which oxblocks adds and
+//! xmrblocks has never had. They may appear on our side only. Every key
+//! xmrblocks does have must still be present and equal, so a client written
+//! against xmrblocks reads the same values it always did.
 
 #![allow(
     clippy::unwrap_used,
@@ -37,6 +42,15 @@ fn load(rel: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{rel} is not JSON: {e}"))
 }
 
+/// Keys oxblocks emits beyond xmrblocks, for FCMP++ and Carrot. Named rather
+/// than waved through, so an extra key nobody meant to add still fails.
+const EXTENSIONS: &[&str] = &[
+    "encrypted_janus_anchor",
+    "n_tree_layers",
+    "reference_block",
+    "view_tag",
+];
+
 fn diff(ours: &Value, theirs: &Value, path: &str, out: &mut Vec<String>) {
     match (ours, theirs) {
         (Value::Object(a), Value::Object(b)) => {
@@ -49,6 +63,7 @@ fn diff(ours: &Value, theirs: &Value, path: &str, out: &mut Vec<String>) {
                     (None, Some(y)) => {
                         out.push(format!("{path}/{k}: missing from ours (xmrblocks {y})"));
                     }
+                    (Some(_), None) if EXTENSIONS.contains(&k.as_str()) => {}
                     (Some(x), None) => out.push(format!("{path}/{k}: extra in ours ({x})")),
                     (None, None) => unreachable!("key came from one of the two maps"),
                 }
@@ -117,24 +132,24 @@ fn render_block(height: u64) -> Value {
 }
 
 #[test]
-fn a_block_with_a_ring_transaction_matches_xmrblocks_exactly() {
+fn a_block_with_a_ring_transaction_matches_xmrblocks() {
     assert_identical(&render_block(134_721), "block_134721.json");
 }
 
 #[test]
-fn a_block_with_a_seven_input_transaction_matches_xmrblocks_exactly() {
+fn a_block_with_a_seven_input_transaction_matches_xmrblocks() {
     assert_identical(&render_block(3_900), "block_3900.json");
 }
 
 #[test]
-fn a_coinbase_only_block_matches_xmrblocks_exactly() {
+fn a_coinbase_only_block_matches_xmrblocks() {
     assert_identical(&render_block(134_720), "block_coinbase_only.json");
 }
 
 /// `/api/blocks/<start>/<end>`, the k-anonymous block lookup. Its `data` is a
 /// bare **list** of single-block objects, not an object wrapping one.
 #[test]
-fn a_block_range_matches_xmrblocks_exactly() {
+fn a_block_range_matches_xmrblocks() {
     let blocks: Vec<Value> = (134_719..=134_721)
         .map(|h| render_block(h)["data"].clone())
         .collect();
@@ -143,7 +158,7 @@ fn a_block_range_matches_xmrblocks_exactly() {
 }
 
 #[test]
-fn a_ring_transaction_matches_xmrblocks_exactly() {
+fn a_ring_transaction_matches_xmrblocks() {
     use explorer_core::{Hash32, ResolvedInput, RingMember};
     use monerod_rpc::types::{GetOutsResponse, GetTransactionsResponse, TxIn};
 
@@ -217,4 +232,47 @@ fn unlock_time_is_present_and_carries_the_real_value() {
         theirs.is_some_and(|t| t > 0),
         "a coinbase has a non-zero unlock_time, so this test is not vacuous"
     );
+}
+
+/// The extensions are there, on every transaction object, and hold `null`
+/// on a chain from before FCMP++ rather than being left out.
+#[test]
+fn the_fcmp_pp_extensions_are_present_and_null_before_the_fork() {
+    let block = render_block(134_721);
+    for tx in block["data"]["txs"].as_array().expect("txs is an array") {
+        assert_eq!(tx.get("reference_block"), Some(&Value::Null));
+        assert_eq!(tx.get("n_tree_layers"), Some(&Value::Null));
+    }
+}
+
+/// The extensions filled from a real FCMP++ capture: the reference block and
+/// layer count from the proof, and each Carrot output's tag and anchor.
+#[test]
+fn a_captured_fcmp_pp_transaction_fills_the_extensions() {
+    use monerod_rpc::types::GetTransactionsResponse;
+
+    let fetched: GetTransactionsResponse =
+        serde_json::from_value(load("fcmp/get_transactions_fcmp.json")).expect("decodes");
+    for entry in &fetched.txs {
+        let tx = entry.parse_json().expect("as_json present");
+        let rings = explorer_core::unexpanded_inputs(&tx);
+        let detail = serde_json::to_value(shapes::TxDetail::build(
+            entry,
+            &tx,
+            &rings,
+            entry.block_height + 1,
+        ))
+        .expect("serialises");
+
+        let reference = detail["reference_block"].as_u64().expect("a number");
+        assert!(reference < entry.block_height);
+        assert!(detail["n_tree_layers"].as_u64().is_some_and(|n| n >= 1));
+        for out in detail["outputs"].as_array().expect("outputs") {
+            assert_eq!(out["view_tag"].as_str().map(str::len), Some(6));
+            assert_eq!(
+                out["encrypted_janus_anchor"].as_str().map(str::len),
+                Some(32)
+            );
+        }
+    }
 }

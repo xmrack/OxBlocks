@@ -20,7 +20,7 @@
 
 use explorer_core::fmt::timestamp_utc;
 use explorer_core::{Hash32, ResolvedInput, TxFacts};
-use monerod_rpc::types::{PoolTxInfo, TxEntry, TxJson};
+use monerod_rpc::types::{PoolTxInfo, TxEntry, TxJson, TxOutTarget};
 use serde::Serialize;
 
 /// One ring member.
@@ -49,7 +49,13 @@ pub struct ApiInput {
 #[derive(Debug, Clone, Serialize)]
 pub struct ApiOutput {
     pub amount: u64,
+    /// A Carrot output's encrypted Janus anchor, 32 hex characters. `null` for
+    /// every output from before Carrot, which has none.
+    pub encrypted_janus_anchor: Option<String>,
     pub public_key: String,
+    /// Two hex characters before Carrot and six from it. `null` for an output
+    /// from before view tags, not `""`, which would read as a tag of no bytes.
+    pub view_tag: Option<String>,
 }
 
 /// `get_tx_json` — the shared 12-key transaction object that appears inside
@@ -59,9 +65,17 @@ pub struct TxSummary {
     pub coinbase: bool,
     pub extra: String,
     pub mixin: u64,
+    /// The curve tree's layer count when the FCMP++ proof was built. `null`
+    /// in the same cases as `reference_block`.
+    pub n_tree_layers: Option<u8>,
     pub payment_id: String,
     pub payment_id8: String,
     pub rct_type: u8,
+    /// The height whose curve tree an FCMP++ transaction's inputs were proven
+    /// against. `null` for a ring spend and a coinbase, and for an FCMP++
+    /// transaction whose prunable half the node no longer holds, since the
+    /// field is stored there. Read `rct_type` to tell the last case apart.
+    pub reference_block: Option<u64>,
     pub tx_fee: u64,
     pub tx_hash: String,
     pub tx_size: u64,
@@ -73,7 +87,7 @@ pub struct TxSummary {
     pub xmr_outputs: u64,
 }
 
-/// `/api/transaction` — the 13 shared keys plus seven more.
+/// `/api/transaction` — the shared keys plus seven more.
 #[derive(Debug, Clone, Serialize)]
 pub struct TxDetail {
     pub block_height: u64,
@@ -84,10 +98,14 @@ pub struct TxDetail {
     /// `null`, not `[]`, for a coinbase transaction, which spends nothing.
     pub inputs: Option<Vec<ApiInput>>,
     pub mixin: u64,
+    /// See [`TxSummary::n_tree_layers`].
+    pub n_tree_layers: Option<u8>,
     pub outputs: Vec<ApiOutput>,
     pub payment_id: String,
     pub payment_id8: String,
     pub rct_type: u8,
+    /// See [`TxSummary::reference_block`].
+    pub reference_block: Option<u64>,
     pub timestamp: u64,
     pub timestamp_utc: String,
     pub tx_fee: u64,
@@ -133,9 +151,11 @@ impl TxSummary {
             coinbase: f.coinbase,
             extra: f.extra_hex(),
             mixin: f.ring_size as u64,
+            n_tree_layers: f.fcmp_pp.and_then(|x| x.n_tree_layers),
             payment_id: f.payment_id_hex(),
             payment_id8: f.payment_id8_hex(),
             rct_type: f.rct_type,
+            reference_block: f.fcmp_pp.and_then(|x| x.reference_block),
             tx_fee: f.fee,
             tx_hash: hash.to_lowercase(),
             tx_size: f.size,
@@ -265,7 +285,12 @@ impl TxDetail {
                 // one. Every other target, Carrot's included, names its key;
                 // matching the variants here by hand is how Carrot outputs
                 // came to be published with an empty key.
+                encrypted_janus_anchor: match &o.target {
+                    TxOutTarget::CarrotV1(c) => Some(c.encrypted_janus_anchor.clone()),
+                    _ => None,
+                },
                 public_key: o.target.public_key().map(str::to_owned).unwrap_or_default(),
+                view_tag: o.target.view_tag().map(str::to_owned),
             })
             .collect();
 
@@ -277,10 +302,12 @@ impl TxDetail {
             extra: f.extra_hex(),
             inputs,
             mixin: f.ring_size as u64,
+            n_tree_layers: f.fcmp_pp.and_then(|x| x.n_tree_layers),
             outputs,
             payment_id: f.payment_id_hex(),
             payment_id8: f.payment_id8_hex(),
             rct_type: f.rct_type,
+            reference_block: f.fcmp_pp.and_then(|x| x.reference_block),
             timestamp: at.timestamp,
             timestamp_utc: timestamp_utc(at.timestamp),
             tx_fee: f.fee,
@@ -396,9 +423,11 @@ mod tests {
             coinbase: false,
             extra: String::new(),
             mixin: 16,
+            n_tree_layers: None,
             payment_id: String::new(),
             payment_id8: String::new(),
             rct_type: 0,
+            reference_block: None,
             tx_fee: 0,
             tx_hash: String::new(),
             tx_size: 0,
@@ -422,13 +451,17 @@ mod tests {
                 mixins: Some(vec![mixin()]),
             }]),
             mixin: 16,
+            n_tree_layers: None,
             outputs: vec![ApiOutput {
                 amount: 0,
+                encrypted_janus_anchor: None,
                 public_key: String::new(),
+                view_tag: None,
             }],
             payment_id: String::new(),
             payment_id8: String::new(),
             rct_type: 0,
+            reference_block: None,
             timestamp: 0,
             timestamp_utc: String::new(),
             tx_fee: 0,
@@ -458,7 +491,9 @@ mod tests {
         assert_sorted(
             &declared_keys(&ApiOutput {
                 amount: 0,
+                encrypted_janus_anchor: Some(String::new()),
                 public_key: String::new(),
+                view_tag: Some(String::new()),
             }),
             "ApiOutput",
         );
@@ -496,14 +531,19 @@ mod tests {
             keys.iter().any(|k| k == "inputs") && keys.iter().any(|k| k == "outputs"),
             "the containing fields themselves were missed"
         );
-        assert_eq!(keys.len(), 20, "TxDetail has 20 fields of its own");
+        assert_eq!(keys.len(), 22, "TxDetail has 22 fields of its own");
 
         // A value that happens to be a string must not be read as a key.
         let probe = ApiOutput {
             amount: 0,
+            encrypted_janus_anchor: None,
             public_key: "not_a_key".to_owned(),
+            view_tag: None,
         };
-        assert_eq!(declared_keys(&probe), vec!["amount", "public_key"]);
+        assert_eq!(
+            declared_keys(&probe),
+            vec!["amount", "encrypted_janus_anchor", "public_key", "view_tag"]
+        );
     }
 
     /// An FCMP++ transaction with Carrot outputs, through the same builder
@@ -532,7 +572,19 @@ mod tests {
 
         assert_eq!(detail.rct_type, 7);
         assert_eq!(detail.mixin, 0);
+        assert_eq!(detail.reference_block, Some(3_012_390));
+        assert_eq!(detail.n_tree_layers, Some(6));
         assert_eq!(detail.outputs[0].public_key, "dd".repeat(32));
+        assert_eq!(detail.outputs[0].view_tag.as_deref(), Some("a1b2c3"));
+        assert_eq!(
+            detail.outputs[0].encrypted_janus_anchor,
+            Some("ee".repeat(16))
+        );
+
+        // The block and mempool lists carry the tree fields too.
+        let summary = TxSummary::build(&entry, &tx);
+        assert_eq!(summary.reference_block, Some(3_012_390));
+        assert_eq!(summary.n_tree_layers, Some(6));
         let inputs = detail.inputs.as_ref().expect("a spend lists its inputs");
         assert_eq!(inputs.len(), 1);
         assert_eq!(
@@ -540,6 +592,37 @@ mod tests {
             Some(0),
             "no ring is an empty list, not a withheld one"
         );
+    }
+
+    /// A ring-era transaction answers `null` for everything FCMP++ and Carrot
+    /// added, and a one-byte view tag where its output has one.
+    #[test]
+    fn a_ring_transaction_has_null_tree_fields_and_no_anchor() {
+        let entry: TxEntry = serde_json::from_value(serde_json::json!({
+            "tx_hash": "AB".repeat(32), "in_pool": true, "received_timestamp": 1,
+        }))
+        .unwrap();
+        let tx: TxJson = serde_json::from_value(serde_json::json!({
+            "version": 2, "unlock_time": 0,
+            "vin": [{"key": {"amount": 0, "key_offsets": [5], "k_image": "cc".repeat(32)}}],
+            "vout": [
+                {"amount": 0, "target": {"tagged_key": {"key": "dd".repeat(32), "view_tag": "9f"}}},
+                {"amount": 0, "target": {"key": "ee".repeat(32)}},
+            ],
+            "extra": [],
+            "rct_signatures": {"type": 6, "txnFee": 1},
+        }))
+        .unwrap();
+        let rings = explorer_core::unexpanded_inputs(&tx);
+        let value = serde_json::to_value(TxDetail::build(&entry, &tx, &rings, 10)).unwrap();
+
+        assert_eq!(value["reference_block"], serde_json::Value::Null);
+        assert_eq!(value["n_tree_layers"], serde_json::Value::Null);
+        assert_eq!(value["outputs"][0]["view_tag"], "9f");
+        assert_eq!(value["outputs"][1]["view_tag"], serde_json::Value::Null);
+        for out in value["outputs"].as_array().unwrap() {
+            assert_eq!(out["encrypted_janus_anchor"], serde_json::Value::Null);
+        }
     }
 
     /// What the ordering actually rests on today.
