@@ -333,6 +333,17 @@ impl RpcChainSource {
         Ok(self.info.insert((), fresh))
     }
 
+    /// The chain's info, asked of the daemon now rather than read from the
+    /// cache.
+    ///
+    /// For a caller whose answer turns on the newest block, which the cached
+    /// info can be up to five seconds behind. The answer replaces the cached
+    /// one. It costs one daemon call, as looking up an unknown hash does.
+    pub async fn fresh_info(&self) -> Result<Arc<GetInfo>, ChainError> {
+        let fresh: GetInfo = self.rpc("get_info", None::<()>).await?;
+        Ok(self.info.insert((), fresh))
+    }
+
     pub async fn block(&self, id: BlockId) -> Result<Arc<GetBlock>, ChainError> {
         match id {
             BlockId::Hash(h) => {
@@ -1921,6 +1932,21 @@ mod tests {
 
         let got = src.transactions(&[h]).await.unwrap();
         assert_eq!(got.txs.first().map(|e| e.confirmations), Some(71));
+    }
+
+    /// A fresh lookup skips a stale cached tip, and its answer replaces it.
+    #[tokio::test]
+    async fn a_fresh_tip_lookup_replaces_the_cached_one() {
+        let chain = Chain { tip: 100, fork: 0 };
+        let daemon = chain.daemon(&[], None);
+        let src = daemon.source();
+        let mut stale = (*src.info().await.unwrap()).clone();
+        stale.height = 90;
+        src.info.insert((), stale);
+        assert_eq!(src.info().await.unwrap().height, 90);
+        assert_eq!(src.fresh_info().await.unwrap().height, 101);
+        assert_eq!(src.info().await.unwrap().height, 101);
+        assert_eq!(src.rpc_calls(), 2);
     }
 
     /// An unreachable daemon marks the ring unavailable rather than erroring

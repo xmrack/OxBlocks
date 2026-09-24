@@ -1054,13 +1054,21 @@ pub async fn blocks_range(
         )));
     }
 
-    let info = state
+    let mut info = state
         .chain
         .info()
         .await
         .map_err(|e| on_chain_error(&e, "Cant get daemon info"))?;
 
-    // `height` counts blocks, so the tip is `height - 1`.
+    // `height` counts blocks, so the tip is `height - 1`. The cached info can
+    // trail a block that was just mined, so check a fresh one before refusing.
+    if end >= info.height {
+        info = state
+            .chain
+            .fresh_info()
+            .await
+            .map_err(|e| on_chain_error(&e, "Cant get daemon info"))?;
+    }
     if end >= info.height {
         return Err(ApiError::not_found(format!(
             "Requested end height is higher than blockchain: {end}, {}",
