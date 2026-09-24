@@ -42,6 +42,13 @@ const MAX_ERROR_BODY: usize = 256;
 /// near this.
 pub const DEFAULT_MAX_RESPONSE_BYTES: u64 = 256 * 1024 * 1024;
 
+/// The largest answer [`Client::binary`] will accept.
+///
+/// The one binary answer read here is 115 bytes when the probe output is not
+/// yet in the tree and about 3 KB when it is, with a path that grows by one
+/// chunk per tree layer, and monerod caps the tree at 12 layers.
+pub const MAX_BINARY_RESPONSE_BYTES: u64 = 64 * 1024;
+
 #[cfg(feature = "tls")]
 type Connector = hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
 #[cfg(not(feature = "tls"))]
@@ -136,15 +143,15 @@ impl Client {
     /// arrived would mean the memory had already been taken before the limit
     /// was consulted. This stops at the first frame that crosses it.
     async fn collect_body(
-        &self,
         response: hyper::Response<hyper::body::Incoming>,
         context: &'static str,
+        max_bytes: u64,
     ) -> Result<Bytes, RpcError> {
         let too_large = |len| RpcError::ResponseTooLarge { context, len };
 
         // A declared length over the ceiling is refused before reading at all.
         if let Some(len) = response.body().size_hint().exact()
-            && len > self.max_response_bytes
+            && len > max_bytes
         {
             return Err(too_large(len));
         }
@@ -161,7 +168,7 @@ impl Client {
                 continue;
             };
             let total = (buf.len() as u64).saturating_add(chunk.len() as u64);
-            if total > self.max_response_bytes {
+            if total > max_bytes {
                 return Err(too_large(total));
             }
             buf.extend_from_slice(chunk);
@@ -179,7 +186,13 @@ impl Client {
         let payload =
             serde_json::to_vec(body).map_err(|source| RpcError::Encode { context, source })?;
         let bytes = self
-            .exchange(path, context, "application/json", payload)
+            .exchange(
+                path,
+                context,
+                "application/json",
+                payload,
+                self.max_response_bytes,
+            )
             .await?;
         serde_json::from_slice(&bytes).map_err(|source| RpcError::Decode { context, source })
     }
@@ -191,6 +204,7 @@ impl Client {
         context: &'static str,
         media_type: &'static str,
         payload: Vec<u8>,
+        max_bytes: u64,
     ) -> Result<Bytes, RpcError> {
         let uri = self
             .base
@@ -234,9 +248,10 @@ impl Client {
         })?;
 
         let http_status = response.status();
-        let bytes = tokio::time::timeout_at(deadline, self.collect_body(response, context))
-            .await
-            .map_err(|_| expired("body not read"))??;
+        let bytes =
+            tokio::time::timeout_at(deadline, Self::collect_body(response, context, max_bytes))
+                .await
+                .map_err(|_| expired("body not read"))??;
 
         if !http_status.is_success() {
             // Keep a bounded slice of the body: monerod's error pages are short,
@@ -337,33 +352,65 @@ impl Client {
     }
 
     /// Call a binary endpoint, e.g. `/get_path_by_unified_id.bin`, and return
-    /// its root section.
+    /// the root entries named in `wanted`.
     ///
     /// `endpoint` is given without a leading slash and with its `.bin`. The
-    /// `status` check is the same one the JSON endpoints get.
+    /// answer is held to [`MAX_BINARY_RESPONSE_BYTES`], far below the general
+    /// ceiling, because the only binary answer read here is a few kilobytes.
+    ///
+    /// `status` is checked as it is for the JSON endpoints, with one
+    /// difference: a `status` that is present but is not text, or is not
+    /// UTF-8, is a failure here rather than treated as missing. An answer
+    /// whose status cannot be read is not one to trust.
     pub async fn binary(
         &self,
         endpoint: &'static str,
         fields: &[(&str, crate::epee::Field<'_>)],
-    ) -> Result<crate::epee::Section, RpcError> {
+        wanted: &[&str],
+    ) -> Result<crate::epee::Root, RpcError> {
         let payload = crate::epee::encode(fields).map_err(|source| RpcError::BinaryEncode {
             context: endpoint,
             source,
         })?;
         let bytes = self
-            .exchange(endpoint, endpoint, "application/octet-stream", payload)
+            .exchange(
+                endpoint,
+                endpoint,
+                "application/octet-stream",
+                payload,
+                MAX_BINARY_RESPONSE_BYTES.min(self.max_response_bytes),
+            )
             .await?;
-        let root = crate::epee::decode(&bytes).map_err(|source| RpcError::BinaryDecode {
-            context: endpoint,
-            source,
-        })?;
-        if let Some(raw) = root.text("status") {
-            let status = Status::parse(raw);
-            if !status.is_ok() {
-                return Err(RpcError::Status { endpoint, status });
-            }
+        let mut keep: Vec<&str> = wanted.to_vec();
+        if !keep.contains(&"status") {
+            keep.push("status");
         }
+        let root =
+            crate::epee::read_root(&bytes, &keep).map_err(|source| RpcError::BinaryDecode {
+                context: endpoint,
+                source,
+            })?;
+        Self::check_binary_status(&root, endpoint)?;
         Ok(root)
+    }
+
+    /// The binary form of [`Self::check_status`]. See [`Self::binary`] for the
+    /// one way it is stricter.
+    fn check_binary_status(
+        root: &crate::epee::Root,
+        endpoint: &'static str,
+    ) -> Result<(), RpcError> {
+        if root.get("status").is_none() {
+            return Ok(());
+        }
+        let status = root
+            .text("status")
+            .map_or_else(|| Status::parse("<unreadable status>"), Status::parse);
+        if status.is_ok() {
+            Ok(())
+        } else {
+            Err(RpcError::Status { endpoint, status })
+        }
     }
 
     /// Reject a payload whose `status` is present and not `OK`.
@@ -808,5 +855,35 @@ mod tests {
 
         let absent = serde_json::json!({ "height": 1 });
         assert!(Client::check_status(&absent, "/get_outs").is_ok());
+
+        // Binary: a status that is present but unreadable is a failure, not a
+        // missing field.
+        let root = |status: &[u8]| {
+            let mut b = vec![
+                0x01,
+                0x11,
+                0x01,
+                0x01,
+                0x01,
+                0x01,
+                0x02,
+                0x01,
+                0x01,
+                1 << 2,
+                6,
+            ];
+            b.extend_from_slice(b"status");
+            b.push(10);
+            b.push((status.len() as u8) << 2);
+            b.extend_from_slice(status);
+            crate::epee::read_root(&b, &["status"]).unwrap()
+        };
+        assert!(Client::check_binary_status(&root(b"OK"), "x.bin").is_ok());
+        assert!(Client::check_binary_status(&root(b"Failed"), "x.bin").is_err());
+        assert!(Client::check_binary_status(&root(b"OK\xff"), "x.bin").is_err());
+        assert!(
+            Client::check_binary_status(&crate::epee::Root::default(), "x.bin").is_ok(),
+            "absent is tolerated, as for JSON"
+        );
     }
 }

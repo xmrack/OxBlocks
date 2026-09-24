@@ -253,17 +253,21 @@ reports.
 
 ### What changes on the pages
 
-* **Inputs have no ring.** An FCMP++ input proves that it spends one of every
-  output on the chain, so the transaction page shows the anonymity set as the
-  whole chain, with the reference block the proof was built against and the
-  tree's layer count. Once the transaction is mined, the page asks the daemon
-  how many outputs that tree held and shows the count. There are no ring
+* **Inputs have no ring.** An FCMP++ input proves that it spends one of the
+  outputs in a curve tree of every output spendable at its reference block,
+  so the transaction page shows that tree as the anonymity set, with the
+  reference block and the tree's layer count. Once the transaction is mined,
+  the page asks the daemon how many outputs that tree held and shows the
+  count. There are no ring
   members and no age strip. The ring column on the block and mempool pages
   reads `all`.
 * **Proof size.** The page shows the FCMP++ proof's length in bytes, which the
   input count and the tree's layer count fix.
 * **Blocks commit to a curve tree.** From the fork, the block page shows the
-  tree root and layer count that the block carries.
+  tree root and layer count that the block carries. The root runs eight blocks
+  ahead: block H carries the tree as of height H + 8, so a transaction with
+  reference block R was checked against the root in block R − 8, and the
+  transaction page links that block.
 * **Carrot outputs.** The view tag is three bytes instead of one, and each
   output carries an encrypted Janus anchor, which the output table shows
   beside each output's unified id. The
@@ -302,16 +306,20 @@ monerod reports how many outputs its tree held as of a block only from
 `/get_path_by_unified_id.bin`, which answers in its binary format rather than
 JSON. The explorer speaks that format for this one call, with its own small
 decoder and no new dependency. It asks as of the transaction's reference block
-and names the transaction's own first output, which joins the tree later, so
-the daemon reads one output and no tree path. A daemon without the endpoint
-leaves the count out and the page falls back to "every output on the chain".
+and names the transaction's own first output. That output joins the tree
+later, so the daemon skips the leaf search and path read it would do for an
+output already in the tree; it still reads the transaction's output data and
+the tree's size and last path, a few database reads per call. A daemon
+without the endpoint leaves the count out and the page falls back to "every
+output in the curve tree".
 Answers for a reference block more than 60 blocks deep are cached, and
 `/health` reports that cache as `tree_sizes`.
 
 An FCMP++ transaction needs no ring lookups, so `/api/transaction` makes that
 one call beside fetching the transaction, and nothing else. From the fork on,
 `/api/blocks` fetches every block's body, including a coinbase-only block's,
-because the tree root is in the body.
+because the tree root is in the body. The other range endpoints do not show
+the tree and do not pay for it.
 
 ### Pruned stressnet nodes
 

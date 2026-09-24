@@ -62,7 +62,7 @@ pub struct ApiOutput {
     pub view_tag: Option<String>,
 }
 
-/// `get_tx_json` — the shared 12-key transaction object that appears inside
+/// `get_tx_json` — the shared transaction object that appears inside
 /// `/api/block`, `/api/transactions` and `/api/mempool`.
 #[derive(Debug, Clone, Serialize)]
 pub struct TxSummary {
@@ -78,10 +78,12 @@ pub struct TxSummary {
     pub payment_id: String,
     pub payment_id8: String,
     pub rct_type: u8,
-    /// The height whose curve tree an FCMP++ transaction's inputs were proven
-    /// against. `null` for a ring spend and a coinbase, and for an FCMP++
-    /// transaction whose prunable half the node no longer holds, since the
-    /// field is stored there. Read `rct_type` to tell the last case apart.
+    /// The height the curve tree was taken at when an FCMP++ transaction's
+    /// inputs were proven. Its root is in block `reference_block - 8`; see
+    /// [`monerod_rpc::types::TREE_ROOT_LAG`]. `null` for a ring spend and a
+    /// coinbase, and for an FCMP++ transaction whose prunable half the node no
+    /// longer holds, since the field is stored there. Read `rct_type` to tell
+    /// the last case apart.
     pub reference_block: Option<u64>,
     pub tx_fee: u64,
     pub tx_hash: String,
@@ -94,7 +96,8 @@ pub struct TxSummary {
     pub xmr_outputs: u64,
 }
 
-/// `/api/transaction` — the shared keys plus seven more.
+/// `/api/transaction` — the shared keys plus the placement, the inputs, the
+/// outputs and the tree size.
 #[derive(Debug, Clone, Serialize)]
 pub struct TxDetail {
     /// How many outputs the curve tree held as of `reference_block`: the

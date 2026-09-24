@@ -15,7 +15,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use explorer_core::fmt::{age, decimal, now, timestamp_utc};
-use explorer_core::{Amount, BlockId, ChainError, Hash32, TxFacts};
+use explorer_core::{Amount, BlockId, BlockTree, ChainError, Hash32, TxFacts};
 use monerod_rpc::types::TxOutTarget;
 
 use crate::api::handlers::{AppState, Shared, echo};
@@ -125,7 +125,7 @@ struct TxPage {
     version_no: u64,
     rct_type: u8,
     ring_size: usize,
-    /// The inputs prove membership in every output on the chain, so there is
+    /// The inputs prove membership in the curve tree, so there is
     /// no ring to show.
     fcmp_pp: bool,
     /// The height whose curve tree the FCMP++ proof was built against, and
@@ -133,6 +133,10 @@ struct TxPage {
     /// spend whose prunable half this node no longer holds.
     reference_block: Option<u64>,
     n_tree_layers: Option<u8>,
+    /// The block whose header carries the root the proof was checked
+    /// against. Eight below the reference block; see
+    /// [`monerod_rpc::types::TREE_ROOT_LAG`].
+    root_block: Option<u64>,
     /// The curve tree's size as of the reference block, digits grouped. `None`
     /// wherever the API's `anonymity_set` is `null`.
     anonymity_set: Option<String>,
@@ -959,9 +963,9 @@ pub async fn block(
     let page = format!("/block/{}", header.height);
 
     // The tree fields are in the block's own JSON, not in its header. A
-    // document that does not decode costs these two rows and nothing else:
-    // everything above them came from the header.
-    let body = got.parse_json().ok();
+    // document that does not decode costs this one row and nothing else:
+    // everything above it came from the header.
+    let tree = BlockTree::of(&got);
 
     render(
         StatusCode::OK,
@@ -984,11 +988,8 @@ pub async fn block(
             nonce: header.nonce,
             major_version: header.major_version,
             minor_version: header.minor_version,
-            tree_root: body
-                .as_ref()
-                .and_then(|b| b.fcmp_pp_tree_root.as_deref())
-                .map(str::to_lowercase),
-            tree_layers: body.as_ref().and_then(|b| b.fcmp_pp_n_tree_layers),
+            tree_layers: tree.as_ref().map(|t| t.n_layers),
+            tree_root: tree.map(|t| t.root),
             fee_sort: column_sort(&page, SortKey::Fee, active),
             size_sort: column_sort(&page, SortKey::Size, active),
             txs,
@@ -1112,24 +1113,16 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
         .iter()
         .enumerate()
         .map(|(i, o)| {
-            let (key, view_tag, anchor) = match &o.target {
-                TxOutTarget::Key(k) => (k.clone(), String::new(), String::new()),
-                TxOutTarget::TaggedKey(t) => {
-                    has_view_tags = true;
-                    (t.key.clone(), t.view_tag.clone(), String::new())
-                }
-                TxOutTarget::CarrotV1(c) => {
-                    has_view_tags = true;
-                    (
-                        c.key.clone(),
-                        c.view_tag.clone(),
-                        c.encrypted_janus_anchor.clone(),
-                    )
-                }
-                _ => (String::new(), String::new(), String::new()),
+            // The key and the tag through the target's own accessors, the same
+            // ones the API uses, so a new output type is taught in one place.
+            let view_tag = o.target.view_tag().unwrap_or_default().to_owned();
+            has_view_tags |= !view_tag.is_empty();
+            let anchor = match &o.target {
+                TxOutTarget::CarrotV1(c) => c.encrypted_janus_anchor.clone(),
+                _ => String::new(),
             };
             OutputView {
-                public_key: key,
+                public_key: o.target.public_key().unwrap_or_default().to_owned(),
                 amount: visible_amount(o.amount),
                 view_tag,
                 anchor,
@@ -1204,6 +1197,10 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
             fcmp_pp: f.fcmp_pp.is_some(),
             reference_block: f.fcmp_pp.and_then(|x| x.reference_block),
             n_tree_layers: f.fcmp_pp.and_then(|x| x.n_tree_layers),
+            root_block: f
+                .fcmp_pp
+                .and_then(|x| x.reference_block)
+                .and_then(monerod_rpc::types::tree_root_block),
             anonymity_set: anonymity_set.map(grouped),
             proof_size: f.fcmp_pp.and_then(|x| x.proof_size),
             carrot: f.carrot,
@@ -2991,6 +2988,7 @@ mod tests {
             fcmp_pp: false,
             reference_block: None,
             n_tree_layers: None,
+            root_block: None,
             anonymity_set: None,
             proof_size: None,
             carrot: false,
@@ -3068,7 +3066,7 @@ mod tests {
     #[test]
     fn an_fcmp_pp_spend_shows_the_whole_chain_as_its_anonymity_set() {
         let html = fcmp_tx_page().render().expect("renders");
-        assert!(html.contains("Every output on the chain"), "{html}");
+        assert!(html.contains("Every output in the curve tree"), "{html}");
         assert!(
             html.contains(r#"as of block <a href="/block/3012345">3012345</a>"#),
             "the reference block links to its block:
@@ -3087,7 +3085,8 @@ mod tests {
                 .count(),
             2
         );
-        assert!(html.contains("RingCT type 7"));
+        assert!(html.contains("FCMP++ (type 7)"));
+        assert!(!html.contains("RingCT type 7"));
     }
 
     /// With the tree's size known, the row gives the count; the proof size and
@@ -3106,7 +3105,7 @@ mod tests {
             html.contains(r#"1,234,567 outputs, as of block <a href="/block/3012345">"#),
             "{html}"
         );
-        assert!(!html.contains("Every output on the chain,"));
+        assert!(!html.contains("Every output in the curve tree"));
         assert!(html.contains("<dt>FCMP++ proof</dt><dd>6528 bytes"));
         assert!(html.contains(r#"<th class="num">Unified ID</th>"#));
         assert!(html.contains(r#"<td class="num">900</td>"#));
@@ -3114,7 +3113,7 @@ mod tests {
 
         // Without them, none of it appears.
         let bare = fcmp_tx_page().render().expect("renders");
-        assert!(bare.contains("Every output on the chain"));
+        assert!(bare.contains("Every output in the curve tree"));
         assert!(!bare.contains("FCMP++ proof"));
         assert!(!bare.contains("Unified ID"));
     }
@@ -3128,6 +3127,21 @@ mod tests {
         assert_eq!(grouped(u64::MAX), "18,446,744,073,709,551,615");
     }
 
+    /// The root a proof was checked against is in a different block from the
+    /// one it names, and the page links both.
+    #[test]
+    fn the_reference_block_and_the_root_block_are_both_linked() {
+        let mut page = fcmp_tx_page();
+        page.root_block = monerod_rpc::types::tree_root_block(3_012_345);
+        let html = page.render().expect("renders");
+        assert!(html.contains(r#"as of block <a href="/block/3012345">3012345</a>"#));
+        assert!(
+            html.contains(r#"root in block <a href="/block/3012337">3012337</a>"#),
+            "{html}"
+        );
+        assert!(html.contains("FCMP++ (type 7)"));
+    }
+
     /// A pruned node knows the transaction is FCMP++ but not which tree it
     /// named. The row stays; the claim about the block goes.
     #[test]
@@ -3137,7 +3151,7 @@ mod tests {
         page.reference_block = None;
         page.n_tree_layers = None;
         let html = page.render().expect("renders");
-        assert!(html.contains("Every output on the chain"));
+        assert!(html.contains("Every output in the curve tree"));
         assert!(!html.contains("as of block"));
         assert!(html.contains("the FCMP++ proof and the block it"));
         assert!(!html.contains("Ring members are still resolved"));
@@ -3188,8 +3202,10 @@ mod tests {
         });
         let html = page.render().expect("renders");
         assert_eq!(
-            html.matches(r#"<span title="FCMP++: every output on the chain">all</span>"#)
-                .count(),
+            html.matches(
+                r#"<span title="FCMP++: every output in the curve tree the proof names">all</span>"#
+            )
+            .count(),
             1,
             "{html}"
         );

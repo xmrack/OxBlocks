@@ -5,7 +5,8 @@
 //! daemon reports how many outputs its curve tree held as of a block. Every
 //! other call this crate makes is JSON, so this module covers exactly what that
 //! one exchange needs: an encoder for a flat section of unsigned integers, and
-//! a decoder total over anything the daemon could send back.
+//! a reader that pulls a few named scalars out of the root of the answer and
+//! walks past everything else.
 //!
 //! The layout, from `contrib/epee/include/storages/portable_storage_*.h`:
 //!
@@ -17,14 +18,17 @@
 //!   byte say whether it occupies 1, 2, 4 or 8 bytes, little-endian, and the
 //!   value is what remains after shifting those two bits off;
 //! * a type byte with `0x80` set is an array of that type: a count, then the
-//!   elements without type bytes of their own. An array of arrays repeats the
-//!   type byte for each inner array.
+//!   elements without type bytes of their own.
 //!
-//! The decoder is written for remote input. It allocates nothing that the
-//! remaining input does not bound, rejects duplicate keys as epee does, and
-//! stops at epee's own recursion limit of 100.
+//! The reader is written for remote input: the daemon may be a public node,
+//! and the path to it may be plain HTTP. It builds nothing for a value it
+//! skips, so its memory does not grow with the body; it does one pass over the
+//! bytes, so its time grows only linearly; and it caps nesting well inside
+//! any stack. It refuses what epee's own reader refuses -- an array of arrays,
+//! an empty name, a bool other than 0 or 1, a repeated root key -- so a body
+//! monerod would not accept is an error here too, not a quiet success.
 
-use std::fmt;
+use std::collections::HashSet;
 
 const SIGNATURE_A: u32 = 0x0101_1101;
 const SIGNATURE_B: u32 = 0x0102_0101;
@@ -46,10 +50,15 @@ const TYPE_OBJECT: u8 = 12;
 const TYPE_ARRAY: u8 = 13;
 const FLAG_ARRAY: u8 = 0x80;
 
-/// epee's `EPEE_PORTABLE_STORAGE_RECURSION_LIMIT` default.
-const MAX_DEPTH: usize = 100;
+/// Sections nested inside the root, at most.
+///
+/// Tighter than epee's own guard, which counts every nested read call against
+/// a limit of 100 and so gives out at about 33 sections. The deepest answer
+/// this crate reads nests five. Recursion is bounded by this and nothing else,
+/// because an array element can only be a scalar or a section.
+pub const MAX_DEPTH: usize = 32;
 
-/// Why a body is not a portable-storage document this module can read.
+/// Why a body is not a portable-storage document this module accepts.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EpeeError {
     #[error("the body ended {0} bytes early")]
@@ -58,13 +67,17 @@ pub enum EpeeError {
     BadHeader,
     #[error("unknown entry type {0}")]
     UnknownType(u8),
-    #[error("an array announces {0} elements, more than the body could hold")]
+    #[error("an array of arrays, which epee does not read")]
+    NestedArray,
+    #[error("a count of {0}, more than the body could hold")]
     ImpossibleCount(u64),
-    #[error("an entry name is not UTF-8")]
-    BadName,
-    #[error("the key {0} appears twice in one section")]
+    #[error("an entry with an empty name")]
+    EmptyName,
+    #[error("a bool byte of {0}")]
+    BadBool(u8),
+    #[error("the root key {0:?} appears twice")]
     DuplicateKey(String),
-    #[error("nesting deeper than {MAX_DEPTH} levels")]
+    #[error("sections nested deeper than {MAX_DEPTH}")]
     TooDeep,
     #[error("{0} bytes follow the root section")]
     TrailingBytes(usize),
@@ -72,31 +85,28 @@ pub enum EpeeError {
     Unencodable(&'static str),
 }
 
-/// One decoded value.
-///
-/// Integers keep their sign rather than their width: every width folds into
-/// one of two variants, because a field monerod declares `uint64_t` today may
-/// arrive narrower from a daemon that declared it otherwise, and a caller
-/// asking for an unsigned number should get it either way.
+/// A value read from the root section.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Entry {
+pub enum Scalar {
     Signed(i64),
     Unsigned(u64),
     Double(f64),
     Bool(bool),
     /// epee strings are byte strings, and monerod puts raw binary in them.
     Bytes(Vec<u8>),
-    Object(Section),
-    Array(Vec<Entry>),
+    /// The key is there but holds a section or an array, which this reader
+    /// walks past rather than keeping. Recorded so that "present with the
+    /// wrong type" is not mistaken for "absent".
+    Container,
 }
 
-/// A section: named entries in the order they arrived.
+/// The root entries a caller asked for, as found.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct Section(Vec<(String, Entry)>);
+pub struct Root(Vec<(String, Scalar)>);
 
-impl Section {
+impl Root {
     #[must_use]
-    pub fn get(&self, name: &str) -> Option<&Entry> {
+    pub fn get(&self, name: &str) -> Option<&Scalar> {
         self.0.iter().find(|(k, _)| k == name).map(|(_, v)| v)
     }
 
@@ -104,8 +114,8 @@ impl Section {
     #[must_use]
     pub fn unsigned(&self, name: &str) -> Option<u64> {
         match self.get(name)? {
-            Entry::Unsigned(v) => Some(*v),
-            Entry::Signed(v) => u64::try_from(*v).ok(),
+            Scalar::Unsigned(v) => Some(*v),
+            Scalar::Signed(v) => u64::try_from(*v).ok(),
             _ => None,
         }
     }
@@ -114,19 +124,9 @@ impl Section {
     #[must_use]
     pub fn text(&self, name: &str) -> Option<&str> {
         match self.get(name)? {
-            Entry::Bytes(b) => std::str::from_utf8(b).ok(),
+            Scalar::Bytes(b) => std::str::from_utf8(b).ok(),
             _ => None,
         }
-    }
-
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
     }
 }
 
@@ -153,6 +153,9 @@ pub fn encode(fields: &[(&str, Field<'_>)]) -> Result<Vec<u8>, EpeeError> {
     put_varint(&mut out, present.len() as u64)?;
     for (name, field) in present {
         let len = u8::try_from(name.len()).map_err(|_| EpeeError::Unencodable("name"))?;
+        if len == 0 {
+            return Err(EpeeError::Unencodable("empty name"));
+        }
         out.push(len);
         out.extend_from_slice(name.as_bytes());
         match field {
@@ -190,8 +193,11 @@ fn put_varint(out: &mut Vec<u8>, v: u64) -> Result<(), EpeeError> {
     Ok(())
 }
 
-/// Decode a whole portable-storage document into its root section.
-pub fn decode(bytes: &[u8]) -> Result<Section, EpeeError> {
+/// Read a whole document, keeping the root entries named in `wanted`.
+///
+/// Every byte is still checked -- a malformed value anywhere, kept or skipped,
+/// fails the read -- but only the wanted scalars are copied out.
+pub fn read_root(bytes: &[u8], wanted: &[&str]) -> Result<Root, EpeeError> {
     let mut r = Reader { rest: bytes };
     let header = r.take(HEADER_LEN).map_err(|_| EpeeError::BadHeader)?;
     let (a, b, version) = match header {
@@ -205,11 +211,34 @@ pub fn decode(bytes: &[u8]) -> Result<Section, EpeeError> {
     if a != SIGNATURE_A || b != SIGNATURE_B || version != FORMAT_VERSION {
         return Err(EpeeError::BadHeader);
     }
-    let root = r.section(0)?;
+
+    // An entry is at least a name length, a one-byte name, a type and a
+    // one-byte value.
+    let n = r.count(4)?;
+    // Borrowed from the body, so the duplicate check copies nothing and costs
+    // one hash per key rather than a scan of every key before it.
+    let mut seen: HashSet<&[u8]> = HashSet::with_capacity(n);
+    let mut kept = Vec::new();
+    for _ in 0..n {
+        let name = r.name()?;
+        if !seen.insert(name) {
+            return Err(EpeeError::DuplicateKey(
+                String::from_utf8_lossy(name).into_owned(),
+            ));
+        }
+        let ty = r.byte()?;
+        let keep = std::str::from_utf8(name)
+            .ok()
+            .filter(|n| wanted.contains(n));
+        match keep {
+            Some(key) => kept.push((key.to_owned(), r.keep(ty)?)),
+            None => r.skip(ty, 0)?,
+        }
+    }
     if !r.rest.is_empty() {
         return Err(EpeeError::TrailingBytes(r.rest.len()));
     }
-    Ok(root)
+    Ok(Root(kept))
 }
 
 struct Reader<'a> {
@@ -226,6 +255,11 @@ impl<'a> Reader<'a> {
         Ok(head)
     }
 
+    /// Step over `n` bytes.
+    fn advance(&mut self, n: usize) -> Result<(), EpeeError> {
+        self.take(n).map(|_| ())
+    }
+
     fn array<const N: usize>(&mut self) -> Result<[u8; N], EpeeError> {
         let mut out = [0u8; N];
         out.copy_from_slice(self.take(N)?);
@@ -233,7 +267,8 @@ impl<'a> Reader<'a> {
     }
 
     fn byte(&mut self) -> Result<u8, EpeeError> {
-        Ok(self.array::<1>()?[0])
+        let [b] = self.array::<1>()?;
+        Ok(b)
     }
 
     fn varint(&mut self) -> Result<u64, EpeeError> {
@@ -248,9 +283,6 @@ impl<'a> Reader<'a> {
     }
 
     /// A count that the remaining bytes could hold at `min` bytes apiece.
-    ///
-    /// The allocation bound: a count is attacker-chosen, and reserving for it
-    /// before checking would let four bytes ask for gigabytes.
     fn count(&mut self, min: usize) -> Result<usize, EpeeError> {
         let n = self.varint()?;
         let possible = self.rest.len() / min.max(1);
@@ -260,83 +292,98 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn section(&mut self, depth: usize) -> Result<Section, EpeeError> {
-        if depth > MAX_DEPTH {
-            return Err(EpeeError::TooDeep);
+    fn name(&mut self) -> Result<&'a [u8], EpeeError> {
+        let len = usize::from(self.byte()?);
+        if len == 0 {
+            return Err(EpeeError::EmptyName);
         }
-        // An entry is at least a name length, a type and a one-byte value.
-        let n = self.count(3)?;
-        let mut entries: Vec<(String, Entry)> = Vec::with_capacity(n);
-        for _ in 0..n {
-            let len = usize::from(self.byte()?);
-            let name = std::str::from_utf8(self.take(len)?)
-                .map_err(|_| EpeeError::BadName)?
-                .to_owned();
-            if entries.iter().any(|(k, _)| *k == name) {
-                return Err(EpeeError::DuplicateKey(name));
-            }
-            let ty = self.byte()?;
-            let value = self.value(ty, depth + 1)?;
-            entries.push((name, value));
-        }
-        Ok(Section(entries))
+        self.take(len)
     }
 
-    fn value(&mut self, ty: u8, depth: usize) -> Result<Entry, EpeeError> {
-        if depth > MAX_DEPTH {
-            return Err(EpeeError::TooDeep);
+    fn bool(&mut self) -> Result<bool, EpeeError> {
+        match self.byte()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            other => Err(EpeeError::BadBool(other)),
         }
-        if ty & FLAG_ARRAY != 0 {
-            return self.elements(ty & !FLAG_ARRAY, depth);
-        }
-        self.scalar(ty, depth)
     }
 
-    fn elements(&mut self, ty: u8, depth: usize) -> Result<Entry, EpeeError> {
-        let n = self.count(min_len(ty)?)?;
-        let mut items = Vec::with_capacity(n);
-        for _ in 0..n {
-            let item = if ty == TYPE_ARRAY {
-                // An inner array carries its own element type.
-                let inner = self.byte()?;
-                if inner & FLAG_ARRAY == 0 {
-                    return Err(EpeeError::UnknownType(inner));
-                }
-                self.elements(inner & !FLAG_ARRAY, depth + 1)?
-            } else {
-                self.scalar(ty, depth + 1)?
-            };
-            items.push(item);
+    /// Read one root value into a [`Scalar`], walking past a container.
+    fn keep(&mut self, ty: u8) -> Result<Scalar, EpeeError> {
+        if ty & FLAG_ARRAY != 0 || ty == TYPE_OBJECT || ty == TYPE_ARRAY {
+            self.skip(ty, 0)?;
+            return Ok(Scalar::Container);
         }
-        Ok(Entry::Array(items))
-    }
-
-    fn scalar(&mut self, ty: u8, depth: usize) -> Result<Entry, EpeeError> {
         Ok(match ty {
-            TYPE_INT64 => Entry::Signed(i64::from_le_bytes(self.array()?)),
-            TYPE_INT32 => Entry::Signed(i64::from(i32::from_le_bytes(self.array()?))),
-            TYPE_INT16 => Entry::Signed(i64::from(i16::from_le_bytes(self.array()?))),
-            TYPE_INT8 => Entry::Signed(i64::from(i8::from_le_bytes(self.array()?))),
-            TYPE_UINT64 => Entry::Unsigned(u64::from_le_bytes(self.array()?)),
-            TYPE_UINT32 => Entry::Unsigned(u64::from(u32::from_le_bytes(self.array()?))),
-            TYPE_UINT16 => Entry::Unsigned(u64::from(u16::from_le_bytes(self.array()?))),
-            TYPE_UINT8 => Entry::Unsigned(u64::from(self.byte()?)),
-            TYPE_DOUBLE => Entry::Double(f64::from_le_bytes(self.array()?)),
-            TYPE_BOOL => Entry::Bool(self.byte()? != 0),
+            TYPE_INT64 => Scalar::Signed(i64::from_le_bytes(self.array()?)),
+            TYPE_INT32 => Scalar::Signed(i64::from(i32::from_le_bytes(self.array()?))),
+            TYPE_INT16 => Scalar::Signed(i64::from(i16::from_le_bytes(self.array()?))),
+            TYPE_INT8 => Scalar::Signed(i64::from(i8::from_le_bytes(self.array()?))),
+            TYPE_UINT64 => Scalar::Unsigned(u64::from_le_bytes(self.array()?)),
+            TYPE_UINT32 => Scalar::Unsigned(u64::from(u32::from_le_bytes(self.array()?))),
+            TYPE_UINT16 => Scalar::Unsigned(u64::from(u16::from_le_bytes(self.array()?))),
+            TYPE_UINT8 => Scalar::Unsigned(u64::from(self.byte()?)),
+            TYPE_DOUBLE => Scalar::Double(f64::from_le_bytes(self.array()?)),
+            TYPE_BOOL => Scalar::Bool(self.bool()?),
             TYPE_STRING => {
                 let len = self.count(1)?;
-                Entry::Bytes(self.take(len)?.to_vec())
-            }
-            TYPE_OBJECT => Entry::Object(self.section(depth)?),
-            TYPE_ARRAY => {
-                let inner = self.byte()?;
-                if inner & FLAG_ARRAY == 0 {
-                    return Err(EpeeError::UnknownType(inner));
-                }
-                self.elements(inner & !FLAG_ARRAY, depth)?
+                Scalar::Bytes(self.take(len)?.to_vec())
             }
             other => return Err(EpeeError::UnknownType(other)),
         })
+    }
+
+    /// Walk past one value of type `ty` inside `depth` enclosing sections.
+    ///
+    /// Recursion happens only through a section, and every section checks the
+    /// depth before it reads anything, so this cannot outrun the stack
+    /// whatever the body says.
+    fn skip(&mut self, ty: u8, depth: usize) -> Result<(), EpeeError> {
+        if ty & FLAG_ARRAY != 0 {
+            let inner = ty & !FLAG_ARRAY;
+            if inner == TYPE_ARRAY {
+                return Err(EpeeError::NestedArray);
+            }
+            let n = self.count(min_len(inner)?)?;
+            for _ in 0..n {
+                self.skip_one(inner, depth)?;
+            }
+            return Ok(());
+        }
+        self.skip_one(ty, depth)
+    }
+
+    fn skip_one(&mut self, ty: u8, depth: usize) -> Result<(), EpeeError> {
+        match ty {
+            TYPE_INT64 | TYPE_UINT64 | TYPE_DOUBLE => self.advance(8),
+            TYPE_INT32 | TYPE_UINT32 => self.advance(4),
+            TYPE_INT16 | TYPE_UINT16 => self.advance(2),
+            TYPE_INT8 | TYPE_UINT8 => self.advance(1),
+            TYPE_BOOL => self.bool().map(|_| ()),
+            TYPE_STRING => {
+                let len = self.count(1)?;
+                self.advance(len)
+            }
+            TYPE_OBJECT => self.skip_section(depth + 1),
+            // A bare "array" type byte is followed by the array's own typed
+            // header; epee writes it only for an array held inside an array,
+            // which it refuses to read.
+            TYPE_ARRAY => Err(EpeeError::NestedArray),
+            other => Err(EpeeError::UnknownType(other)),
+        }
+    }
+
+    fn skip_section(&mut self, depth: usize) -> Result<(), EpeeError> {
+        if depth > MAX_DEPTH {
+            return Err(EpeeError::TooDeep);
+        }
+        let n = self.count(4)?;
+        for _ in 0..n {
+            self.name()?;
+            let ty = self.byte()?;
+            self.skip(ty, depth)?;
+        }
+        Ok(())
     }
 }
 
@@ -346,16 +393,10 @@ const fn min_len(ty: u8) -> Result<usize, EpeeError> {
         TYPE_INT64 | TYPE_UINT64 | TYPE_DOUBLE => 8,
         TYPE_INT32 | TYPE_UINT32 => 4,
         TYPE_INT16 | TYPE_UINT16 => 2,
-        TYPE_INT8 | TYPE_UINT8 | TYPE_BOOL | TYPE_STRING | TYPE_OBJECT | TYPE_ARRAY => 1,
+        TYPE_INT8 | TYPE_UINT8 | TYPE_BOOL | TYPE_STRING | TYPE_OBJECT => 1,
+        TYPE_ARRAY => return Err(EpeeError::NestedArray),
         other => return Err(EpeeError::UnknownType(other)),
     })
-}
-
-impl fmt::Display for Section {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let names: Vec<&str> = self.0.iter().map(|(k, _)| k.as_str()).collect();
-        write!(f, "{{{}}}", names.join(", "))
-    }
 }
 
 #[cfg(test)]
@@ -370,6 +411,23 @@ mod tests {
     use super::*;
 
     const HEADER: [u8; 9] = [0x01, 0x11, 0x01, 0x01, 0x01, 0x01, 0x02, 0x01, 0x01];
+
+    /// A document whose root holds `entries`, each already encoded as
+    /// name length, name, type and value.
+    fn doc(count: u64, entries: &[u8]) -> Vec<u8> {
+        let mut b = HEADER.to_vec();
+        put_varint(&mut b, count).unwrap();
+        b.extend_from_slice(entries);
+        b
+    }
+
+    fn entry(name: &[u8], ty: u8, value: &[u8]) -> Vec<u8> {
+        let mut e = vec![name.len() as u8];
+        e.extend_from_slice(name);
+        e.push(ty);
+        e.extend_from_slice(value);
+        e
+    }
 
     #[test]
     fn a_request_encodes_the_way_epee_lays_it_out() {
@@ -395,9 +453,7 @@ mod tests {
     #[test]
     fn an_empty_array_is_left_out_as_epee_does() {
         let bytes = encode(&[("unified_ids", Field::U64s(&[]))]).unwrap();
-        let mut expected = HEADER.to_vec();
-        expected.push(0);
-        assert_eq!(bytes, expected);
+        assert_eq!(bytes, doc(0, &[]));
     }
 
     #[test]
@@ -420,121 +476,151 @@ mod tests {
     }
 
     #[test]
-    fn what_this_encodes_this_decodes() {
+    fn only_the_wanted_keys_are_kept() {
         let bytes = encode(&[
             ("as_of_n_blocks", Field::U64(421)),
             ("unified_ids", Field::U64s(&[7, 8, 9])),
         ])
         .unwrap();
-        let root = decode(&bytes).unwrap();
+        let root = read_root(&bytes, &["as_of_n_blocks", "unified_ids"]).unwrap();
         assert_eq!(root.unsigned("as_of_n_blocks"), Some(421));
-        assert_eq!(
-            root.get("unified_ids"),
-            Some(&Entry::Array(vec![
-                Entry::Unsigned(7),
-                Entry::Unsigned(8),
-                Entry::Unsigned(9)
-            ]))
-        );
+        assert_eq!(root.get("unified_ids"), Some(&Scalar::Container));
+
+        let root = read_root(&bytes, &[]).unwrap();
+        assert_eq!(root.get("as_of_n_blocks"), None);
     }
 
     /// Nested objects, an array of objects, strings holding raw bytes and a
-    /// bool: every shape the path response uses, built by hand.
+    /// bool: every shape the path response uses, walked past on the way to
+    /// the scalars that are kept.
     #[test]
-    fn nested_sections_and_arrays_of_objects_decode() {
-        let mut b = HEADER.to_vec();
-        b.push(3 << 2);
-        b.push(6);
-        b.extend_from_slice(b"status");
-        b.push(TYPE_STRING);
-        b.push(2 << 2);
-        b.extend_from_slice(b"OK");
-        b.push(5);
-        b.extend_from_slice(b"paths");
-        b.push(TYPE_OBJECT | FLAG_ARRAY);
-        b.push(1 << 2);
-        {
-            b.push(2 << 2);
-            b.push(8);
-            b.extend_from_slice(b"leaf_idx");
-            b.push(TYPE_UINT32);
-            b.extend_from_slice(&5u32.to_le_bytes());
-            b.push(4);
-            b.extend_from_slice(b"blob");
-            b.push(TYPE_STRING);
-            b.push(2 << 2);
-            b.extend_from_slice(&[0xff, 0x00]);
-        }
-        b.push(9);
-        b.extend_from_slice(b"untrusted");
-        b.push(TYPE_BOOL);
-        b.push(0);
+    fn nested_sections_and_arrays_of_objects_are_walked_past() {
+        let mut path = vec![2 << 2];
+        path.extend(entry(b"leaf_idx", TYPE_UINT32, &5u32.to_le_bytes()));
+        path.extend(entry(b"blob", TYPE_STRING, &[2 << 2, 0xff, 0x00]));
+        let mut paths = vec![1 << 2];
+        paths.extend(path);
 
-        let root = decode(&b).unwrap();
+        let mut body = entry(b"status", TYPE_STRING, &[2 << 2, b'O', b'K']);
+        body.extend(entry(b"paths", TYPE_OBJECT | FLAG_ARRAY, &paths));
+        body.extend(entry(b"untrusted", TYPE_BOOL, &[0]));
+        body.extend(entry(b"n_leaf_tuples", TYPE_UINT64, &62u64.to_le_bytes()));
+
+        let root = read_root(
+            &doc(4, &body),
+            &["status", "untrusted", "n_leaf_tuples", "paths"],
+        )
+        .unwrap();
         assert_eq!(root.text("status"), Some("OK"));
-        assert_eq!(root.get("untrusted"), Some(&Entry::Bool(false)));
-        let Some(Entry::Array(paths)) = root.get("paths") else {
-            panic!("paths is an array");
-        };
-        let Entry::Object(first) = &paths[0] else {
-            panic!("of objects");
-        };
-        assert_eq!(first.unsigned("leaf_idx"), Some(5));
-        assert_eq!(first.get("blob"), Some(&Entry::Bytes(vec![0xff, 0x00])));
+        assert_eq!(root.get("untrusted"), Some(&Scalar::Bool(false)));
+        assert_eq!(root.unsigned("n_leaf_tuples"), Some(62));
+        assert_eq!(root.get("paths"), Some(&Scalar::Container));
     }
 
     #[test]
-    fn hostile_input_is_refused_rather_than_trusted() {
-        assert_eq!(decode(&[]), Err(EpeeError::BadHeader));
-        assert_eq!(decode(&[0u8; 9]), Err(EpeeError::BadHeader));
+    fn what_epee_refuses_is_refused_here() {
+        // An array of arrays, which epee's reader does not support. This was
+        // the shape that ran an earlier, recursive decoder off its stack.
+        let nested = doc(1, &entry(b"x", TYPE_ARRAY | FLAG_ARRAY, &[1 << 2]));
+        assert_eq!(read_root(&nested, &[]), Err(EpeeError::NestedArray));
+        let bare = doc(1, &entry(b"x", TYPE_ARRAY, &[TYPE_UINT8 | FLAG_ARRAY, 0]));
+        assert_eq!(read_root(&bare, &[]), Err(EpeeError::NestedArray));
 
-        // A count of a billion elements in a ten-byte body.
-        let mut huge = HEADER.to_vec();
-        huge.push(1 << 2);
-        huge.push(1);
-        huge.push(b'x');
-        huge.push(TYPE_UINT64 | FLAG_ARRAY);
+        // An empty name.
+        let mut empty = HEADER.to_vec();
+        // Padded so the entry count's size bound passes and the name is read.
+        empty.extend_from_slice(&[1 << 2, 0, TYPE_UINT8, 1, 0]);
+        assert_eq!(read_root(&empty, &[]), Err(EpeeError::EmptyName));
+
+        // A bool that is neither 0 nor 1, kept or skipped.
+        let bad = doc(1, &entry(b"b", TYPE_BOOL, &[2]));
+        assert_eq!(read_root(&bad, &["b"]), Err(EpeeError::BadBool(2)));
+        assert_eq!(read_root(&bad, &[]), Err(EpeeError::BadBool(2)));
+
+        // A repeated root key.
+        let mut dup = entry(b"a", TYPE_UINT8, &[1]);
+        dup.extend(entry(b"a", TYPE_UINT8, &[2]));
+        assert_eq!(
+            read_root(&doc(2, &dup), &["a"]),
+            Err(EpeeError::DuplicateKey("a".to_owned()))
+        );
+
+        // An unknown type byte.
+        assert_eq!(
+            read_root(&doc(1, &entry(b"z", 42, &[0])), &[]),
+            Err(EpeeError::UnknownType(42))
+        );
+    }
+
+    #[test]
+    fn malformed_bodies_are_errors_not_panics() {
+        assert_eq!(read_root(&[], &[]), Err(EpeeError::BadHeader));
+        assert_eq!(read_root(&[0u8; 9], &[]), Err(EpeeError::BadHeader));
+
+        // A count of a billion elements in a short body.
+        let mut huge = vec![];
         huge.extend_from_slice(&((1_000_000_000u32 << 2) | 2).to_le_bytes());
-        assert!(matches!(decode(&huge), Err(EpeeError::ImpossibleCount(_))));
-
-        // A duplicate key.
-        let mut dup = HEADER.to_vec();
-        dup.push(2 << 2);
-        for _ in 0..2 {
-            dup.push(1);
-            dup.push(b'a');
-            dup.push(TYPE_UINT8);
-            dup.push(1);
-        }
-        assert_eq!(decode(&dup), Err(EpeeError::DuplicateKey("a".to_owned())));
-
-        // Objects nested past the limit.
-        let mut deep = HEADER.to_vec();
-        for _ in 0..=MAX_DEPTH {
-            deep.push(1 << 2);
-            deep.push(1);
-            deep.push(b'o');
-            deep.push(TYPE_OBJECT);
-        }
-        deep.push(0);
-        assert_eq!(decode(&deep), Err(EpeeError::TooDeep));
+        let huge = doc(1, &entry(b"x", TYPE_UINT64 | FLAG_ARRAY, &huge));
+        assert!(matches!(
+            read_root(&huge, &[]),
+            Err(EpeeError::ImpossibleCount(_))
+        ));
 
         // Truncated in the middle of a value, and bytes after the root.
         let good = encode(&[("n", Field::U64(1))]).unwrap();
         assert!(matches!(
-            decode(&good[..good.len() - 1]),
+            read_root(&good[..good.len() - 1], &["n"]),
             Err(EpeeError::Truncated(_))
         ));
         let mut long = good.clone();
         long.push(0);
-        assert_eq!(decode(&long), Err(EpeeError::TrailingBytes(1)));
+        assert_eq!(read_root(&long, &["n"]), Err(EpeeError::TrailingBytes(1)));
+    }
 
-        // An unknown type byte.
-        let mut unknown = HEADER.to_vec();
-        unknown.push(1 << 2);
-        unknown.push(1);
-        unknown.push(b'z');
-        unknown.push(42);
-        assert_eq!(decode(&unknown), Err(EpeeError::UnknownType(42)));
+    /// Sections nested past the limit fail before the stack is at risk, and
+    /// at the limit they are read.
+    #[test]
+    fn nesting_is_capped() {
+        fn nested(levels: usize) -> Vec<u8> {
+            // Innermost first: an empty section, wrapped `levels` times.
+            let mut inner = vec![0u8];
+            for _ in 1..levels {
+                let mut outer = vec![1 << 2];
+                outer.extend(entry(b"o", TYPE_OBJECT, &inner));
+                inner = outer;
+            }
+            doc(1, &entry(b"o", TYPE_OBJECT, &inner))
+        }
+        assert!(read_root(&nested(MAX_DEPTH), &[]).is_ok());
+        assert_eq!(
+            read_root(&nested(MAX_DEPTH + 1), &[]),
+            Err(EpeeError::TooDeep)
+        );
+        assert_eq!(read_root(&nested(100_000), &[]), Err(EpeeError::TooDeep));
+    }
+
+    /// The shapes that cost an earlier decoder 48 seconds of CPU and 1.6 GB of
+    /// memory. Walked past, they cost one pass and nothing kept.
+    #[test]
+    fn wide_bodies_cost_one_pass() {
+        // 200,000 distinct root keys.
+        let mut keys = Vec::new();
+        for i in 0..200_000u32 {
+            keys.extend(entry(format!("{i:x}").as_bytes(), TYPE_UINT8, &[0]));
+        }
+        let wide = doc(200_000, &keys);
+        let started = std::time::Instant::now();
+        assert!(read_root(&wide, &["n_leaf_tuples"]).is_ok());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+        // Five million one-byte elements, none of them kept.
+        let mut bytes = Vec::new();
+        put_varint(&mut bytes, 5_000_000).unwrap();
+        bytes.resize(bytes.len() + 5_000_000, 0);
+        let long = doc(1, &entry(b"x", TYPE_UINT8 | FLAG_ARRAY, &bytes));
+        assert_eq!(
+            read_root(&long, &["x"]).unwrap().get("x"),
+            Some(&Scalar::Container)
+        );
     }
 }

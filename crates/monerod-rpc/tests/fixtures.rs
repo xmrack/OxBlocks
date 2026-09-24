@@ -2431,11 +2431,12 @@ fn an_fcmp_pp_pool_entry_decodes() {
 // /get_path_by_unified_id.bin, in epee's binary format
 // ---------------------------------------------------------------------------
 
-fn binary(rel: &str) -> monerod_rpc::epee::Section {
+fn binary(rel: &str, wanted: &[&str]) -> monerod_rpc::epee::Root {
     let path = fixtures_root().join(rel);
     let bytes = std::fs::read(&path)
         .unwrap_or_else(|e| panic!("cannot read fixture {}: {e}", path.display()));
-    monerod_rpc::epee::decode(&bytes).unwrap_or_else(|e| panic!("{rel} did not decode: {e}"))
+    monerod_rpc::epee::read_root(&bytes, wanted)
+        .unwrap_or_else(|e| panic!("{rel} did not decode: {e}"))
 }
 
 /// The same tree size, asked two ways as of block 120 of the capture chain.
@@ -2443,29 +2444,27 @@ fn binary(rel: &str) -> monerod_rpc::epee::Section {
 /// are in the tree: 62 outputs.
 #[test]
 fn the_tree_size_is_the_same_whichever_output_probes_it() {
-    use monerod_rpc::epee::Entry;
+    use monerod_rpc::epee::Scalar;
     use monerod_rpc::types::TreeSizeQuery;
 
-    let own = binary("fcmp/get_path_by_unified_id_probe_own_output.bin");
-    let in_tree = binary("fcmp/get_path_by_unified_id_probe_in_tree.bin");
-    assert_eq!(own.text("status"), Some("OK"));
-    assert_eq!(TreeSizeQuery::answer(&own), Some(62));
-    assert_eq!(TreeSizeQuery::answer(&in_tree), Some(62));
-
-    // Probed with an output that joins the tree later, the path is empty:
-    // that skip is what makes the explorer's probe cheap.
-    let path_of = |root: &monerod_rpc::epee::Section| match root.get("paths") {
-        Some(Entry::Array(paths)) => match paths.first() {
-            Some(Entry::Object(p)) => p.clone(),
-            other => panic!("paths[0] is not an object: {other:?}"),
-        },
-        other => panic!("paths is not an array: {other:?}"),
-    };
-    let own_path = path_of(&own);
-    assert_eq!(own_path.unsigned("leaf_idx"), Some(0));
-
+    let wanted = ["status", "n_leaf_tuples", "paths", "credits", "top_hash"];
+    let own = binary("fcmp/get_path_by_unified_id_probe_own_output.bin", &wanted);
     // Probed with an early coinbase, the answer carries a whole path through
-    // the tree, nested objects and all, and it still decodes.
-    let tree_path = path_of(&in_tree);
-    assert!(matches!(tree_path.get("path"), Some(Entry::Object(p)) if !p.is_empty()));
+    // the tree, nested sections and all, which the reader walks past.
+    let in_tree = binary("fcmp/get_path_by_unified_id_probe_in_tree.bin", &wanted);
+
+    for root in [&own, &in_tree] {
+        assert_eq!(root.text("status"), Some("OK"));
+        assert_eq!(TreeSizeQuery::answer(root), Some(62));
+        assert_eq!(root.get("paths"), Some(&Scalar::Container));
+        assert_eq!(root.unsigned("credits"), Some(0));
+    }
+
+    // What the explorer itself asks for is enough for the answer.
+    let lean = binary(
+        "fcmp/get_path_by_unified_id_probe_in_tree.bin",
+        TreeSizeQuery::WANTED,
+    );
+    assert_eq!(TreeSizeQuery::answer(&lean), Some(62));
+    assert_eq!(lean.get("paths"), None, "nothing unasked for is kept");
 }

@@ -199,7 +199,8 @@ impl RpcChainSource {
 
     /// Call a JSON-RPC method, holding a permit for the duration.
     ///
-    /// Together with [`Self::bare`] this is the **only** path to the daemon:
+    /// Together with [`Self::bare`] and [`Self::binary`] this is the **only**
+    /// path to the daemon:
     /// `client` is private and has no accessor, so a new call site cannot
     /// forget the permit. An earlier version relied on remembering, and an
     /// audit of it missed a call written with a turbofish.
@@ -229,10 +230,11 @@ impl RpcChainSource {
         &self,
         endpoint: &'static str,
         fields: &[(&str, monerod_rpc::epee::Field<'_>)],
-    ) -> Result<monerod_rpc::epee::Section, RpcError> {
+        wanted: &[&str],
+    ) -> Result<monerod_rpc::epee::Root, RpcError> {
         let _permit = self.permit().await;
         self.rpc_calls.fetch_add(1, Ordering::Relaxed);
-        self.client.binary(endpoint, fields).await
+        self.client.binary(endpoint, fields, wanted).await
     }
 
     /// Acquire a permit for one call against the daemon.
@@ -283,7 +285,11 @@ impl RpcChainSource {
         let probe = *entry.unified_ids.first()?;
         let query = TreeSizeQuery::as_of_block(reference, probe)?;
         let root = self
-            .binary(TreeSizeQuery::ENDPOINT, &query.fields())
+            .binary(
+                TreeSizeQuery::ENDPOINT,
+                &query.fields(),
+                TreeSizeQuery::WANTED,
+            )
             .await
             .map_err(|e| tracing::debug!("tree size as of {reference}: {e}"))
             .ok()?;
@@ -440,6 +446,11 @@ impl RpcChainSource {
     /// trips overlap. On a busy chain that is about half the calls; on a quiet
     /// one, where most blocks are nothing but their coinbase, it is two.
     ///
+    /// `with_tree` asks for each block's curve tree as well. From the FCMP++
+    /// fork on the tree is in the block's body, so that fetches the body of
+    /// every post-fork block, coinbase-only ones included: N + 2 calls. Only
+    /// a caller that shows the tree should ask for it.
+    ///
     /// The headers are not cached, so a range that was served before now costs
     /// one call rather than none. That is the trade for the cold path costing
     /// two instead of two hundred.
@@ -447,17 +458,19 @@ impl RpcChainSource {
         &self,
         start: u64,
         end: u64,
+        with_tree: bool,
     ) -> Result<Vec<BlockWithTxs>, ChainError> {
         let headers = self.headers_range(start, end).await?.headers;
 
         // A block's body is fetched when it holds transactions, whose hashes
-        // only the body lists, and from the FCMP++ fork on, when its curve
-        // tree is in the body too. Below the fork a coinbase-only block still
-        // costs no call beyond the header range.
+        // only the body lists, and when the caller wants a post-fork block's
+        // curve tree, which is in the body too.
         let holding: Vec<u64> = headers
             .iter()
             .filter(|h| {
-                h.num_txes > 0 || h.major_version >= monerod_rpc::types::HF_VERSION_FCMP_PLUS_PLUS
+                h.num_txes > 0
+                    || (with_tree
+                        && h.major_version >= monerod_rpc::types::HF_VERSION_FCMP_PLUS_PLUS)
             })
             .map(|h| h.height)
             .collect();
@@ -500,7 +513,11 @@ impl RpcChainSource {
             .into_iter()
             .zip(wanted)
             .map(|(header, hashes)| BlockWithTxs {
-                tree: extra.get(&header.height).and_then(|b| BlockTree::of(b)),
+                tree: if with_tree {
+                    extra.get(&header.height).and_then(|b| BlockTree::of(b))
+                } else {
+                    None
+                },
                 header,
                 txs: hashes.iter().filter_map(|h| fetched.remove(h)).collect(),
             })
@@ -708,13 +725,13 @@ impl RpcChainSource {
     /// `join_all` preserves order, which ring display depends on: ring `n`
     /// must belong to input `n`.
     pub async fn resolve_rings(&self, tx: &TxJson) -> Vec<ResolvedInput> {
-        // An FCMP++ input proves it spends one of every output on the chain.
+        // An FCMP++ input proves it spends one of the outputs in the tree.
         // There is no ring to fetch, and nothing was refused, so the answer is
         // complete without asking the daemon anything. Checked by type rather
         // than left to the empty offset lists below, which would also reach no
         // daemon but only by way of a fallback written for a different case.
         if tx.is_fcmp_pp() {
-            return ringless_inputs(tx);
+            return unexpanded_inputs(tx);
         }
 
         let inputs: Vec<&TxInToKey> = tx
@@ -852,9 +869,7 @@ fn newest_first(txs: &mut [monerod_rpc::types::PoolTxInfo]) {
 /// unavailable.
 #[must_use]
 pub fn unexpanded_inputs(tx: &TxJson) -> Vec<ResolvedInput> {
-    if tx.is_fcmp_pp() {
-        return ringless_inputs(tx);
-    }
+    let withheld = !tx.is_fcmp_pp();
     tx.vin
         .iter()
         .filter_map(|input| match input {
@@ -862,24 +877,7 @@ pub fn unexpanded_inputs(tx: &TxJson) -> Vec<ResolvedInput> {
                 amount: k.amount,
                 key_image: k.k_image.parse().unwrap_or(Hash32::ZERO),
                 ring: Vec::new(),
-                ring_unavailable: true,
-            }),
-            _ => None,
-        })
-        .collect()
-}
-
-/// The inputs of an FCMP++ transaction: amount and key image, no ring, and
-/// nothing unavailable.
-fn ringless_inputs(tx: &TxJson) -> Vec<ResolvedInput> {
-    tx.vin
-        .iter()
-        .filter_map(|input| match input {
-            monerod_rpc::types::TxIn::Key(k) => Some(ResolvedInput {
-                amount: k.amount,
-                key_image: k.k_image.parse().unwrap_or(Hash32::ZERO),
-                ring: Vec::new(),
-                ring_unavailable: false,
+                ring_unavailable: withheld,
             }),
             _ => None,
         })
@@ -1295,8 +1293,6 @@ mod tests {
         assert!(permit.is_some(), "a zero ceiling must still admit one call");
     }
 
-    /// An unreachable daemon marks the ring unavailable rather than erroring
-    /// the page or silently rendering an empty ring as though it were real.
     fn fcmp_pp_tx() -> TxJson {
         serde_json::from_value(serde_json::json!({
             "version": 2, "unlock_time": 0,
@@ -1372,6 +1368,8 @@ mod tests {
         assert_eq!(src.rpc_calls(), 1);
     }
 
+    /// An unreachable daemon marks the ring unavailable rather than erroring
+    /// the page or silently rendering an empty ring as though it were real.
     #[tokio::test]
     async fn an_unreachable_daemon_marks_the_ring_unavailable() {
         let input = TxInToKey {

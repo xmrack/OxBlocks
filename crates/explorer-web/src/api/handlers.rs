@@ -459,15 +459,19 @@ pub async fn transactions(
         // One fan-out for the whole page rather than two calls per block. The
         // partially-built array still travels with the error. It is empty
         // here, since a batch either arrives or does not.
-        let fetched = state.chain.blocks_in_range(start, end).await.map_err(|e| {
-            let partial = serde_json::json!({ "blocks": [] });
-            if e.is_not_found() {
-                ApiError::not_found(format!("Cant get block: {start}"))
-            } else {
-                ApiError::daemon(format!("Cant get transactions in block: {start}"))
-            }
-            .with_partial(partial)
-        })?;
+        let fetched = state
+            .chain
+            .blocks_in_range(start, end, false)
+            .await
+            .map_err(|e| {
+                let partial = serde_json::json!({ "blocks": [] });
+                if e.is_not_found() {
+                    ApiError::not_found(format!("Cant get block: {start}"))
+                } else {
+                    ApiError::daemon(format!("Cant get transactions in block: {start}"))
+                }
+                .with_partial(partial)
+            })?;
 
         // Newest first, which is the order a page of recent blocks is read in.
         for block in fetched.iter().rev() {
@@ -1081,7 +1085,7 @@ pub async fn blocks_range(
 
     let blocks = state
         .chain
-        .blocks_in_range(start, end)
+        .blocks_in_range(start, end, true)
         .await
         .map_err(|e| on_chain_error(&e, &format!("Cant get blocks: {start} to {end}")))?;
 
@@ -1168,7 +1172,11 @@ pub async fn transactions_recent(State(state): Shared) -> Result<ApiOk<RecentDat
         mempool_txs_no += 1;
     }
 
-    if let Ok(window) = state.chain.blocks_in_range(from_height, to_height).await {
+    if let Ok(window) = state
+        .chain
+        .blocks_in_range(from_height, to_height, false)
+        .await
+    {
         for block in &window {
             push_unexpanded(&mut txs, &block.txs, info.height);
         }

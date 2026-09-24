@@ -28,7 +28,7 @@
   {% endif %}
   <dt>Fee</dt><dd>{{ fee }} XMR</dd>
   <dt>Size</dt><dd>{{ size }} bytes{% if pruned %} <span class="tag">prefix only</span>{% endif %}</dd>
-  <dt>Version</dt><dd>{{ version_no }}{% if rct_type > 0 %} &mdash; RingCT type {{ rct_type }}{% endif %}{% if fcmp_pp %} <span class="tag">FCMP++</span>{% endif %}
+  <dt>Version</dt><dd>{{ version_no }}{% if fcmp_pp %} &mdash; FCMP++ (type {{ rct_type }}){% else if rct_type > 0 %} &mdash; RingCT type {{ rct_type }}{% endif %}
     <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
     <p>The first number is the transaction format. Version 1 carried plain
     amounts that anyone could read, and version 2 hides them with RingCT,
@@ -38,21 +38,25 @@
     Bulletproofs, type 5 added CLSAG signatures, and type 6 uses
     Bulletproofs+. Up to type 6, each is smaller and faster to verify than the
     one before it, and none of them is more private. Type 7 is FCMP++. It
-    keeps Bulletproofs+ for the amounts and replaces the ring signature with a
-    proof that each input spends one of every output on the chain, so it is
-    the first of these to widen the anonymity set. A block reward is public,
-    so a coinbase shows no RingCT type at all.</p></details>
+    keeps RingCT's hidden amounts and Bulletproofs+, and replaces the ring
+    signature with a proof that each input spends one of the outputs in a
+    tree of every spendable output, so it is the first of these to widen the
+    anonymity set. monerod numbers it with the RingCT types although it has
+    no ring. A block reward is public, so a coinbase shows no type at
+    all.</p></details>
   </dd>
   {% if fcmp_pp %}
-  <dt>Anonymity set</dt><dd>{% if let Some(count) = anonymity_set %}{{ count }} outputs{% else %}Every output on the chain{% endif %}{% if let Some(r) = reference_block %}, as of block <a href="/block/{{ r }}">{{ r }}</a>{% endif %}{% if let Some(n) = n_tree_layers %} <span class="tag">{{ n }} tree layers</span>{% endif %}
+  <dt>Anonymity set</dt><dd>{% if let Some(count) = anonymity_set %}{{ count }} outputs{% else %}Every output in the curve tree{% endif %}{% if let Some(r) = reference_block %}, as of block <a href="/block/{{ r }}">{{ r }}</a>{% endif %}{% if let Some(n) = n_tree_layers %} <span class="tag">{{ n }} tree layers</span>{% endif %}{% if let Some(b) = root_block %} <span class="tag">root in block <a href="/block/{{ b }}">{{ b }}</a></span>{% endif %}
     <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
     <p>This transaction spends with FCMP++, so its inputs have no ring. Each
-    input proves that it spends one of the outputs in a tree that holds every
-    spendable output on the chain, and the proof does not say which. The
-    anonymity set is that whole tree, not 16 outputs, so there are no decoys to
-    list and no ages to compare. The block named here is the one whose tree
-    the proof was built against, and the count is how many outputs that
-    tree held then. A pruned node drops the block number with the rest of the
+    input proves that it spends one of the outputs in a tree of every output
+    that was spendable at the block named here, and the proof does not say
+    which. The anonymity set is that whole tree, not 16 outputs, so there are
+    no decoys to list and no ages to compare. Outputs still locked then, and
+    everything created since, are not in it. The count is how many outputs the
+    tree held. Blocks carry the tree's root eight blocks ahead, so the root
+    this proof was checked against is in the header of the block eight below
+    the one named. A pruned node drops the block number with the rest of the
     proof, and a transaction still in the pool has no count yet.</p></details>
   </dd>
   {% if let Some(bytes) = proof_size %}
@@ -129,8 +133,8 @@
     <div class="body">
       {% if fcmp_pp %}
       <p class="empty indented">
-        This input has no ring. It proves that it spends one of every output on
-        the chain, so there are no members to list. The key image above is
+        This input has no ring. It proves that it spends one of the outputs in
+        the curve tree, so there are no members to list. The key image above is
         what stops the same output from being spent twice.
       </p>
       {% else if i.unavailable %}
@@ -226,8 +230,8 @@
   </div>{% endif %}
   {% if has_unified_ids %}<div>Unified ID
     <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
-    <p>The output's place in the single sequence of every output on the
-    chain, whatever its amount, that the FCMP++ tree is built from. A wallet
+    <p>The output's place in the single sequence of all outputs on the
+    chain, whatever their amount, that the FCMP++ tree is built from. A wallet
     uses it to ask a node for the output's path through the tree, which it
     needs to spend it. It is public: anyone can read it here.</p></details>
   </div>{% endif %}

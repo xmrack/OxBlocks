@@ -971,15 +971,17 @@ pub struct OutKey {
 /// answers 0 when asked about no outputs at all, so it has to be asked about
 /// one.
 ///
-/// The one asked about is the **probe**, and choosing it well is what makes
-/// the call cheap and safe. An output that joins the tree only after the block
-/// asked about is skipped before any tree lookup, so it costs one output read
-/// and cannot fail on a missing leaf. Every output of the transaction being
-/// looked at is such an output: it was created in a block after the reference
-/// block, and an output joins the tree only when it unlocks, some blocks after
-/// that. So the probe is the transaction's own first output, by its unified
-/// id. Any output of the chain would do for the count; this one guarantees the
-/// skip.
+/// The one asked about is the **probe**, and choosing it well keeps the call
+/// cheap and safe. For an output that joins the tree only after the block
+/// asked about, monerod skips the leaf search and the path read, so the call
+/// cannot fail on a missing leaf. Every output of the transaction being looked
+/// at is such an output: it was created in a block after the reference block,
+/// and an output joins the tree only when it unlocks, some blocks after that.
+/// So the probe is the transaction's own first output, by its unified id.
+///
+/// What the call still costs the daemon, whatever the probe: reading the
+/// probe transaction's output data, and the tree's size and last path as of
+/// the block asked about. A few database reads, not a scan.
 ///
 /// The fields are private so that the one-block offset cannot be dropped:
 /// monerod takes a block *count*, and treats a count of 0 as "now".
@@ -991,6 +993,10 @@ pub struct TreeSizeQuery {
 
 impl TreeSizeQuery {
     pub const ENDPOINT: &'static str = "get_path_by_unified_id.bin";
+
+    /// The root entries [`Self::answer`] reads. Everything else in the answer,
+    /// the paths included, is walked past without being kept.
+    pub const WANTED: &'static [&'static str] = &["n_leaf_tuples"];
 
     /// The tree as of `reference_block`, probed with `probe_unified_id`.
     ///
@@ -1019,7 +1025,7 @@ impl TreeSizeQuery {
     /// holds at least the output being spent, so 0 is the daemon's answer to
     /// a question other than the one asked.
     #[must_use]
-    pub fn answer(root: &crate::epee::Section) -> Option<u64> {
+    pub fn answer(root: &crate::epee::Root) -> Option<u64> {
         root.unsigned("n_leaf_tuples").filter(|n| *n > 0)
     }
 }
@@ -1520,7 +1526,7 @@ pub struct TxInToKey {
     /// the first is absolute. See [`TxInToKey::ring_members`].
     ///
     /// Present and **empty** for every input of an FCMP++ transaction (RingCT
-    /// type 7). Such an input spends one of every output on the chain, not one
+    /// type 7). Such an input spends one of the outputs in the curve tree, not one
     /// of a ring, so there are no members to name.
     pub key_offsets: Vec<u64>,
     pub k_image: String,
@@ -1636,6 +1642,29 @@ pub struct TaggedKey {
 /// curve-tree fields. A block below it has no tree to report.
 pub const HF_VERSION_FCMP_PLUS_PLUS: u8 = 17;
 
+/// How far a block's own tree root runs ahead of its height.
+///
+/// A transaction's `reference_block` R and a block's `fcmp_pp_tree_root` count
+/// the tree differently. The proof is checked against the tree as it stood
+/// when R was the chain tip. Block H commits to the tree as of tip
+/// `get_default_last_locked_block_index(H - 1)`, which is `H - 1 + 9`: the
+/// default spendable age of 10 blocks, less one. So the root a proof naming R
+/// was checked against is the one in block `R - 8`'s header, not block R's.
+///
+/// From the check in `Blockchain::handle_block_to_main_chain`
+/// (`src/cryptonote_core/blockchain.cpp`) and
+/// `CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE` in `src/cryptonote_config.h`.
+pub const TREE_ROOT_LAG: u64 = 8;
+
+/// The height whose block header carries the root an FCMP++ proof naming
+/// `reference_block` was checked against, or `None` when no header could:
+/// below height 8, and in practice for the first blocks after the fork, whose
+/// headers predate the tree.
+#[must_use]
+pub const fn tree_root_block(reference_block: u64) -> Option<u64> {
+    reference_block.checked_sub(TREE_ROOT_LAG)
+}
+
 /// `txout_to_carrot_v1`.
 ///
 /// The amount commitment and the encrypted amount are not here. They sit in
@@ -1676,7 +1705,7 @@ pub enum RctType {
     BulletproofPlus,
     /// FCMP++, from hard fork 17. Bulletproofs+ still prove the ranges; what
     /// changes is the spend proof. Each input proves membership in the set of
-    /// every output on the chain rather than in a ring of 16, so an input has
+    /// every spendable output rather than in a ring of 16, so an input has
     /// no `key_offsets` and there are no ring members to look up.
     FcmpPlusPlus,
     /// A scheme this build does not know. Kept rather than rejected so that a
@@ -2465,6 +2494,16 @@ mod tests {
         assert!(!tagged.target.is_carrot());
     }
 
+    /// Block H carries the root of the tree as of H + 8, so the root a proof
+    /// naming R was checked against is block R - 8's. Heights with no such
+    /// block have none.
+    #[test]
+    fn a_proofs_root_is_eight_blocks_below_its_reference() {
+        assert_eq!(tree_root_block(120), Some(112));
+        assert_eq!(tree_root_block(8), Some(0));
+        assert_eq!(tree_root_block(7), None);
+    }
+
     /// The count monerod takes is one past the block asked about, and the
     /// probe travels as a one-element array.
     #[test]
@@ -2478,7 +2517,7 @@ mod tests {
         let answer = |n: u64| {
             let bytes =
                 crate::epee::encode(&[("n_leaf_tuples", crate::epee::Field::U64(n))]).unwrap();
-            TreeSizeQuery::answer(&crate::epee::decode(&bytes).unwrap())
+            TreeSizeQuery::answer(&crate::epee::read_root(&bytes, TreeSizeQuery::WANTED).unwrap())
         };
         assert_eq!(answer(9_876), Some(9_876));
         assert_eq!(answer(0), None, "0 answers a different question");

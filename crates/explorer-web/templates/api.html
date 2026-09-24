@@ -474,8 +474,11 @@
     root of the curve tree the block commits to, in hex, and
     <code class="lit">n_tree_layers</code>, the tree's layer count. Both are
     <code class="lit">null</code> below the FCMP++ fork, whose block format
-    has no tree. An FCMP++ proof names the block whose tree it was built
-    against, and these are what it is checked against.
+    has no tree. The root runs eight blocks ahead of the block: block H
+    carries the tree as it stands at height H + 8. A proof whose
+    <code class="lit">reference_block</code> is R was therefore checked
+    against the <code class="lit">tree_root</code> of block R &minus; 8, not
+    of block R.
   </p>
 </section>
 
@@ -494,8 +497,11 @@
     <code class="lit">fcmp_pp_proof_size</code>.
   </p>
   <p>
-    <code class="lit">reference_block</code> is the height of the block whose
-    curve tree an FCMP++ transaction's inputs were proven against, and
+    <code class="lit">reference_block</code> is the height the curve tree was
+    taken at when an FCMP++ transaction's inputs were proven: the tree of
+    every output spendable with that block as the tip. Its root is in the
+    header of block <code class="lit">reference_block</code> &minus; 8; see
+    <a href="#shape-block">the block object</a>. And
     <code class="lit">n_tree_layers</code> is how many layers that tree had.
     Both are <code class="lit">null</code> for a ring spend and a coinbase.
     Both sit in the prunable half of the transaction, so they are also
@@ -509,7 +515,7 @@
     <code class="lit">mixin</code> is the <strong>ring size</strong>, not the
     ring size minus one, and it is 0 for a coinbase. It is also 0 for an
     FCMP++ transaction, <code class="lit">rct_type</code> 7, whose inputs
-    prove membership in every output on the chain and so have no ring. Read
+    prove membership in the curve tree and so have no ring. Read
     <code class="lit">rct_type</code> before reading a 0 here as no anonymity
     set.
   </p>
