@@ -16,7 +16,6 @@ use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use explorer_core::fmt::{age, decimal, now, timestamp_utc};
 use explorer_core::{Amount, BlockId, BlockTree, ChainError, Hash32, TxFacts};
-use monerod_rpc::types::TxOutTarget;
 
 use crate::api::handlers::{AppState, Shared, echo};
 use crate::config::Theme;
@@ -134,9 +133,11 @@ struct TxPage {
     reference_block: Option<u64>,
     n_tree_layers: Option<u8>,
     /// The block whose header carries the root the proof was checked
-    /// against. Eight below the reference block; see
-    /// [`monerod_rpc::types::TREE_ROOT_LAG`].
-    root_block: Option<u64>,
+    /// against, eight below the reference block (see
+    /// [`monerod_rpc::types::TREE_ROOT_LAG`]), and that root. `None` when that
+    /// block carries no tree, which is so for the first reference blocks after
+    /// the fork, and when it could not be fetched.
+    root_block: Option<(u64, String)>,
     /// The curve tree's size as of the reference block, digits grouped. `None`
     /// wherever the API's `anonymity_set` is `null`.
     anonymity_set: Option<String>,
@@ -1060,6 +1061,23 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
             entry.block_height.saturating_add(entry.confirmations),
         )
         .await;
+    // The block that carries the proof's root, linked only once it is known to
+    // carry one: arithmetic alone names a pre-fork block for the first
+    // reference blocks after the fork. One `get_block`, cached once buried.
+    let root_block = match f
+        .fcmp_pp
+        .and_then(|x| x.reference_block)
+        .and_then(monerod_rpc::types::tree_root_block)
+    {
+        Some(height) => state
+            .chain
+            .block(BlockId::Height(height))
+            .await
+            .ok()
+            .and_then(|b| BlockTree::of(&b))
+            .map(|t| (height, t.root)),
+        None => None,
+    };
 
     // A transaction in the pool is in no block, so the time it carries is the
     // time it arrived: `block_timestamp` is 0 there and renders as 1970. The
@@ -1106,8 +1124,8 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
         .collect();
 
     let mut has_view_tags = false;
-    // Positional, so only when there is one per output.
-    let has_unified_ids = !tx.vout.is_empty() && entry.unified_ids.len() == tx.vout.len();
+    let unified_ids = entry.unified_ids_per_output(tx.vout.len());
+    let has_unified_ids = unified_ids.is_some();
     let outputs = tx
         .vout
         .iter()
@@ -1117,20 +1135,17 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
             // ones the API uses, so a new output type is taught in one place.
             let view_tag = o.target.view_tag().unwrap_or_default().to_owned();
             has_view_tags |= !view_tag.is_empty();
-            let anchor = match &o.target {
-                TxOutTarget::CarrotV1(c) => c.encrypted_janus_anchor.clone(),
-                _ => String::new(),
-            };
+            let anchor = o
+                .target
+                .encrypted_janus_anchor()
+                .unwrap_or_default()
+                .to_owned();
             OutputView {
                 public_key: o.target.public_key().unwrap_or_default().to_owned(),
                 amount: visible_amount(o.amount),
                 view_tag,
                 anchor,
-                unified_id: if has_unified_ids {
-                    entry.unified_ids.get(i).copied()
-                } else {
-                    None
-                },
+                unified_id: unified_ids.and_then(|ids| ids.get(i)).copied(),
             }
         })
         .collect();
@@ -1197,10 +1212,7 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
             fcmp_pp: f.fcmp_pp.is_some(),
             reference_block: f.fcmp_pp.and_then(|x| x.reference_block),
             n_tree_layers: f.fcmp_pp.and_then(|x| x.n_tree_layers),
-            root_block: f
-                .fcmp_pp
-                .and_then(|x| x.reference_block)
-                .and_then(monerod_rpc::types::tree_root_block),
+            root_block,
             anonymity_set: anonymity_set.map(grouped),
             proof_size: f.fcmp_pp.and_then(|x| x.proof_size),
             carrot: f.carrot,
@@ -3064,7 +3076,7 @@ mod tests {
     /// An FCMP++ input has no ring, and the page must say what it has instead
     /// rather than print "0 ring members", which reads as no privacy at all.
     #[test]
-    fn an_fcmp_pp_spend_shows_the_whole_chain_as_its_anonymity_set() {
+    fn an_fcmp_pp_spend_shows_the_curve_tree_as_its_anonymity_set() {
         let html = fcmp_tx_page().render().expect("renders");
         assert!(html.contains("Every output in the curve tree"), "{html}");
         assert!(
@@ -3081,7 +3093,7 @@ mod tests {
         assert!(!html.contains("<dt>Ring size</dt>"));
         assert!(!html.contains("refused this ring lookup"));
         assert_eq!(
-            html.matches(r#"<span class="tag">full chain</span>"#)
+            html.matches(r#"<span class="tag">curve tree</span>"#)
                 .count(),
             2
         );
@@ -3132,7 +3144,8 @@ mod tests {
     #[test]
     fn the_reference_block_and_the_root_block_are_both_linked() {
         let mut page = fcmp_tx_page();
-        page.root_block = monerod_rpc::types::tree_root_block(3_012_345);
+        page.root_block =
+            monerod_rpc::types::tree_root_block(3_012_345).map(|h| (h, "9".repeat(64)));
         let html = page.render().expect("renders");
         assert!(html.contains(r#"as of block <a href="/block/3012345">3012345</a>"#));
         assert!(
@@ -3140,6 +3153,12 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("FCMP++ (type 7)"));
+        assert!(html.contains(&format!(r#"title="Tree root {}""#, "9".repeat(64))));
+
+        // A root block from before the fork carries no tree, so there is no
+        // link to make.
+        let bare = fcmp_tx_page().render().expect("renders");
+        assert!(!bare.contains("root in block"));
     }
 
     /// A pruned node knows the transaction is FCMP++ but not which tree it

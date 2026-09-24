@@ -400,6 +400,25 @@ impl GetBlock {
     pub fn parse_json(&self) -> Result<BlockJson, NestedJsonError> {
         parse_nested_json(&self.json)
     }
+
+    /// Parse only the curve-tree fields of the nested `json` string.
+    ///
+    /// [`GetBlock::parse_json`] builds the whole block, miner transaction and
+    /// every transaction hash included, which is a lot to build for two
+    /// scalars. This walks past the rest without keeping it.
+    pub fn parse_tree(&self) -> Result<BlockTreeJson, NestedJsonError> {
+        parse_nested_json(&self.json)
+    }
+}
+
+/// The curve-tree fields of [`BlockJson`], and nothing else. See
+/// [`BlockJson::fcmp_pp_tree_root`] for what they mean.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct BlockTreeJson {
+    #[serde(default)]
+    pub fcmp_pp_n_tree_layers: Option<u8>,
+    #[serde(default)]
+    pub fcmp_pp_tree_root: Option<String>,
 }
 
 /// The decoded contents of [`GetBlock::json`].
@@ -696,6 +715,14 @@ pub struct TxEntry {
 }
 
 impl TxEntry {
+    /// The unified ids, one per output, or `None` when there is not exactly
+    /// one per output. They are matched to outputs by position, so a list of
+    /// any other length cannot say which output an id belongs to.
+    #[must_use]
+    pub fn unified_ids_per_output(&self, outputs: usize) -> Option<&[u64]> {
+        (outputs > 0 && self.unified_ids.len() == outputs).then_some(self.unified_ids.as_slice())
+    }
+
     /// Parse the nested `as_json` string.
     ///
     /// `as_json` is `""` on every request that did not set `decode_as_json`,
@@ -965,9 +992,11 @@ pub struct OutKey {
 /// How many outputs the curve tree held as of a block: the size of an FCMP++
 /// transaction's anonymity set, when asked for its reference block.
 ///
-/// monerod reports the figure as `n_leaf_tuples`, and only from
-/// `/get_path_by_unified_id.bin`. That call exists to hand a wallet the tree
-/// paths of its own outputs, and it answers the tree size beside them. It
+/// monerod reports the figure as `n_leaf_tuples`, and only in binary: from
+/// `/get_path_by_unified_id.bin`, and from `/getblocks.bin` when asked to
+/// start a tree sync, beside a batch of whole blocks. The first is the cheap
+/// one. It exists to hand a wallet the tree paths of its own outputs, and it
+/// answers the tree size beside them. It
 /// answers 0 when asked about no outputs at all, so it has to be asked about
 /// one.
 ///
@@ -1624,6 +1653,15 @@ impl TxOutTarget {
         }
     }
 
+    /// The encrypted Janus anchor, which only a Carrot output has.
+    #[must_use]
+    pub fn encrypted_janus_anchor(&self) -> Option<&str> {
+        match self {
+            Self::CarrotV1(c) => Some(&c.encrypted_janus_anchor),
+            _ => None,
+        }
+    }
+
     /// Whether this is a Carrot output.
     #[must_use]
     pub const fn is_carrot(&self) -> bool {
@@ -1656,10 +1694,15 @@ pub const HF_VERSION_FCMP_PLUS_PLUS: u8 = 17;
 /// `CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE` in `src/cryptonote_config.h`.
 pub const TREE_ROOT_LAG: u64 = 8;
 
-/// The height whose block header carries the root an FCMP++ proof naming
-/// `reference_block` was checked against, or `None` when no header could:
-/// below height 8, and in practice for the first blocks after the fork, whose
-/// headers predate the tree.
+/// The height whose block header would carry the root an FCMP++ proof naming
+/// `reference_block` was checked against: `reference_block - 8`, or `None`
+/// below height 8.
+///
+/// Arithmetic only, so it answers for heights no header can serve. Consensus
+/// accepts a reference block from one block before the fork, and blocks carry
+/// a tree only from the fork on, so for the first reference blocks after the
+/// fork this names a block from before it, which has no root at all. A caller
+/// that shows the root has to check the block it names really carries one.
 #[must_use]
 pub const fn tree_root_block(reference_block: u64) -> Option<u64> {
     reference_block.checked_sub(TREE_ROOT_LAG)
@@ -2523,6 +2566,21 @@ mod tests {
         assert_eq!(answer(0), None, "0 answers a different question");
     }
 
+    /// Unified ids are positional, so a list that does not match the output
+    /// count is no list at all.
+    #[test]
+    fn unified_ids_count_only_when_there_is_one_per_output() {
+        let mut e: TxEntry = serde_json::from_value(serde_json::json!({
+            "tx_hash": "aa", "in_pool": false, "unified_ids": [7, 8],
+        }))
+        .unwrap();
+        assert_eq!(e.unified_ids_per_output(2), Some(&[7u64, 8][..]));
+        assert_eq!(e.unified_ids_per_output(3), None);
+        assert_eq!(e.unified_ids_per_output(1), None);
+        e.unified_ids.clear();
+        assert_eq!(e.unified_ids_per_output(0), None);
+    }
+
     /// The FCMP++ fork's output. Before this variant existed the whole
     /// transaction failed to parse, and with it every post-fork block's list.
     #[test]
@@ -2539,6 +2597,14 @@ mod tests {
             panic!("not a carrot output");
         };
         assert_eq!(c.encrypted_janus_anchor.len(), 32);
+        assert_eq!(
+            carrot.target.encrypted_janus_anchor(),
+            Some("00112233445566778899aabbccddeeff")
+        );
+        assert_eq!(
+            TxOutTarget::Key("aa".to_owned()).encrypted_janus_anchor(),
+            None
+        );
     }
 
     /// No fixture exists for a type 6 transaction — the local mainnet node has

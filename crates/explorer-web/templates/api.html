@@ -244,13 +244,14 @@
     One transaction, with <strong>every ring resolved</strong>. Each input
     lists its ring members with the height, one time key and source transaction
     of each. This is the only endpoint that resolves rings, because it costs
-    one daemon call for each input. An FCMP++ transaction has no rings, so
-    it costs none beyond the transaction itself.
+    one daemon call for each input. An FCMP++ transaction has no rings to
+    resolve; it costs one call for its tree size instead.
   </p>
   <p>
     Returns a <a href="#shape-txdetail">transaction detail object</a>, and is
-    the only endpoint that fills its <code class="lit">anonymity_set</code>:
-    for an FCMP++ transaction that costs one more daemon call. It also
+    one of two endpoints that fill its <code class="lit">anonymity_set</code>,
+    with <a href="#search">/api/search</a> on a transaction hash, which
+    answers through this one. It also
     serves a transaction in the pool, which reports
     <code class="lit">block_height</code> 0,
     <code class="lit">confirmations</code> 0, and the time it arrived in place
@@ -478,7 +479,8 @@
     carries the tree as it stands at height H + 8. A proof whose
     <code class="lit">reference_block</code> is R was therefore checked
     against the <code class="lit">tree_root</code> of block R &minus; 8, not
-    of block R.
+    of block R. For a reference block less than eight past the fork, block
+    R &minus; 8 is from before it and no header carries that root.
   </p>
 </section>
 
@@ -547,7 +549,8 @@
     <code class="lit">null</code> for a ring spend, for a transaction still in
     the pool, wherever <code class="lit">reference_block</code> is
     <code class="lit">null</code>, on every endpoint but
-    <a href="#transaction">/api/transaction</a>, and when the daemon cannot
+    <a href="#transaction">/api/transaction</a> and a transaction found
+    through <a href="#search">/api/search</a>, and when the daemon cannot
     answer, as one from before FCMP++ cannot.
   </p>
   <p>

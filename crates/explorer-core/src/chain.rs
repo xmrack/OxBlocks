@@ -157,8 +157,8 @@ pub struct ResolvedInput {
     pub amount: u64,
     pub key_image: Hash32,
     /// Empty when the ring could not be resolved, and for every input of an
-    /// FCMP++ transaction, which proves membership in the whole chain's output
-    /// set instead of naming a ring. `ring_unavailable` tells the two apart.
+    /// FCMP++ transaction, which proves membership in the curve tree as of its
+    /// reference block instead of naming a ring. `ring_unavailable` tells the two apart.
     ///
     /// monerod fails an entire `/get_outs` batch if any one index is out of
     /// range, so one unresolvable input must not blank the whole page. That

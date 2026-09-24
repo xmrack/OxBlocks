@@ -1032,7 +1032,10 @@ pub async fn transaction_private(
 /// the endpoint is to hide *which* block was wanted, and a hundred candidates
 /// does that — while bounding the cost at one header range, one `get_block`
 /// per block that holds transactions, and one `get_transactions`. On a chain
-/// where every block is full that is 102 calls; on a quiet one it is two.
+/// where every block is full that is 102 calls; on a quiet one before the
+/// FCMP++ fork it is two. From the fork on it is 102 either way, because the
+/// response carries each block's curve tree, which is in the block's body;
+/// bodies are fetched by hash, so a range served before is mostly cached.
 ///
 /// **What it does not bound is bytes.** A hundred blocks is roughly ten
 /// thousand mainnet transactions, and every one of them is fetched whole

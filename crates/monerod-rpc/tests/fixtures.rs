@@ -2405,6 +2405,18 @@ fn an_fcmp_pp_block_commits_to_its_curve_tree() {
         assert!(root.bytes().all(|b| b.is_ascii_hexdigit()));
     }
 
+    // The lean parse finds the same two fields as the full one.
+    for rel in [
+        "fcmp/get_block_fcmp.json",
+        "fcmp/get_block_coinbase_only.json",
+    ] {
+        let block: GetBlock = serde_json::from_value(result_of(rel)).unwrap();
+        let full = block.parse_json().unwrap();
+        let lean = block.parse_tree().unwrap();
+        assert_eq!(lean.fcmp_pp_n_tree_layers, full.fcmp_pp_n_tree_layers);
+        assert_eq!(lean.fcmp_pp_tree_root, full.fcmp_pp_tree_root);
+    }
+
     // Below the fork there are no tree fields at all.
     let old: GetBlock = serde_json::from_value(result_of("testnet/get_block_134721.json")).unwrap();
     let body = old.parse_json().unwrap();

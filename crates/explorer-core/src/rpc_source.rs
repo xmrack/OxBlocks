@@ -146,12 +146,18 @@ pub struct BlockTree {
 impl BlockTree {
     /// Read from a fetched block. Both fields or neither: a root without its
     /// layer count describes no tree anyone could check a proof against.
+    ///
+    /// A block below the fork is answered from its header alone, without
+    /// parsing its JSON, which is every block of a chain that has not forked.
     #[must_use]
     pub fn of(block: &GetBlock) -> Option<Self> {
-        let body = block.parse_json().ok()?;
+        if block.block_header.major_version < monerod_rpc::types::HF_VERSION_FCMP_PLUS_PLUS {
+            return None;
+        }
+        let tree = block.parse_tree().ok()?;
         Some(Self {
-            root: body.fcmp_pp_tree_root?.to_lowercase(),
-            n_layers: body.fcmp_pp_n_tree_layers?,
+            root: tree.fcmp_pp_tree_root?.to_lowercase(),
+            n_layers: tree.fcmp_pp_n_tree_layers?,
         })
     }
 }
@@ -463,24 +469,42 @@ impl RpcChainSource {
         let headers = self.headers_range(start, end).await?.headers;
 
         // A block's body is fetched when it holds transactions, whose hashes
-        // only the body lists, and when the caller wants a post-fork block's
-        // curve tree, which is in the body too.
-        let holding: Vec<u64> = headers
+        // only the body lists -- the range cannot be answered without it --
+        // and when the caller wants a post-fork block's curve tree, which is
+        // in the body too but is optional: a block whose body could not be had
+        // for its tree alone reports no tree rather than failing the range.
+        //
+        // By the hash each header carries, not by height. A hash names one
+        // block forever, so the body cache serves it at any depth, where the
+        // height cache holds only blocks buried past the reorg window; and a
+        // reorg between the header call and this one cannot pair one block's
+        // header with another's transactions.
+        let wanted_bodies: Vec<(u64, BlockId, bool)> = headers
             .iter()
-            .filter(|h| {
-                h.num_txes > 0
-                    || (with_tree
-                        && h.major_version >= monerod_rpc::types::HF_VERSION_FCMP_PLUS_PLUS)
+            .filter_map(|h| {
+                let needed = h.num_txes > 0;
+                let for_tree =
+                    with_tree && h.major_version >= monerod_rpc::types::HF_VERSION_FCMP_PLUS_PLUS;
+                let id = h
+                    .hash
+                    .parse::<Hash32>()
+                    .map_or(BlockId::Height(h.height), BlockId::Hash);
+                (needed || for_tree).then_some((h.height, id, needed))
             })
-            .map(|h| h.height)
             .collect();
         let bodies =
-            futures_util::future::join_all(holding.iter().map(|h| self.block(BlockId::Height(*h))))
+            futures_util::future::join_all(wanted_bodies.iter().map(|(_, id, _)| self.block(*id)))
                 .await;
 
-        let mut extra: HashMap<u64, Arc<GetBlock>> = HashMap::with_capacity(holding.len());
-        for (height, body) in holding.iter().zip(bodies) {
-            extra.insert(*height, body?);
+        let mut extra: HashMap<u64, Arc<GetBlock>> = HashMap::with_capacity(wanted_bodies.len());
+        for ((height, _, needed), body) in wanted_bodies.iter().zip(bodies) {
+            match body {
+                Ok(body) => drop(extra.insert(*height, body)),
+                Err(e) if !needed => {
+                    tracing::debug!("block {height}'s tree left out of the range: {e}");
+                }
+                Err(e) => return Err(e),
+            }
         }
 
         // Every hash in the range, in the order its block lists them.
@@ -1291,6 +1315,42 @@ mod tests {
             .with_max_inflight_rpc(0);
         let permit = source.permit().await;
         assert!(permit.is_some(), "a zero ceiling must still admit one call");
+    }
+
+    fn block_with(major_version: u8, json: &str) -> GetBlock {
+        serde_json::from_value(serde_json::json!({
+            "block_header": {
+                "major_version": major_version, "minor_version": major_version,
+                "timestamp": 0, "prev_hash": "", "nonce": 0, "orphan_status": false,
+                "height": 1, "depth": 0, "hash": "", "difficulty": 1,
+                "difficulty_top64": 0, "wide_difficulty": "0x1",
+                "cumulative_difficulty": 1, "cumulative_difficulty_top64": 0,
+                "wide_cumulative_difficulty": "0x1", "reward": 0, "block_size": 0,
+                "num_txes": 0, "pow_hash": "", "miner_tx_hash": "",
+            },
+            "miner_tx_hash": "", "blob": "", "json": json,
+        }))
+        .expect("a block")
+    }
+
+    /// A block's version decides whether its JSON is read at all: below the
+    /// fork there is no tree to find, so a pre-fork block costs no parse,
+    /// whatever its JSON holds.
+    #[test]
+    fn only_a_post_fork_block_is_asked_for_its_tree() {
+        let json = r#"{"fcmp_pp_n_tree_layers":2,"fcmp_pp_tree_root":"AB"}"#;
+        assert_eq!(BlockTree::of(&block_with(16, json)), None);
+        assert_eq!(
+            BlockTree::of(&block_with(17, json)),
+            Some(BlockTree {
+                root: "ab".to_owned(),
+                n_layers: 2
+            })
+        );
+        // Both fields or neither.
+        let half = r#"{"fcmp_pp_tree_root":"ab"}"#;
+        assert_eq!(BlockTree::of(&block_with(17, half)), None);
+        assert_eq!(BlockTree::of(&block_with(17, "not json")), None);
     }
 
     fn fcmp_pp_tx() -> TxJson {

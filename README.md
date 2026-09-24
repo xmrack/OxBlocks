@@ -267,7 +267,9 @@ reports.
   tree root and layer count that the block carries. The root runs eight blocks
   ahead: block H carries the tree as of height H + 8, so a transaction with
   reference block R was checked against the root in block R − 8, and the
-  transaction page links that block.
+  transaction page links that block. For the first eight or so reference
+  blocks after the fork, block R − 8 is from before it and carries no root,
+  and the page links nothing.
 * **Carrot outputs.** The view tag is three bytes instead of one, and each
   output carries an encrypted Janus anchor, which the output table shows
   beside each output's unified id. The
@@ -293,7 +295,7 @@ hold `null` where the chain has no value:
 | `reference_block` | every transaction object | The height whose curve tree the FCMP++ proof was built against. |
 | `n_tree_layers` | every transaction object | The tree's layer count at that height. |
 | `fcmp_pp_proof_size` | every transaction object | The FCMP++ proof's length in bytes. |
-| `anonymity_set` | `/api/transaction` only | How many outputs the tree held at the reference block. `null` in the pool. |
+| `anonymity_set` | `/api/transaction` and `/api/search` on a transaction hash | How many outputs the tree held at the reference block. `null` in the pool and on every other endpoint. |
 | `view_tag` | each output in `/api/transaction` | 2 hex characters before Carrot, 6 from it, `null` before view tags. |
 | `encrypted_janus_anchor` | each output in `/api/transaction` | 32 hex characters, Carrot outputs only. |
 | `unified_id` | each output in `/api/transaction` | The output's place in the sequence the tree is built from. `null` in the pool. |
@@ -302,9 +304,9 @@ hold `null` where the chain has no value:
 
 ### The tree size
 
-monerod reports how many outputs its tree held as of a block only from
-`/get_path_by_unified_id.bin`, which answers in its binary format rather than
-JSON. The explorer speaks that format for this one call, with its own small
+monerod reports how many outputs its tree held as of a block only in its
+binary format, never in JSON. The explorer asks `/get_path_by_unified_id.bin`,
+the cheaper of the two calls that carry it. The explorer speaks that format for this one call, with its own small
 decoder and no new dependency. It asks as of the transaction's reference block
 and names the transaction's own first output. That output joins the tree
 later, so the daemon skips the leaf search and path read it would do for an

@@ -20,7 +20,7 @@
 
 use explorer_core::fmt::timestamp_utc;
 use explorer_core::{Hash32, ResolvedInput, TxFacts};
-use monerod_rpc::types::{PoolTxInfo, TxEntry, TxJson, TxOutTarget};
+use monerod_rpc::types::{PoolTxInfo, TxEntry, TxJson};
 use serde::Serialize;
 
 /// One ring member.
@@ -104,7 +104,8 @@ pub struct TxDetail {
     /// number of outputs each FCMP++ input could be spending. `null` for a
     /// ring spend, for a transaction still in the pool, where `reference_block`
     /// is `null`, and when the daemon cannot say. Filled only by
-    /// `/api/transaction`, because it costs a daemon call.
+    /// `/api/transaction`, and so by `/api/search` on a transaction hash,
+    /// which answers through it, because it costs a daemon call.
     pub anonymity_set: Option<u64>,
     pub block_height: u64,
     pub coinbase: bool,
@@ -235,7 +236,9 @@ impl TxDetail {
             &entry.tx_hash,
             &TxFacts::from_entry(entry, tx),
             tx,
-            &entry.unified_ids,
+            entry
+                .unified_ids_per_output(tx.vout.len())
+                .unwrap_or_default(),
             rings,
             &Placement::of(entry, current_height),
             current_height,
@@ -303,13 +306,6 @@ impl TxDetail {
             )
         };
 
-        // Positional, so only when there is one per output: a short list could
-        // not say which output an id belongs to.
-        let unified: &[u64] = if unified_ids.len() == tx.vout.len() {
-            unified_ids
-        } else {
-            &[]
-        };
         let outputs = tx
             .vout
             .iter()
@@ -321,12 +317,9 @@ impl TxDetail {
                 // one. Every other target, Carrot's included, names its key;
                 // matching the variants here by hand is how Carrot outputs
                 // came to be published with an empty key.
-                encrypted_janus_anchor: match &o.target {
-                    TxOutTarget::CarrotV1(c) => Some(c.encrypted_janus_anchor.clone()),
-                    _ => None,
-                },
+                encrypted_janus_anchor: o.target.encrypted_janus_anchor().map(str::to_owned),
                 public_key: o.target.public_key().map(str::to_owned).unwrap_or_default(),
-                unified_id: unified.get(i).copied(),
+                unified_id: unified_ids.get(i).copied(),
                 view_tag: o.target.view_tag().map(str::to_owned),
             })
             .collect();

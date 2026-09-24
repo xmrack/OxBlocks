@@ -7,7 +7,7 @@
 //! * `POST /<endpoint>` — a bare JSON body (`/get_transactions`, `/get_outs`,
 //!   …). Failures arrive as a `"status"` string alongside HTTP 200.
 //! * `POST /<endpoint>.bin` — the same, in epee's binary format rather than
-//!   JSON. Used for the one figure monerod reports nowhere else; see
+//!   JSON. Used for the one figure monerod reports only in binary; see
 //!   [`crate::epee`].
 //!
 //! Both are normalised into [`RpcError`] here so that callers never have to

@@ -1,9 +1,10 @@
 //! monerod's binary format, epee "portable storage", for the `.bin`
 //! endpoints.
 //!
-//! One call needs it: `/get_path_by_unified_id.bin`, the only place the FCMP++
-//! daemon reports how many outputs its curve tree held as of a block. Every
-//! other call this crate makes is JSON, so this module covers exactly what that
+//! One call needs it: `/get_path_by_unified_id.bin`, the cheapest place the
+//! FCMP++ daemon reports how many outputs its curve tree held as of a block.
+//! (`/getblocks.bin` reports it too, when asked to start a tree sync, beside a
+//! batch of whole blocks.) Every other call this crate makes is JSON, so this module covers exactly what that
 //! one exchange needs: an encoder for a flat section of unsigned integers, and
 //! a reader that pulls a few named scalars out of the root of the answer and
 //! walks past everything else.
@@ -21,12 +22,21 @@
 //!   elements without type bytes of their own.
 //!
 //! The reader is written for remote input: the daemon may be a public node,
-//! and the path to it may be plain HTTP. It builds nothing for a value it
-//! skips, so its memory does not grow with the body; it does one pass over the
-//! bytes, so its time grows only linearly; and it caps nesting well inside
-//! any stack. It refuses what epee's own reader refuses -- an array of arrays,
-//! an empty name, a bool other than 0 or 1, a repeated root key -- so a body
-//! monerod would not accept is an error here too, not a quiet success.
+//! and the path to it may be plain HTTP. It copies nothing out of a value it
+//! skips; the one thing it holds per entry is a borrowed name for each root
+//! key, to catch a repeated one. It does one pass over the bytes, so its time
+//! grows only linearly, and it caps nesting well inside any stack. Callers
+//! also cap the body: [`crate::client::MAX_BINARY_RESPONSE_BYTES`].
+//!
+//! It is stricter than epee in some places and looser in others, and neither
+//! is by accident. It refuses what would make the kept values ambiguous or
+//! wrong -- an empty name, a bool other than 0 or 1, a repeated root key --
+//! and it refuses any array of arrays and any bytes after the root, which
+//! epee reads or ignores in a few forms but monerod never writes. Inside a
+//! value it skips, it does not repeat all of epee's checks: a repeated key in
+//! a nested section, or strings packed tighter than epee's size guard allows,
+//! pass. Nothing is kept from a skipped value, so nothing read here depends on
+//! them.
 
 use std::collections::HashSet;
 
@@ -54,8 +64,9 @@ const FLAG_ARRAY: u8 = 0x80;
 ///
 /// Tighter than epee's own guard, which counts every nested read call against
 /// a limit of 100 and so gives out at about 33 sections. The deepest answer
-/// this crate reads nests five. Recursion is bounded by this and nothing else,
-/// because an array element can only be a scalar or a section.
+/// this crate reads nests three: a path, inside a path entry, inside the
+/// root's list of them. Recursion is bounded by this and nothing else,
+/// because an array element this reader accepts is a scalar or a section.
 pub const MAX_DEPTH: usize = 32;
 
 /// Why a body is not a portable-storage document this module accepts.
@@ -365,9 +376,11 @@ impl<'a> Reader<'a> {
                 self.advance(len)
             }
             TYPE_OBJECT => self.skip_section(depth + 1),
-            // A bare "array" type byte is followed by the array's own typed
-            // header; epee writes it only for an array held inside an array,
-            // which it refuses to read.
+            // A bare "array" entry: a type byte of 13, then the array's own
+            // typed header. epee reads it, but monerod never writes one -- an
+            // array held in a field is written with the 0x80 flag -- and
+            // following it is how an array of arrays gets its depth, so it is
+            // refused.
             TYPE_ARRAY => Err(EpeeError::NestedArray),
             other => Err(EpeeError::UnknownType(other)),
         }
@@ -518,11 +531,13 @@ mod tests {
     }
 
     #[test]
-    fn what_epee_refuses_is_refused_here() {
+    fn what_would_make_a_kept_value_wrong_is_refused() {
         // An array of arrays, which epee's reader does not support. This was
         // the shape that ran an earlier, recursive decoder off its stack.
         let nested = doc(1, &entry(b"x", TYPE_ARRAY | FLAG_ARRAY, &[1 << 2]));
         assert_eq!(read_root(&nested, &[]), Err(EpeeError::NestedArray));
+        // A bare array entry, which epee does read but monerod never writes.
+        // Refused here on purpose; see `skip_one`.
         let bare = doc(1, &entry(b"x", TYPE_ARRAY, &[TYPE_UINT8 | FLAG_ARRAY, 0]));
         assert_eq!(read_root(&bare, &[]), Err(EpeeError::NestedArray));
 
@@ -582,14 +597,16 @@ mod tests {
     #[test]
     fn nesting_is_capped() {
         fn nested(levels: usize) -> Vec<u8> {
-            // Innermost first: an empty section, wrapped `levels` times.
-            let mut inner = vec![0u8];
-            for _ in 1..levels {
-                let mut outer = vec![1 << 2];
-                outer.extend(entry(b"o", TYPE_OBJECT, &inner));
-                inner = outer;
+            // `levels` sections, each holding the next under the key "o", the
+            // innermost empty. Written front to back, once, rather than by
+            // wrapping a copy of the inner document at every level.
+            let level = [1 << 2, 1, b'o', TYPE_OBJECT];
+            let mut b = HEADER.to_vec();
+            for _ in 0..levels {
+                b.extend_from_slice(&level);
             }
-            doc(1, &entry(b"o", TYPE_OBJECT, &inner))
+            b.push(0);
+            b
         }
         assert!(read_root(&nested(MAX_DEPTH), &[]).is_ok());
         assert_eq!(

@@ -90,7 +90,8 @@ def main():
     # leaves their rings unresolved, so the recorded answer is the real
     # transaction above with the field the endpoint does not fill set to null.
     # An FCMP++ input has no ring to leave unresolved and keeps its []. The
-    # tree size is filled only by /api/transaction, so it is null here too.
+    # tree size is filled only by /api/transaction and a search that lands on
+    # it, so it is null here too.
     private = json.loads(json.dumps(transaction["data"]))
     private["anonymity_set"] = None
     if private.get("rct_type") != 7:
