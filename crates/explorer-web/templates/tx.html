@@ -153,7 +153,7 @@
     <summary>
       <span>Input {{ loop.index }}</span>
       <span>Key image <span class="hash mark">{{ i.key_image }}</span></span>
-      {% if fcmp_pp %}<span class="tag">curve tree</span>{% else %}<span class="tag">{{ i.ring.len() }} ring members</span>{% endif %}
+      {% if fcmp_pp %}<span class="tag">FCMP++</span>{% else %}<span class="tag">{{ i.ring.len() }} ring members</span>{% endif %}
       {% if let Some(amount) = i.amount %}<span class="tag">{{ amount }} XMR</span>{% endif %}
     </summary>
     <div class="body">

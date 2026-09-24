@@ -3221,8 +3221,7 @@ mod tests {
         assert!(!html.contains("<dt>Ring size</dt>"));
         assert!(!html.contains("refused this ring lookup"));
         assert_eq!(
-            html.matches(r#"<span class="tag">curve tree</span>"#)
-                .count(),
+            html.matches(r#"<span class="tag">FCMP++</span>"#).count(),
             2
         );
         assert!(html.contains("FCMP++ (type 7)"));
