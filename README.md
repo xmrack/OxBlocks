@@ -22,6 +22,9 @@ point it at a public restricted port.
 Pruned nodes work. Read [Pruned nodes](#pruned-nodes) for the one field that
 differs.
 
+The explorer reads the FCMP++ and Carrot hard fork as well as the chain before
+it. Read [FCMP++ and the stressnet](#fcmp-and-the-stressnet).
+
 ## Build and run
 
 ```bash
@@ -227,6 +230,68 @@ This lookup needs a daemon that has `get_txids_loose`. A daemon without it
 answers `Method not found`, and this one endpoint returns that as its error.
 Every other endpoint works either way.
 
+## FCMP++ and the stressnet
+
+Hard fork 17 brings FCMP++ and Carrot. The explorer reads both as monerod's
+`fcmp++-beta-stressnet-v3` branch writes them, and it reads the chain before the
+fork exactly as it did. Nothing needs configuring. The explorer tells the two
+eras apart by the RingCT type and the output type of each transaction, never by
+height, so it follows whatever fork height the daemon's network uses.
+
+### Run against the stressnet
+
+The stressnet is a fork of testnet. Run the stressnet build of monerod with
+`--testnet` and point the explorer at its RPC port:
+
+```bash
+./target/release/oxblocks --daemon-url http://127.0.0.1:28081
+```
+
+The chain strip reads `testnet`, because that is the network type the daemon
+reports.
+
+### What changes on the pages
+
+* **Inputs have no ring.** An FCMP++ input proves that it spends one of every
+  output on the chain, so the transaction page shows the anonymity set as the
+  whole chain, with the reference block the proof was built against and the
+  tree's layer count. There are no ring members and no age strip. The ring
+  column on the block and mempool pages reads `all`.
+* **Blocks commit to a curve tree.** From the fork, the block page shows the
+  tree root and layer count that the block carries.
+* **Carrot outputs.** The view tag is three bytes instead of one, and each
+  output carries an encrypted Janus anchor, which the output table shows. The
+  key in `tx_extra` is labelled as an X25519 ephemeral key, because that is
+  what Carrot puts there.
+
+### What changes in the API
+
+The response shapes do not change. The values do:
+
+* `rct_type` is 7.
+* `mixin` is 0, because there is no ring. Read `rct_type` before you read 0 as
+  no anonymity set.
+* Each input's `mixins` is `[]`, never `null`, on every endpoint. There is no
+  ring to resolve or to withhold.
+* Each output's `public_key` is the Carrot one-time address. The view tag and
+  the anchor are in `/api/rawtransaction`.
+
+An FCMP++ transaction needs no ring lookups, so `/api/transaction` asks the
+daemon for the transaction and nothing else.
+
+### Pruned stressnet nodes
+
+The reference block and the layer count sit in the prunable half of the
+transaction. A pruned node that no longer holds that half still shows the
+transaction as FCMP++, but it cannot say which tree the proof named.
+
+### Fixtures
+
+`fixtures/fcmp/` holds responses recorded from a regtest daemon built from the
+`fcmp++-beta-stressnet-v3` branch. Regtest runs the newest fork from block 1,
+so every spend there is an FCMP++ spend. `tools/capture-fcmp-fixtures.py`
+records them again and says how to start the daemon and wallet it needs.
+
 ## Architecture
 
 ```
@@ -287,7 +352,9 @@ On a pruned daemon, `tx_size` under-reports for a transaction outside the stripe
 that the node keeps. The node holds only the prefix, so the missing bytes are
 not there to count. Run an unpruned daemon if you need that field to be exact.
 Every other field is correct on a pruned node, because ring expansion reads the
-output table, and the daemon never prunes that table.
+output table, and the daemon never prunes that table. An FCMP++ transaction
+also loses its reference block. Read [Pruned stressnet
+nodes](#pruned-stressnet-nodes).
 
 ## Testing
 
