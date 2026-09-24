@@ -80,16 +80,16 @@ pub struct RpcChainSource {
     ///
     /// The number that matters for load on the operator's node, and not the
     /// same as cache misses -- one `/get_transactions` carrying forty hashes
-    /// is forty misses and one call. Conflating them overstates amplification
-    /// by an order of magnitude, which is how this counter came to exist.
+    /// is forty misses and one call. Counting misses would overstate
+    /// amplification by an order of magnitude.
     rpc_calls: Arc<AtomicU64>,
 }
 
 /// Turn a `get_block` error code into something the web layer can act on.
 ///
-/// Every JSON-RPC error used to become "no such block", so a daemon that was
-/// merely busy told the reader their block did not exist. The codes below are
-/// what monerod actually returns, measured against a live node:
+/// Only the not-found codes mean "no such block": a daemon that is merely
+/// busy must not tell the reader their block does not exist. The codes below
+/// are what monerod returns, measured against a live node:
 ///
 /// | ask | code | meaning |
 /// | --- | --- | --- |
@@ -145,19 +145,34 @@ pub struct BlockTree {
 
 impl BlockTree {
     /// Read from a fetched block. Both fields or neither: a root without its
-    /// layer count describes no tree anyone could check a proof against.
+    /// layer count describes no tree anyone could check a proof against. The
+    /// root must be 64 hex characters.
     ///
     /// A block below the fork is answered from its header alone, without
     /// parsing its JSON, which is every block of a chain that has not forked.
+    /// A post-fork block without a well-formed tree is logged, since the
+    /// daemon's block format should always carry one.
     #[must_use]
     pub fn of(block: &GetBlock) -> Option<Self> {
-        if block.block_header.major_version < monerod_rpc::types::HF_VERSION_FCMP_PLUS_PLUS {
+        let header = &block.block_header;
+        if header.major_version < monerod_rpc::types::HF_VERSION_FCMP_PLUS_PLUS {
             return None;
         }
-        let tree = block.parse_tree().ok()?;
+        let tree = block
+            .parse_tree()
+            .map_err(|e| tracing::warn!("block {}'s tree did not parse: {e}", header.height))
+            .ok()?;
+        let root = tree
+            .fcmp_pp_tree_root
+            .as_deref()
+            .and_then(|r| monerod_rpc::types::hex_of_len(r, 64));
+        let (Some(root), Some(n_layers)) = (root, tree.fcmp_pp_n_tree_layers) else {
+            tracing::warn!("block {} carries no well-formed curve tree", header.height);
+            return None;
+        };
         Some(Self {
-            root: tree.fcmp_pp_tree_root?.to_lowercase(),
-            n_layers: tree.fcmp_pp_n_tree_layers?,
+            root: root.to_ascii_lowercase(),
+            n_layers,
         })
     }
 }
@@ -208,8 +223,7 @@ impl RpcChainSource {
     /// Together with [`Self::bare`] and [`Self::binary`] this is the **only**
     /// path to the daemon:
     /// `client` is private and has no accessor, so a new call site cannot
-    /// forget the permit. An earlier version relied on remembering, and an
-    /// audit of it missed a call written with a turbofish.
+    /// forget the permit.
     async fn rpc<P, R>(&self, method: &'static str, params: Option<P>) -> Result<R, RpcError>
     where
         P: serde::Serialize,
@@ -301,7 +315,7 @@ impl RpcChainSource {
                 TreeSizeQuery::MAX_ANSWER_BYTES,
             )
             .await
-            .map_err(|e| tracing::debug!("tree size as of {reference}: {e}"))
+            .map_err(|e| tracing::warn!("tree size as of block {reference}: {e}"))
             .ok()?;
         let size = TreeSizeQuery::answer(&root)?;
         let depth = chain_height.saturating_sub(reference.saturating_add(1));
@@ -460,6 +474,21 @@ impl RpcChainSource {
             }
         }
 
+        // A cached entry keeps the confirmation count it had when fetched, so
+        // it is recounted from the current tip, the same count monerod gives:
+        // the chain's height less the block's. When the tip cannot be had,
+        // the stored count is the best there is.
+        if !found.is_empty()
+            && let Ok(info) = self.info().await
+        {
+            for entry in found.values_mut() {
+                entry.confirmations = info
+                    .height
+                    .saturating_sub(entry.block_height)
+                    .max(entry.confirmations);
+            }
+        }
+
         let mut missed = Vec::new();
         for response in futures_util::future::join_all(want.chunks(MAX_TXS_PER_CALL).map(|chunk| {
             let request = GetTransactionsRequest::decoded(chunk.to_vec());
@@ -570,20 +599,23 @@ impl RpcChainSource {
                 .await;
 
         let mut extra: HashMap<u64, Arc<GetBlock>> = HashMap::with_capacity(wanted_bodies.len());
+        // Trees left out are reported as none, which the API documents as
+        // "none reported" rather than "none exists", and logged once per
+        // range, at warn, so an operator can tell a busy daemon from a
+        // pre-fork block without a line per block.
+        let mut trees_missed: Vec<(u64, ChainError)> = Vec::new();
         for ((header, needed), body) in wanted_bodies.iter().zip(bodies) {
             match body {
                 Ok(body) => drop(extra.insert(header.height, body)),
-                // Reported as no tree, which the API documents as "none
-                // reported" rather than "none exists". Logged at warn so an
-                // operator can tell a busy daemon from a pre-fork block.
-                Err(e) if !needed => {
-                    tracing::warn!(
-                        "block {}'s curve tree left out of the range: {e}",
-                        header.height
-                    );
-                }
+                Err(e) if !needed => trees_missed.push((header.height, e)),
                 Err(e) => return Err(e),
             }
+        }
+        if let Some((first, e)) = trees_missed.first() {
+            tracing::warn!(
+                "{} curve trees left out of blocks {start} to {end}, first at block {first}: {e}",
+                trees_missed.len()
+            );
         }
 
         // Every hash in the range, in the order its block lists them.
@@ -1024,8 +1056,8 @@ mod tests {
     /// The order a block lists its transactions in is part of the answer, and
     /// the coinbase is first. Cache hits and fetched transactions arrive from
     /// two different places, so assembling them in arrival order gets this
-    /// right only while the cache is empty -- warming one transaction of a
-    /// block by visiting its own page used to move it to the front of that
+    /// right only while the cache is empty: warming one transaction of a
+    /// block by visiting its own page would move it to the front of that
     /// block's list.
     #[test]
     fn a_partly_cached_batch_keeps_the_order_it_was_asked_for() {
@@ -1215,8 +1247,9 @@ mod tests {
         assert!(unexpanded_inputs(&tx).is_empty());
     }
 
-    /// The same guarantee through the public call, on the path that does not
-    /// reach the daemon at all.
+    /// The same guarantee through the public call, on the path that asks the
+    /// daemon for no transaction. It asks for the tip, to recount the cached
+    /// entries' confirmations, and answers without it when it cannot be had.
     #[tokio::test]
     async fn a_fully_cached_batch_is_answered_in_the_order_it_was_asked_for() {
         let source = source();
@@ -1230,10 +1263,10 @@ mod tests {
         let got = source
             .transactions(&asked)
             .await
-            .expect("a fully cached batch never calls out");
+            .expect("a fully cached batch needs no transaction from the daemon");
         let order: Vec<String> = got.txs.iter().map(|e| e.tx_hash.clone()).collect();
         assert_eq!(order, asked.iter().map(|h| h.to_hex()).collect::<Vec<_>>());
-        assert_eq!(source.rpc_calls(), 0, "the daemon was not asked");
+        assert_eq!(source.rpc_calls(), 1, "only the tip was asked for");
     }
 
     /// A ring whose offsets overflow on summation must degrade to an
@@ -1355,8 +1388,8 @@ mod tests {
         }
     }
 
-    /// Every JSON-RPC error used to read as "no such block", so a busy daemon
-    /// told the reader their block did not exist. The codes are monerod's,
+    /// Only a not-found code reads as "no such block", so a busy daemon never
+    /// tells the reader their block does not exist. The codes are monerod's,
     /// measured against a live node.
     #[test]
     fn block_errors_are_classified_by_what_monerod_actually_returns() {
@@ -1417,15 +1450,21 @@ mod tests {
     /// whatever its JSON holds.
     #[test]
     fn only_a_post_fork_block_is_asked_for_its_tree() {
-        let json = r#"{"fcmp_pp_n_tree_layers":2,"fcmp_pp_tree_root":"AB"}"#;
-        assert_eq!(BlockTree::of(&block_with(16, json)), None);
+        let root = "AB".repeat(32);
+        let json = format!(r#"{{"fcmp_pp_n_tree_layers":2,"fcmp_pp_tree_root":"{root}"}}"#);
+        assert_eq!(BlockTree::of(&block_with(16, &json)), None);
         assert_eq!(
-            BlockTree::of(&block_with(17, json)),
+            BlockTree::of(&block_with(17, &json)),
             Some(BlockTree {
-                root: "ab".to_owned(),
+                root: "ab".repeat(32),
                 n_layers: 2
             })
         );
+        // A root that is not 64 hex characters is no root.
+        for bad in ["AB", &"zz".repeat(32), &"ab".repeat(33)] {
+            let json = format!(r#"{{"fcmp_pp_n_tree_layers":2,"fcmp_pp_tree_root":"{bad}"}}"#);
+            assert_eq!(BlockTree::of(&block_with(17, &json)), None, "{bad}");
+        }
         // Both fields or neither.
         let half = r#"{"fcmp_pp_tree_root":"ab"}"#;
         assert_eq!(BlockTree::of(&block_with(17, half)), None);
@@ -1865,6 +1904,23 @@ mod tests {
 
         // With no tip to count from, the stored count is all there is.
         assert_eq!(source().depth_now(&header).await, 0);
+    }
+
+    /// A cached transaction's confirmations are counted from the tip as it is
+    /// now, not as it was when the transaction was cached.
+    #[tokio::test]
+    async fn cached_confirmations_are_counted_from_the_current_tip() {
+        let chain = Chain { tip: 100, fork: 0 };
+        let daemon = chain.daemon(&[], None);
+        let src = daemon.source();
+        let h = hash(0x44);
+        let mut cached = entry(h);
+        cached.block_height = 30;
+        cached.confirmations = 60; // as cached when the tip was block 89
+        src.txs.insert(h, cached);
+
+        let got = src.transactions(&[h]).await.unwrap();
+        assert_eq!(got.txs.first().map(|e| e.confirmations), Some(71));
     }
 
     /// An unreachable daemon marks the ring unavailable rather than erroring

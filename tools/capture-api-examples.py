@@ -8,7 +8,7 @@ explorer when a response shape changes:
     tools/capture-api-examples.py --base http://127.0.0.1:8090 \
         --recent-base http://127.0.0.1:8092
 
-The current recordings come from explorers reading a regtest chain run by
+The recordings come from explorers reading a regtest chain run by
 monerod's FCMP++ branch (see tools/capture-fcmp-fixtures.py), so they show
 FCMP++ transactions. The chain needs at least 405 blocks, two adjacent ones
 carrying one to four transactions each, and one transaction in the pool.
@@ -101,8 +101,8 @@ def main():
                                   "status": "success"})
 
     # /api/transactions/recent takes no parameters and bounds only its block
-    # window, so it answers the whole pool beside it: 194 KB when this was
-    # written, which documents nothing the first two entries do not. Record a
+    # window, so it answers the whole pool beside it, which can run to hundreds
+    # of kilobytes and documents nothing the first two entries do not. Record a
     # one-block window and keep one transaction from the pool and one from the
     # block, with the pool count corrected to match what is left. Every value
     # below is still the chain's own.

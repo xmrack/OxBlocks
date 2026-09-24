@@ -700,10 +700,11 @@ pub struct TxEntry {
     #[serde(default)]
     pub output_indices: Vec<u64>,
     /// One per output, like `output_indices`, from a daemon built with FCMP++.
-    /// The output's place in the single sequence the curve tree is built over,
-    /// which covers every output on the chain whatever its amount -- unlike
-    /// `output_indices`, which counts within one denomination. Absent from an
-    /// older daemon, and absent (not empty) whenever `output_indices` is.
+    /// The output's index among every output on the chain, whatever its
+    /// amount, where `output_indices` counts within one denomination. It is
+    /// not the output's leaf in the curve tree: outputs join the tree in the
+    /// order they unlock. Absent from an older daemon, and absent (not empty)
+    /// whenever `output_indices` is.
     #[serde(default)]
     pub unified_ids: Vec<u64>,
 
@@ -1617,9 +1618,8 @@ pub struct TxOut {
 /// after mainnet height 2689608.
 ///
 /// `carrot_v1` is the FCMP++ fork's output (hard fork 17), on wire tag `0x01`.
-/// monerod before the FCMP++ branch put `scripthash` on that tag, with zero
-/// chain occurrences, and `ScriptHash` stays so that such a daemon's answer
-/// still parses.
+/// A daemon without FCMP++ names that tag `scripthash`, which no output on any
+/// chain uses, and `ScriptHash` parses such a daemon's answer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TxOutTarget {
     #[serde(rename = "key")]
@@ -1647,21 +1647,23 @@ impl TxOutTarget {
     }
 
     /// The view tag, if this output has one. One byte before Carrot and three
-    /// bytes from it, so two or six hex characters.
+    /// bytes from it, so two or six hex characters; `None` for a tag of any
+    /// other form.
     #[must_use]
     pub fn view_tag(&self) -> Option<&str> {
         match self {
-            Self::TaggedKey(t) => Some(&t.view_tag),
-            Self::CarrotV1(c) => Some(&c.view_tag),
+            Self::TaggedKey(t) => hex_of_len(&t.view_tag, 2),
+            Self::CarrotV1(c) => hex_of_len(&c.view_tag, 6),
             _ => None,
         }
     }
 
-    /// The encrypted Janus anchor, which only a Carrot output has.
+    /// The encrypted Janus anchor, which only a Carrot output has: 32 hex
+    /// characters, and `None` for an anchor of any other form.
     #[must_use]
     pub fn encrypted_janus_anchor(&self) -> Option<&str> {
         match self {
-            Self::CarrotV1(c) => Some(&c.encrypted_janus_anchor),
+            Self::CarrotV1(c) => hex_of_len(&c.encrypted_janus_anchor, 32),
             _ => None,
         }
     }
@@ -1671,6 +1673,12 @@ impl TxOutTarget {
     pub const fn is_carrot(&self) -> bool {
         matches!(self, Self::CarrotV1(_))
     }
+}
+
+/// `s` when it is exactly `len` hex characters.
+#[must_use]
+pub fn hex_of_len(s: &str, len: usize) -> Option<&str> {
+    (s.len() == len && s.bytes().all(|b| b.is_ascii_hexdigit())).then_some(s)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

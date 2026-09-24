@@ -19,8 +19,8 @@
 //! from: this comment claimed they existed long before they did.
 
 use explorer_core::fmt::timestamp_utc;
-use explorer_core::{Hash32, ResolvedInput, TxFacts};
-use monerod_rpc::types::{PoolTxInfo, TxEntry, TxJson};
+use explorer_core::{BlockTree, Hash32, ResolvedInput, TxFacts};
+use monerod_rpc::types::{BlockHeader, PoolTxInfo, TxEntry, TxJson};
 use serde::Serialize;
 
 /// One ring member.
@@ -53,17 +53,18 @@ pub struct ApiOutput {
     /// every output from before Carrot, which has none.
     pub encrypted_janus_anchor: Option<String>,
     pub public_key: String,
-    /// The output's place in the one sequence the curve tree is built over,
-    /// which a wallet uses to ask for the output's path. `null` for a
-    /// transaction still in the pool, and on a daemon from before FCMP++.
+    /// The output's index among every output on the chain, of every amount,
+    /// which a wallet uses to ask for the output's path through the curve
+    /// tree. `null` for a transaction still in the pool, and on a daemon from
+    /// before FCMP++.
     pub unified_id: Option<u64>,
     /// Two hex characters before Carrot and six from it. `null` for an output
     /// from before view tags, not `""`, which would read as a tag of no bytes.
     pub view_tag: Option<String>,
 }
 
-/// `get_tx_json` — the shared transaction object that appears inside
-/// `/api/block`, `/api/transactions` and `/api/mempool`.
+/// The transaction object that appears inside `/api/block`,
+/// `/api/transactions` and `/api/mempool`.
 #[derive(Debug, Clone, Serialize)]
 pub struct TxSummary {
     pub coinbase: bool,
@@ -142,9 +143,10 @@ pub struct BlockDetail {
     pub block_height: u64,
     pub current_height: u64,
     pub hash: String,
-    /// The curve tree's layer count, from the FCMP++ fork on. `null` when no
-    /// tree is reported: below the fork, and in `/api/blocks` for a post-fork
-    /// block whose body could not be fetched.
+    /// The curve tree's layer count, from the FCMP++ fork on, and 0 while the
+    /// tree is empty. `null` when no tree is reported: below the fork, when
+    /// the daemon's block carries no well-formed tree, and in `/api/blocks`
+    /// for a post-fork block whose body could not be fetched.
     pub n_tree_layers: Option<u8>,
     /// Integer here. The *same* value is a JSON float in `/api/transactions`.
     /// On one block that is 95511 against 95511.0.
@@ -155,6 +157,46 @@ pub struct BlockDetail {
     /// on. `null` in the same cases as `n_tree_layers`.
     pub tree_root: Option<String>,
     pub txs: Vec<TxSummary>,
+}
+
+impl BlockDetail {
+    /// One block's API representation, from its header and its transactions.
+    ///
+    /// Shared by `/api/block` and `/api/blocks/<start>/<end>`, because the
+    /// element type of the range response is exactly the single-block
+    /// response. Takes the header rather than a whole `get_block`, because a
+    /// range is answered from `get_block_headers_range` and fetches a block's
+    /// body only when the block holds transactions or carries a curve tree.
+    pub fn build(
+        header: &BlockHeader,
+        depth: u64,
+        entries: &[TxEntry],
+        tree: Option<&BlockTree>,
+    ) -> BlockDetail {
+        let mut txs = Vec::with_capacity(entries.len());
+        for entry in entries {
+            match entry.parse_json() {
+                Ok(tx) => txs.push(TxSummary::build(entry, &tx)),
+                // One undecodable transaction must not lose the whole block page.
+                Err(e) => tracing::warn!(tx = %entry.tx_hash, "skipping: {e}"),
+            }
+        }
+
+        BlockDetail {
+            block_height: header.height,
+            // The tip, derived from this block's depth: `depth` is 0 for the tip,
+            // and `current_height` is the chain *height* (tip + 1). Block
+            // 2,000,000 at depth 1,765,612 reports current_height 3,765,613.
+            current_height: header.height.saturating_add(depth).saturating_add(1),
+            hash: normalise_hash(&header.hash),
+            n_tree_layers: tree.map(|t| t.n_layers),
+            size: header.block_size,
+            timestamp: header.timestamp,
+            timestamp_utc: timestamp_utc(header.timestamp),
+            tree_root: tree.map(|t| t.root.clone()),
+            txs,
+        }
+    }
 }
 
 impl TxSummary {

@@ -57,7 +57,9 @@
     tree held. Blocks carry the tree's root eight blocks ahead, so the root
     this proof was checked against is in the block eight below
     the one named. A pruned node drops the block number with the rest of the
-    proof, and a transaction still in the pool has no count yet.</p></details>
+    proof. For a transaction still in the pool the daemon cannot be asked for
+    the count, because the question names one of the transaction's outputs,
+    and those have no place on the chain until it is mined.</p></details>
   </dd>
   {% if let Some(bytes) = proof_size %}
   <dt>FCMP++ proof</dt><dd>{{ bytes }} bytes

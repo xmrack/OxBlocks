@@ -11,9 +11,10 @@
 //! tip-relative to excuse: `current_height` and `confirmations` must match
 //! exactly, and any difference at all is a real difference.
 //!
-//! The keys in [`FCMP_PP_KEYS`] carry FCMP++ and Carrot data, which the
-//! captures do not contain, so they are checked on the oxblocks side only.
-//! Every key the captures do contain must be present and equal.
+//! The keys in [`FCMP_PP_KEYS`] are absent from the captures, so they are
+//! checked on the oxblocks side only: each must be `null` on these pre-FCMP++
+//! blocks, except `view_tag`, which a tagged output carries. Every key the
+//! captures do contain must be present and equal.
 
 #![allow(
     clippy::unwrap_used,
@@ -41,8 +42,8 @@ fn load(rel: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{rel} is not JSON: {e}"))
 }
 
-/// The FCMP++ and Carrot keys. Named one by one, so any other key missing
-/// from the captures still fails.
+/// The keys for FCMP++, Carrot and view tags. Named one by one, so any other
+/// key missing from the captures still fails.
 const FCMP_PP_KEYS: &[&str] = &[
     "anonymity_set",
     "encrypted_janus_anchor",
@@ -66,7 +67,8 @@ fn diff(ours: &Value, theirs: &Value, path: &str, out: &mut Vec<String>) {
                     (None, Some(y)) => {
                         out.push(format!("{path}/{k}: missing from ours (xmrblocks {y})"));
                     }
-                    (Some(_), None) if FCMP_PP_KEYS.contains(&k.as_str()) => {}
+                    (Some(_), None) if k == "view_tag" => {}
+                    (Some(Value::Null), None) if FCMP_PP_KEYS.contains(&k.as_str()) => {}
                     (Some(x), None) => out.push(format!("{path}/{k}: extra in ours ({x})")),
                     (None, None) => unreachable!("key came from one of the two maps"),
                 }
@@ -99,7 +101,6 @@ fn assert_identical(ours: &Value, capture: &str) {
 
 /// Render a block exactly as the handler does, from captured monerod responses.
 fn render_block(height: u64) -> Value {
-    use explorer_core::fmt::timestamp_utc;
     use monerod_rpc::types::{GetBlock, GetTransactionsResponse};
 
     let got: GetBlock = serde_json::from_value(
@@ -111,29 +112,10 @@ fn render_block(height: u64) -> Value {
             .expect("transactions decode");
 
     let header = &got.block_header;
-    let txs: Vec<Value> = fetched
-        .txs
-        .iter()
-        .map(|e| {
-            let tx = e.parse_json().expect("as_json present");
-            serde_json::to_value(shapes::TxSummary::build(e, &tx)).expect("serialises")
-        })
-        .collect();
-
+    let tree = explorer_core::BlockTree::of(&got);
+    let detail = shapes::BlockDetail::build(header, header.depth, &fetched.txs, tree.as_ref());
     serde_json::json!({
-        "data": {
-            "block_height": header.height,
-            "current_height": header.height + header.depth + 1,
-            "hash": header.hash,
-            // Every capture here is from before FCMP++, so the block has no
-            // tree and the handler answers null.
-            "n_tree_layers": null,
-            "size": header.block_size,
-            "timestamp": header.timestamp,
-            "timestamp_utc": timestamp_utc(header.timestamp),
-            "tree_root": null,
-            "txs": txs,
-        },
+        "data": serde_json::to_value(detail).expect("serialises"),
         "status": "success",
     })
 }
@@ -249,7 +231,10 @@ fn the_fcmp_pp_keys_are_present_and_null_before_the_fork() {
     for tx in block["data"]["txs"].as_array().expect("txs is an array") {
         assert_eq!(tx.get("reference_block"), Some(&Value::Null));
         assert_eq!(tx.get("n_tree_layers"), Some(&Value::Null));
+        assert_eq!(tx.get("fcmp_pp_proof_size"), Some(&Value::Null));
     }
+    assert_eq!(block["data"].get("tree_root"), Some(&Value::Null));
+    assert_eq!(block["data"].get("n_tree_layers"), Some(&Value::Null));
 }
 
 /// The FCMP++ keys filled from a real FCMP++ capture: the reference block and

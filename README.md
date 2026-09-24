@@ -239,9 +239,10 @@ oxblocks at `http://127.0.0.1:28081`.
 For an FCMP++ transaction, RingCT type 7, the transaction page shows the
 anonymity set, which is the size of the curve tree as of the transaction's
 reference block. It also shows the reference block, the tree's layer count and
-the proof size. Inputs have no ring. Carrot outputs show their 3-byte view tag,
-encrypted Janus anchor and unified ID. Blocks from the fork on show their curve
-tree root and layer count.
+the proof size. Inputs have no ring. Carrot outputs show their 3-byte view tag
+and encrypted Janus anchor, and every mined output shows its unified ID, which
+a daemon with FCMP++ reports. Blocks from the fork on show their curve tree
+root and layer count.
 
 The JSON API carries the same data in these keys, each `null` where it does
 not apply:

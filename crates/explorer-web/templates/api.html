@@ -464,19 +464,23 @@
     and <code class="lit">txs</code>, an array of
     <a href="#shape-txsummary">transaction summaries</a> with the coinbase
     first. <code class="lit">current_height</code> is the height of the chain.
-    The explorer works it out from the depth of this block, so it costs no
-    second call.
+    <a href="#block">/api/block</a> reads it from the daemon's chain info,
+    which the explorer holds for a few seconds, and
+    <a href="#blocks">/api/blocks</a> works it out from the depth each header
+    in the range carries.
   </p>
   <p>
     <code class="lit">tree_root</code> is the root of the curve tree the block
     commits to, in hex, and <code class="lit">n_tree_layers</code> is the
     tree's layer count. Both are <code class="lit">null</code> when no tree is
-    reported: below the FCMP++ fork, whose block format has no tree, and in
+    reported: below the FCMP++ fork, whose block format has no tree, when the
+    daemon's block does not carry a well-formed tree, and in
     <a href="#blocks">/api/blocks</a> for a post-fork block whose body the
-    daemon did not return. <a href="#block">/api/block</a> reports that
-    block's tree. Both fields are in the block's body, after its transaction
-    list, and no header call returns them. The root runs eight blocks ahead of
-    the block: block H
+    daemon did not return. A tree with no outputs yet has
+    <code class="lit">n_tree_layers</code> 0 and a root of zeros. Both fields
+    are in the block's body, after its transaction list, and no header call
+    returns them, so from the fork on <a href="#blocks">/api/blocks</a> fetches
+    every block's body. The root runs eight blocks ahead of the block: block H
     carries the tree as it stands at height H + 8. A proof whose
     <code class="lit">reference_block</code> is R was therefore checked
     against the <code class="lit">tree_root</code> of block R &minus; 8, not
@@ -570,10 +574,12 @@
     Each output carries <code class="lit">amount</code>,
     <code class="lit">public_key</code>, <code class="lit">view_tag</code>,
     <code class="lit">encrypted_janus_anchor</code> and
-    <code class="lit">unified_id</code>. <code class="lit">unified_id</code> is the output's place in the
-    one sequence of every output that the curve tree is built from, which a
-    wallet uses to ask for the output's path. It is
-    <code class="lit">null</code> for a transaction still in the pool. <code class="lit">public_key</code> is the one-time address,
+    <code class="lit">unified_id</code>. <code class="lit">unified_id</code> is
+    the output's index among every output on the chain, of every amount,
+    which a wallet uses to ask for the output's path through the curve tree.
+    It is <code class="lit">null</code> for a transaction still in the pool
+    and on a daemon from before FCMP++, which does not report it.
+    <code class="lit">public_key</code> is the one-time address,
     Carrot's included. <code class="lit">view_tag</code> is two hex characters
     for an output from before Carrot and six for a Carrot output, and
     <code class="lit">null</code> for an output from before view tags.

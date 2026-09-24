@@ -3,11 +3,12 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use explorer_core::fmt::{decimal, timestamp_utc};
 use explorer_core::{
     BlockId, BlockIdError, BlockTree, ChainError, Hash32, RpcChainSource, unexpanded_inputs,
 };
-use monerod_rpc::types::{BlockHeader, GetTxidsLooseRequest, TxEntry};
+use monerod_rpc::types::{GetTxidsLooseRequest, TxEntry};
 use serde::Serialize;
 
 use super::envelope::{ApiError, ApiOk};
@@ -139,8 +140,9 @@ pub async fn transaction(
     };
 
     let mut detail = TxDetail::build(entry, &tx, &rings, current_height);
-    // Only this endpoint pays for the tree size: it is one daemon call, and
-    // the list endpoints would pay it once per transaction listed.
+    // Only this handler pays for the tree size, for /api/transaction and for
+    // /api/search on a transaction: it is one daemon call, and the list
+    // endpoints would pay it once per transaction listed.
     detail.anonymity_set = state.chain.anonymity_set(&tx, entry, current_height).await;
     Ok(ApiOk(detail))
 }
@@ -211,50 +213,12 @@ async fn build_block_detail(state: &AppState, id: BlockId) -> Result<BlockDetail
     // A cached block carries the depth it had when fetched; the answer counts
     // from the tip as it is now. See `RpcChainSource::depth_now`.
     let depth = state.chain.depth_now(&got.block_header).await;
-    Ok(block_detail(
+    Ok(BlockDetail::build(
         &got.block_header,
         depth,
         &fetched.txs,
         BlockTree::of(&got).as_ref(),
     ))
-}
-
-/// One block's API representation, from its header and its transactions.
-///
-/// Shared by `/api/block` and `/api/blocks/<start>/<end>`, because the element
-/// type of the range response is exactly the single-block response. Takes the
-/// header rather than a whole `get_block`, because a range is answered from
-/// `get_block_headers_range` and never fetches the block body at all unless
-/// the block holds something.
-fn block_detail(
-    header: &BlockHeader,
-    depth: u64,
-    entries: &[TxEntry],
-    tree: Option<&BlockTree>,
-) -> BlockDetail {
-    let mut txs = Vec::with_capacity(entries.len());
-    for entry in entries {
-        match entry.parse_json() {
-            Ok(tx) => txs.push(TxSummary::build(entry, &tx)),
-            // One undecodable transaction must not lose the whole block page.
-            Err(e) => tracing::warn!(tx = %entry.tx_hash, "skipping: {e}"),
-        }
-    }
-
-    BlockDetail {
-        block_height: header.height,
-        // The tip, derived from this block's depth: `depth` is 0 for the tip,
-        // and `current_height` is the chain *height* (tip + 1). Block
-        // 2,000,000 at depth 1,765,612 reports current_height 3,765,613.
-        current_height: header.height.saturating_add(depth).saturating_add(1),
-        hash: normalise_hash(&header.hash),
-        n_tree_layers: tree.map(|t| t.n_layers),
-        size: header.block_size,
-        timestamp: header.timestamp,
-        timestamp_utc: timestamp_utc(header.timestamp),
-        tree_root: tree.map(|t| t.root.clone()),
-        txs,
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -615,12 +579,20 @@ pub async fn search(
         }
         // A block hash and a transaction hash are the same shape, so the only
         // way to tell them apart is to try one and then the other.
+        //
+        // Only a not-found answer moves on to the next try. A daemon that
+        // failed any other way has not said the hash is not a block, so its
+        // error is the answer, rather than a 404 that says nothing matched.
         Ok(BlockId::Hash(_)) => {
-            if let Ok(found) = block(State(Arc::clone(&state)), Path(raw.clone())).await {
-                return Ok(ApiOk(titled(found.0, "block")));
+            match block(State(Arc::clone(&state)), Path(raw.clone())).await {
+                Ok(found) => return Ok(ApiOk(titled(found.0, "block"))),
+                Err(e) if e.status != StatusCode::NOT_FOUND => return Err(e),
+                Err(_) => {}
             }
-            if let Ok(found) = transaction(State(state), Path(raw.clone())).await {
-                return Ok(ApiOk(titled(found.0, "tx")));
+            match transaction(State(state), Path(raw.clone())).await {
+                Ok(found) => return Ok(ApiOk(titled(found.0, "tx"))),
+                Err(e) if e.status != StatusCode::NOT_FOUND => return Err(e),
+                Err(_) => {}
             }
             return Err(ApiError::not_found(format!(
                 "Cant find blk or tx using search string: {shown}"
@@ -1088,7 +1060,8 @@ pub async fn blocks_range(
         .await
         .map_err(|e| on_chain_error(&e, "Cant get daemon info"))?;
 
-    if end > info.height {
+    // `height` counts blocks, so the tip is `height - 1`.
+    if end >= info.height {
         return Err(ApiError::not_found(format!(
             "Requested end height is higher than blockchain: {end}, {}",
             info.height
@@ -1105,7 +1078,7 @@ pub async fn blocks_range(
         blocks
             .iter()
             // A range's headers are fetched fresh, so their depth is current.
-            .map(|b| block_detail(&b.header, b.header.depth, &b.txs, b.tree.as_ref()))
+            .map(|b| BlockDetail::build(&b.header, b.header.depth, &b.txs, b.tree.as_ref()))
             .collect(),
     ))
 }
@@ -1216,7 +1189,6 @@ mod tests {
     )]
 
     use super::*;
-    use axum::http::StatusCode;
 
     // Both bugs below were found by comparing live output on a real chain,
     // not by reading the code.

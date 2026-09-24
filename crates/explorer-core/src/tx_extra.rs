@@ -1199,11 +1199,10 @@ mod tests {
     /// and a differential run is a string comparison.
     ///
     /// Every decoded **value** goes into the line, not just its tag and length.
-    /// An earlier version of this printed `M,` for a merge-mining field and
-    /// `K,` for a pubkey, which made the whole differential agree with any
-    /// parser that got the framing right: truncating the depth to 32 bits, or
-    /// returning the wrong 32 bytes for a key, left every corpus test and all
-    /// 98,792 differential cases green. The grammar is documented in
+    /// A line of tags alone, `M,` for a merge-mining field and `K,` for a
+    /// pubkey, would agree with any parser that got the framing right, one
+    /// that truncated the depth to 32 bits or returned the wrong 32 bytes for
+    /// a key included. The grammar is documented in
     /// `tools/txextra-oracle/build.sh` and must be changed on both sides at
     /// once.
     fn oracle_line(extra: &[u8]) -> String {

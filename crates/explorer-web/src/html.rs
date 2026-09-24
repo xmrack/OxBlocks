@@ -1373,11 +1373,13 @@ pub async fn search(State(state): Shared, Query(q): Query<SearchQuery>) -> Respo
         }
         Ok(BlockId::Hash(hash)) => {
             // A block hash and a transaction hash are the same shape, so the
-            // only way to tell them apart is to look one up.
-            let target = if state.chain.block(BlockId::Hash(hash)).await.is_ok() {
-                "block"
-            } else {
-                "tx"
+            // only way to tell them apart is to look one up. Only a not-found
+            // answer means it is not a block: a daemon that failed any other
+            // way sends the reader to the block page, which reports the
+            // failure, rather than to a transaction page that says "not found".
+            let target = match state.chain.block(BlockId::Hash(hash)).await {
+                Err(e) if e.is_not_found() => "tx",
+                _ => "block",
             };
             return axum::response::Redirect::to(&format!("/{target}/{cleaned}")).into_response();
         }
@@ -1474,10 +1476,8 @@ mod example {
     ];
 }
 
-/// The API documentation, which is what the `API` link in the header points at.
-///
-/// It used to point at `/api/networkinfo`, which answered a reader looking for
-/// documentation with a wall of raw JSON.
+/// The API documentation, which is what the `API` link in the header points
+/// at: a reader looking for documentation gets a page, not raw JSON.
 pub async fn api_docs(State(state): Shared) -> Page {
     let chain = status_of(&state).await;
 
@@ -2233,8 +2233,8 @@ mod tests {
             html.contains("signals"),
             "the hint does not say what a minor version is"
         );
-        // The upgrade cadence this used to claim stopped being true in 2022,
-        // and a page that dates itself is worse than one that does not.
+        // Forks follow no fixed schedule, and a page that dates itself is
+        // worse than one that does not.
         assert!(
             !html.contains("every six months"),
             "the hint is claiming a fork schedule again"
@@ -2602,9 +2602,9 @@ mod tests {
 
     /// The page documents the endpoint, not the daemon behind it.
     ///
-    /// It used to carry a notice saying whether a startup probe had found
-    /// `get_txids_loose`. A daemon that lacks the call says so in the answer
-    /// to the request that needed it, which is where a caller is looking.
+    /// It carries no notice about whether the daemon has `get_txids_loose`.
+    /// A daemon that lacks the call says so in the answer to the request that
+    /// needed it, which is where a caller is looking.
     #[test]
     fn the_page_does_not_report_on_the_daemon_behind_it() {
         let html = api_page().render().expect("renders");

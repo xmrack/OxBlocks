@@ -82,19 +82,34 @@ def open_wallet(wallet, name, seed):
     })["result"]["address"]
 
 
-def epee_request(as_of_n_blocks, unified_ids):
-    """A /get_path_by_unified_id.bin request in epee's binary format.
+def epee_varint(n):
+    """epee's varint: the low two bits give the width, 1, 2, 4 or 8 bytes."""
+    for mark, fmt, limit in ((0, "<B", 1 << 6), (1, "<H", 1 << 14),
+                             (2, "<I", 1 << 30), (3, "<Q", 1 << 62)):
+        if n < limit:
+            return struct.pack(fmt, (n << 2) | mark)
+    raise ValueError(f"{n} has no epee varint")
 
-    Two fields, so every count here fits epee's one-byte varint (value << 2).
-    """
+
+def epee_request(as_of_n_blocks, unified_ids):
+    """A /get_path_by_unified_id.bin request in epee's binary format."""
     out = struct.pack("<IIB", 0x01011101, 0x01020101, 1)
-    out += bytes([2 << 2])
+    out += epee_varint(2)
     name = b"as_of_n_blocks"
     out += bytes([len(name)]) + name + bytes([5]) + struct.pack("<Q", as_of_n_blocks)
     name = b"unified_ids"
-    out += bytes([len(name)]) + name + bytes([5 | 0x80, len(unified_ids) << 2])
+    out += bytes([len(name)]) + name + bytes([5 | 0x80]) + epee_varint(len(unified_ids))
     out += b"".join(struct.pack("<Q", u) for u in unified_ids)
     return out
+
+
+def epee_status_ok(body):
+    """Whether a binary answer's root carries status "OK".
+
+    The root entry is its name's length, the name, type 10 (a string), the
+    string's varint length and the text, so this is a search for those bytes.
+    """
+    return b"\x06status\x0a" + epee_varint(2) + b"OK" in body
 
 
 def post_bin(url, body):
@@ -174,6 +189,9 @@ def main():
                         ("probe_in_tree", 1)):
         body = post_bin(d + "/get_path_by_unified_id.bin",
                         epee_request(reference + 1, [probe]))
+        if not epee_status_ok(body):
+            sys.exit(f"get_path_by_unified_id.bin with probe {probe} did not "
+                     "answer status OK")
         (OUT / f"get_path_by_unified_id_{name}.bin").write_bytes(body)
         print(f"  get_path_by_unified_id_{name}.bin  {len(body):>9,} bytes"
               f"  (as of block {reference}, probe {probe})")
