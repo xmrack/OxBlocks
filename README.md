@@ -8,8 +8,7 @@ nothing to disk. For each request it asks the daemon over RPC and renders the an
 The JSON API serves the same response bodies as
 [xmrblocks](https://github.com/moneroexamples/onion-monero-blockchain-explorer),
 so a client that reads the body works without changes. It differs on two
-points, both listed under [JSON API](#json-api), and adds keys for FCMP++
-and Carrot.
+points, both listed under [JSON API](#json-api).
 
 ## Requirements
 
@@ -22,9 +21,6 @@ point it at a public restricted port.
 
 Pruned nodes work. Read [Pruned nodes](#pruned-nodes) for the one field that
 differs.
-
-The explorer reads the FCMP++ and Carrot hard fork as well as the chain before
-it. Read [FCMP++ and the stressnet](#fcmp-and-the-stressnet).
 
 ## Build and run
 
@@ -231,116 +227,40 @@ This lookup needs a daemon that has `get_txids_loose`. A daemon without it
 answers `Method not found`, and this one endpoint returns that as its error.
 Every other endpoint works either way.
 
-## FCMP++ and the stressnet
+## FCMP++ and Carrot
 
-Hard fork 17 brings FCMP++ and Carrot. The explorer reads both as monerod's
-`fcmp++-beta-stressnet-v3` branch writes them, and it reads the chain before the
-fork exactly as it did. Nothing needs configuring. The explorer tells the two
-eras apart by the RingCT type and the output type of each transaction, never by
-height, so it follows whatever fork height the daemon's network uses.
+oxblocks supports hard fork 17, FCMP++ and Carrot, in the format of monerod's
+`fcmp++-beta-stressnet-v3` branch, and reads the chain on both sides of the
+fork.
 
-### Run against the stressnet
+The beta stressnet runs on testnet. Start its monerod with `--testnet` and point
+oxblocks at `http://127.0.0.1:28081`.
 
-The stressnet is a fork of testnet. Run the stressnet build of monerod with
-`--testnet` and point the explorer at its RPC port:
+For an FCMP++ transaction, RingCT type 7, the transaction page shows the
+anonymity set, which is the size of the curve tree as of the transaction's
+reference block. It also shows the reference block, the tree's layer count and
+the proof size. Inputs have no ring. Carrot outputs show their 3-byte view tag,
+encrypted Janus anchor and unified ID. Blocks from the fork on show their curve
+tree root and layer count.
 
-```bash
-./target/release/oxblocks --daemon-url http://127.0.0.1:28081
-```
+The JSON API carries the same data in these keys, each `null` where it does
+not apply:
 
-The chain strip reads `testnet`, because that is the network type the daemon
-reports.
+| Key | Object |
+| --- | --- |
+| `reference_block`, `n_tree_layers`, `fcmp_pp_proof_size` | transaction |
+| `anonymity_set` | transaction, from `/api/transaction` and `/api/search` |
+| `view_tag`, `encrypted_janus_anchor`, `unified_id` | output |
+| `tree_root`, `n_tree_layers` | block |
 
-### What changes on the pages
+An FCMP++ transaction reports `mixin` 0, and each input's `mixins` is `[]`. On a
+pruned node, a transaction whose prunable data is gone has no reference block,
+layer count, proof size or anonymity set.
 
-* **Inputs have no ring.** An FCMP++ input proves that it spends one of the
-  outputs in a curve tree of every output spendable at its reference block,
-  so the transaction page shows that tree as the anonymity set, with the
-  reference block and the tree's layer count. Once the transaction is mined,
-  the page asks the daemon how many outputs that tree held and shows the
-  count. There are no ring
-  members and no age strip. The ring column on the block and mempool pages
-  reads `all`.
-* **Proof size.** The page shows the FCMP++ proof's length in bytes, which the
-  input count and the tree's layer count fix.
-* **Blocks commit to a curve tree.** From the fork, the block page shows the
-  tree root and layer count that the block carries. The root runs eight blocks
-  ahead: block H carries the tree as of height H + 8, so a transaction with
-  reference block R was checked against the root in block R − 8, and the
-  transaction page links that block. For the first eight or so reference
-  blocks after the fork, block R − 8 is from before it and carries no root,
-  and the page links nothing.
-* **Carrot outputs.** The view tag is three bytes instead of one, and each
-  output carries an encrypted Janus anchor, which the output table shows
-  beside each output's unified id. The
-  key in `tx_extra` is labelled as an X25519 ephemeral key, because that is
-  what Carrot puts there.
-
-### What changes in the API
-
-Every key xmrblocks has keeps its meaning. The values change:
-
-* `rct_type` is 7.
-* `mixin` is 0, because there is no ring. Read `rct_type` before you read 0 as
-  no anonymity set.
-* Each input's `mixins` is `[]`, never `null`, on every endpoint. There is no
-  ring to resolve or to withhold.
-* Each output's `public_key` is the Carrot one-time address.
-
-These keys are new. xmrblocks has none of them. They are always present and
-hold `null` where the chain has no value:
-
-| Key | Where | Holds |
-| --- | --- | --- |
-| `reference_block` | every transaction object | The height whose curve tree the FCMP++ proof was built against. |
-| `n_tree_layers` | every transaction object | The tree's layer count at that height. |
-| `fcmp_pp_proof_size` | every transaction object | The FCMP++ proof's length in bytes. |
-| `anonymity_set` | `/api/transaction` and `/api/search` on a transaction hash | How many outputs the tree held at the reference block. `null` in the pool and on every other endpoint. |
-| `view_tag` | each output in `/api/transaction` | 2 hex characters before Carrot, 6 from it, `null` before view tags. |
-| `encrypted_janus_anchor` | each output in `/api/transaction` | 32 hex characters, Carrot outputs only. |
-| `unified_id` | each output in `/api/transaction` | The output's place in the sequence the tree is built from. `null` in the pool. |
-| `tree_root` | every block object | The curve tree root the block commits to. `null` below the fork, and in `/api/blocks` for a block whose body the daemon did not hand over. |
-| `n_tree_layers` | every block object | That tree's layer count. `null` in the same cases. |
-
-### The tree size
-
-monerod reports how many outputs its tree held as of a block only in its
-binary format, never in JSON. The explorer asks `/get_path_by_unified_id.bin`,
-the cheaper of the two calls that carry it. The explorer speaks that format for this one call, with its own small
-decoder and no new dependency. It asks as of the transaction's reference block
-and names the transaction's own first output. That output joins the tree
-later, so the daemon skips the leaf search and path read it would do for an
-output already in the tree; it still reads the transaction's output data and
-the tree's size and last path, a few database reads per call. A daemon
-without the endpoint leaves the count out and the page falls back to "every
-output in the curve tree".
-Answers for a reference block more than 60 blocks deep are cached, and
-`/health` reports that cache as `tree_sizes`.
-
-An FCMP++ transaction needs no ring lookups, so `/api/transaction` makes that
-one call beside fetching the transaction, and nothing else. From the fork on,
-`/api/blocks` fetches every block's body, including a coinbase-only block's,
-because the tree root is in the body. The other range endpoints do not show
-the tree and do not pay for it.
-
-### Pruned stressnet nodes
-
-The reference block and the layer count sit in the prunable half of the
-transaction. A pruned node that no longer holds that half still shows the
-transaction as FCMP++, but it cannot say which tree the proof named. The API
-answers `null` for both, beside an `rct_type` of 7.
-
-### Fixtures
-
-`fixtures/fcmp/` holds responses recorded from a regtest daemon built from the
-`fcmp++-beta-stressnet-v3` branch. Regtest runs the newest fork from block 1,
-so every spend there is an FCMP++ spend. Two of them are raw binary answers
-from `/get_path_by_unified_id.bin`. `tools/capture-fcmp-fixtures.py` records
-them again and says how to start the daemon and wallet it needs.
-
-The example responses on the `/api` page, in `fixtures/api-examples/`, come
-from the same kind of regtest chain, recorded by `tools/capture-api-examples.py`
-from an explorer reading it.
+The tree size comes from `/get_path_by_unified_id.bin`, monerod's binary RPC,
+which oxblocks decodes itself. `fixtures/fcmp/` holds responses recorded from a
+regtest daemon on the stressnet branch, and `tools/capture-fcmp-fixtures.py`
+records them again.
 
 ## Architecture
 
@@ -402,9 +322,7 @@ On a pruned daemon, `tx_size` under-reports for a transaction outside the stripe
 that the node keeps. The node holds only the prefix, so the missing bytes are
 not there to count. Run an unpruned daemon if you need that field to be exact.
 Every other field is correct on a pruned node, because ring expansion reads the
-output table, and the daemon never prunes that table. An FCMP++ transaction
-also loses its reference block. Read [Pruned stressnet
-nodes](#pruned-stressnet-nodes).
+output table, and the daemon never prunes that table.
 
 ## Testing
 

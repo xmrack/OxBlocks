@@ -1911,9 +1911,8 @@ mod tests {
             }
         }
         // A floor, not a count: it proves the loop above read the recordings.
-        // It was 50 while the examples held ring-era transactions, whose ring
-        // members supplied most of the hashes. FCMP++ inputs have none, and
-        // the regtest recordings hold 45.
+        // The recordings are FCMP++ transactions, whose inputs name no ring
+        // members, and hold 45.
         assert!(
             hashes > 30,
             "only {hashes} hashes were examined, so this test is not reading \

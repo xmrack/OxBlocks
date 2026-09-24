@@ -1610,12 +1610,10 @@ pub struct TxOut {
 /// String }` parses every pre-view-tag output and then fails on everything
 /// after mainnet height 2689608.
 ///
-/// `carrot_v1` is the FCMP++ fork's output (hard fork 17). It took over wire
-/// tag `0x01`, which `scripthash` held with zero chain occurrences, so monerod
-/// built from the FCMP++ branch no longer emits `scripthash` for an output at
-/// all. The variant is kept here so that an older daemon's answer still
-/// parses. Before this variant existed, every transaction in a post-fork block
-/// failed to decode, and the block page dropped them silently.
+/// `carrot_v1` is the FCMP++ fork's output (hard fork 17), on wire tag `0x01`.
+/// monerod before the FCMP++ branch put `scripthash` on that tag, with zero
+/// chain occurrences, and `ScriptHash` stays so that such a daemon's answer
+/// still parses.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TxOutTarget {
     #[serde(rename = "key")]
@@ -2583,8 +2581,8 @@ mod tests {
         assert_eq!(e.unified_ids_per_output(0), None);
     }
 
-    /// The FCMP++ fork's output. Before this variant existed the whole
-    /// transaction failed to parse, and with it every post-fork block's list.
+    /// The FCMP++ fork's output parses, and its key and view tag come out
+    /// through the same accessors as the other targets'.
     #[test]
     fn a_carrot_output_parses_and_answers_like_the_others() {
         let carrot: TxOut = serde_json::from_str(

@@ -5,10 +5,7 @@
 
 <p>
   Every endpoint below is a <code class="lit">GET</code>. None of them needs a
-  key, a header or a session. The response bodies carry every key that
-  xmrblocks does, with the same values, so a client written for that explorer
-  reads these without changes. Blocks and transactions carry more keys, for
-  FCMP++ and Carrot, which xmrblocks has never had. They are listed under
+  key, a header or a session. The keys for FCMP++ and Carrot are listed under
   <a href="#shape-block">the block</a> and
   <a href="#shape-txsummary">transaction</a> shapes.
 </p>
@@ -127,7 +124,7 @@
     The API revision and the version string of the daemon.
     <code class="lit">api</code> is
     <code class="lit">(major &lt;&lt; 16) | minor</code>, which reads 65539 for
-    the xmrblocks 1.3 shapes these extend. The three <code class="lit">git_*</code> fields are always
+    these shapes. The three <code class="lit">git_*</code> fields are always
     empty, because oxblocks embeds no build metadata. The keys stay because
     clients index them. <code class="lit">oxblocks_version</code> is an extra
     key, so a client can tell which explorer answered.
@@ -471,17 +468,15 @@
     second call.
   </p>
   <p>
-    Two keys xmrblocks does not have: <code class="lit">tree_root</code>, the
-    root of the curve tree the block commits to, in hex, and
-    <code class="lit">n_tree_layers</code>, the tree's layer count. Both are
-    <code class="lit">null</code> when no tree is reported: below the FCMP++
-    fork, whose block format has no tree, and in
-    <a href="#blocks">/api/blocks</a> for a post-fork block whose contents the
-    daemon did not hand over in time. The two cases are told apart by the
-    block's height against the fork; ask
-    <a href="#block">/api/block</a> again for the second. Both fields sit in
-    the block's body, after its transaction list, not in its header, so no
-    header call returns them. The root runs eight blocks ahead of the block: block H
+    <code class="lit">tree_root</code> is the root of the curve tree the block
+    commits to, in hex, and <code class="lit">n_tree_layers</code> is the
+    tree's layer count. Both are <code class="lit">null</code> when no tree is
+    reported: below the FCMP++ fork, whose block format has no tree, and in
+    <a href="#blocks">/api/blocks</a> for a post-fork block whose body the
+    daemon did not return. <a href="#block">/api/block</a> reports that
+    block's tree. Both fields are in the block's body, after its transaction
+    list, and no header call returns them. The root runs eight blocks ahead of
+    the block: block H
     carries the tree as it stands at height H + 8. A proof whose
     <code class="lit">reference_block</code> is R was therefore checked
     against the <code class="lit">tree_root</code> of block R &minus; 8, not
@@ -499,8 +494,7 @@
     <code class="lit">tx_fee</code>, <code class="lit">tx_hash</code>,
     <code class="lit">tx_size</code>, <code class="lit">tx_version</code>,
     <code class="lit">unlock_time</code>, <code class="lit">xmr_inputs</code>,
-    <code class="lit">xmr_outputs</code>, and three keys xmrblocks does not
-    have: <code class="lit">reference_block</code>,
+    <code class="lit">xmr_outputs</code>, <code class="lit">reference_block</code>,
     <code class="lit">n_tree_layers</code> and
     <code class="lit">fcmp_pp_proof_size</code>.
   </p>
@@ -549,7 +543,7 @@
     <code class="lit">anonymity_set</code>.
   </p>
   <p>
-    <code class="lit">anonymity_set</code> is not in xmrblocks. It is how many
+    <code class="lit">anonymity_set</code> is how many
     outputs the curve tree held as of <code class="lit">reference_block</code>,
     which is how many outputs each FCMP++ input could be spending. It is
     <code class="lit">null</code> for a ring spend, for a transaction still in
@@ -576,8 +570,7 @@
     Each output carries <code class="lit">amount</code>,
     <code class="lit">public_key</code>, <code class="lit">view_tag</code>,
     <code class="lit">encrypted_janus_anchor</code> and
-    <code class="lit">unified_id</code>. The last three are not in
-    xmrblocks. <code class="lit">unified_id</code> is the output's place in the
+    <code class="lit">unified_id</code>. <code class="lit">unified_id</code> is the output's place in the
     one sequence of every output that the curve tree is built from, which a
     wallet uses to ask for the output's path. It is
     <code class="lit">null</code> for a transaction still in the pool. <code class="lit">public_key</code> is the one-time address,

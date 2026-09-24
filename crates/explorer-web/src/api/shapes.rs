@@ -315,9 +315,9 @@ impl TxDetail {
                 amount: o.amount,
                 // Legacy script outputs exist only in the pre-v1 era and carry
                 // no one-time key, so they render empty rather than inventing
-                // one. Every other target, Carrot's included, names its key;
-                // matching the variants here by hand is how Carrot outputs
-                // came to be published with an empty key.
+                // one. Every other target, Carrot's included, names its key
+                // through the target's own accessors, which the HTML pages
+                // share.
                 encrypted_janus_anchor: o.target.encrypted_janus_anchor().map(str::to_owned),
                 public_key: o.target.public_key().map(str::to_owned).unwrap_or_default(),
                 unified_id: unified_ids.get(i).copied(),
@@ -594,8 +594,7 @@ mod tests {
     }
 
     /// An FCMP++ transaction with Carrot outputs, through the same builder
-    /// `/api/transaction` uses. Before the output target learnt Carrot, every
-    /// output here was published with an empty `public_key`.
+    /// `/api/transaction` uses: every output publishes its one-time address.
     #[test]
     fn an_fcmp_pp_transaction_publishes_its_keys_and_an_empty_ring() {
         let entry: TxEntry = serde_json::from_value(serde_json::json!({

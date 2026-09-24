@@ -11,10 +11,9 @@
 //! tip-relative to excuse: `current_height` and `confirmations` must match
 //! exactly, and any difference at all is a real difference.
 //!
-//! With one exception: the keys in [`EXTENSIONS`], which oxblocks adds and
-//! xmrblocks has never had. They may appear on our side only. Every key
-//! xmrblocks does have must still be present and equal, so a client written
-//! against xmrblocks reads the same values it always did.
+//! The keys in [`FCMP_PP_KEYS`] carry FCMP++ and Carrot data, which the
+//! captures do not contain, so they are checked on the oxblocks side only.
+//! Every key the captures do contain must be present and equal.
 
 #![allow(
     clippy::unwrap_used,
@@ -42,9 +41,9 @@ fn load(rel: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{rel} is not JSON: {e}"))
 }
 
-/// Keys oxblocks emits beyond xmrblocks, for FCMP++ and Carrot. Named rather
-/// than waved through, so an extra key nobody meant to add still fails.
-const EXTENSIONS: &[&str] = &[
+/// The FCMP++ and Carrot keys. Named one by one, so any other key missing
+/// from the captures still fails.
+const FCMP_PP_KEYS: &[&str] = &[
     "anonymity_set",
     "encrypted_janus_anchor",
     "fcmp_pp_proof_size",
@@ -67,7 +66,7 @@ fn diff(ours: &Value, theirs: &Value, path: &str, out: &mut Vec<String>) {
                     (None, Some(y)) => {
                         out.push(format!("{path}/{k}: missing from ours (xmrblocks {y})"));
                     }
-                    (Some(_), None) if EXTENSIONS.contains(&k.as_str()) => {}
+                    (Some(_), None) if FCMP_PP_KEYS.contains(&k.as_str()) => {}
                     (Some(x), None) => out.push(format!("{path}/{k}: extra in ours ({x})")),
                     (None, None) => unreachable!("key came from one of the two maps"),
                 }
@@ -140,24 +139,24 @@ fn render_block(height: u64) -> Value {
 }
 
 #[test]
-fn a_block_with_a_ring_transaction_matches_xmrblocks() {
+fn a_block_with_a_ring_transaction_matches_its_capture() {
     assert_identical(&render_block(134_721), "block_134721.json");
 }
 
 #[test]
-fn a_block_with_a_seven_input_transaction_matches_xmrblocks() {
+fn a_block_with_a_seven_input_transaction_matches_its_capture() {
     assert_identical(&render_block(3_900), "block_3900.json");
 }
 
 #[test]
-fn a_coinbase_only_block_matches_xmrblocks() {
+fn a_coinbase_only_block_matches_its_capture() {
     assert_identical(&render_block(134_720), "block_coinbase_only.json");
 }
 
 /// `/api/blocks/<start>/<end>`, the k-anonymous block lookup. Its `data` is a
 /// bare **list** of single-block objects, not an object wrapping one.
 #[test]
-fn a_block_range_matches_xmrblocks() {
+fn a_block_range_matches_its_capture() {
     let blocks: Vec<Value> = (134_719..=134_721)
         .map(|h| render_block(h)["data"].clone())
         .collect();
@@ -166,7 +165,7 @@ fn a_block_range_matches_xmrblocks() {
 }
 
 #[test]
-fn a_ring_transaction_matches_xmrblocks() {
+fn a_ring_transaction_matches_its_capture() {
     use explorer_core::{Hash32, ResolvedInput, RingMember};
     use monerod_rpc::types::{GetOutsResponse, GetTransactionsResponse, TxIn};
 
@@ -242,10 +241,10 @@ fn unlock_time_is_present_and_carries_the_real_value() {
     );
 }
 
-/// The extensions are there, on every transaction object, and hold `null`
-/// on a chain from before FCMP++ rather than being left out.
+/// The FCMP++ keys are on every transaction object, and hold `null` on a chain
+/// from before FCMP++ rather than being left out.
 #[test]
-fn the_fcmp_pp_extensions_are_present_and_null_before_the_fork() {
+fn the_fcmp_pp_keys_are_present_and_null_before_the_fork() {
     let block = render_block(134_721);
     for tx in block["data"]["txs"].as_array().expect("txs is an array") {
         assert_eq!(tx.get("reference_block"), Some(&Value::Null));
@@ -253,10 +252,10 @@ fn the_fcmp_pp_extensions_are_present_and_null_before_the_fork() {
     }
 }
 
-/// The extensions filled from a real FCMP++ capture: the reference block and
+/// The FCMP++ keys filled from a real FCMP++ capture: the reference block and
 /// layer count from the proof, and each Carrot output's tag and anchor.
 #[test]
-fn a_captured_fcmp_pp_transaction_fills_the_extensions() {
+fn a_captured_fcmp_pp_transaction_fills_the_fcmp_pp_keys() {
     use monerod_rpc::types::GetTransactionsResponse;
 
     let fetched: GetTransactionsResponse =

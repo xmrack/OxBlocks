@@ -28,15 +28,10 @@
 //! grows only linearly, and it caps nesting well inside any stack. Callers
 //! also cap the body: [`crate::client::MAX_BINARY_RESPONSE_BYTES`].
 //!
-//! It is stricter than epee in some places and looser in others, and neither
-//! is by accident. It refuses what would make the kept values ambiguous or
-//! wrong -- an empty name, a bool other than 0 or 1, a repeated root key --
-//! and it refuses any array of arrays and any bytes after the root, which
-//! epee reads or ignores in a few forms but monerod never writes. Inside a
-//! value it skips, it does not repeat all of epee's checks: a repeated key in
-//! a nested section, or strings packed tighter than epee's size guard allows,
-//! pass. Nothing is kept from a skipped value, so nothing read here depends on
-//! them.
+//! What it refuses: an empty name, a bool other than 0 or 1, a repeated root
+//! key, any array of arrays, and bytes after the root. Inside a value it
+//! skips it checks framing only -- types, counts and lengths -- since nothing
+//! is kept from it.
 
 use std::collections::HashSet;
 
@@ -62,10 +57,8 @@ const FLAG_ARRAY: u8 = 0x80;
 
 /// Sections nested inside the root, at most.
 ///
-/// Tighter than epee's own guard, which counts every nested read call against
-/// a limit of 100 and so gives out at about 33 sections. The deepest answer
-/// this crate reads nests three: a path, inside a path entry, inside the
-/// root's list of them. Recursion is bounded by this and nothing else,
+/// The deepest answer this crate reads nests three: a path, inside a path
+/// entry, inside the root's list of them. Recursion is bounded by this and nothing else,
 /// because an array element this reader accepts is a scalar or a section.
 pub const MAX_DEPTH: usize = 32;
 
@@ -78,7 +71,7 @@ pub enum EpeeError {
     BadHeader,
     #[error("unknown entry type {0}")]
     UnknownType(u8),
-    #[error("an array of arrays, which epee does not read")]
+    #[error("an array of arrays")]
     NestedArray,
     #[error("a count of {0}, more than the body could hold")]
     ImpossibleCount(u64),
@@ -377,10 +370,9 @@ impl<'a> Reader<'a> {
             }
             TYPE_OBJECT => self.skip_section(depth + 1),
             // A bare "array" entry: a type byte of 13, then the array's own
-            // typed header. epee reads it, but monerod never writes one -- an
-            // array held in a field is written with the 0x80 flag -- and
-            // following it is how an array of arrays gets its depth, so it is
-            // refused.
+            // typed header. monerod writes an array held in a field with the
+            // 0x80 flag instead, and following this form is how an array of
+            // arrays gets its depth, so it is refused.
             TYPE_ARRAY => Err(EpeeError::NestedArray),
             other => Err(EpeeError::UnknownType(other)),
         }
@@ -532,12 +524,11 @@ mod tests {
 
     #[test]
     fn what_would_make_a_kept_value_wrong_is_refused() {
-        // An array of arrays, which epee's reader does not support. This was
-        // the shape that ran an earlier, recursive decoder off its stack.
+        // An array of arrays: nesting that recurses without a section, and so
+        // without the depth check.
         let nested = doc(1, &entry(b"x", TYPE_ARRAY | FLAG_ARRAY, &[1 << 2]));
         assert_eq!(read_root(&nested, &[]), Err(EpeeError::NestedArray));
-        // A bare array entry, which epee does read but monerod never writes.
-        // Refused here on purpose; see `skip_one`.
+        // A bare array entry, which monerod never writes. See `skip_one`.
         let bare = doc(1, &entry(b"x", TYPE_ARRAY, &[TYPE_UINT8 | FLAG_ARRAY, 0]));
         assert_eq!(read_root(&bare, &[]), Err(EpeeError::NestedArray));
 
@@ -616,8 +607,8 @@ mod tests {
         assert_eq!(read_root(&nested(100_000), &[]), Err(EpeeError::TooDeep));
     }
 
-    /// The shapes that cost an earlier decoder 48 seconds of CPU and 1.6 GB of
-    /// memory. Walked past, they cost one pass and nothing kept.
+    /// Wide bodies cost one pass and keep nothing: many root keys, and a long
+    /// array none of which is kept.
     #[test]
     fn wide_bodies_cost_one_pass() {
         // 200,000 distinct root keys.
