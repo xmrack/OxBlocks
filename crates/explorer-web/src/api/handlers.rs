@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use explorer_core::fmt::{decimal, timestamp_utc};
-use explorer_core::{BlockId, BlockIdError, ChainError, Hash32, RpcChainSource, unexpanded_inputs};
+use explorer_core::{
+    BlockId, BlockIdError, BlockTree, ChainError, Hash32, RpcChainSource, unexpanded_inputs,
+};
 use monerod_rpc::types::{BlockHeader, GetTxidsLooseRequest, TxEntry};
 use serde::Serialize;
 
@@ -136,7 +138,11 @@ pub async fn transaction(
         entry.block_height.saturating_add(entry.confirmations)
     };
 
-    Ok(ApiOk(TxDetail::build(entry, &tx, &rings, current_height)))
+    let mut detail = TxDetail::build(entry, &tx, &rings, current_height);
+    // Only this endpoint pays for the tree size: it is one daemon call, and
+    // the list endpoints would pay it once per transaction listed.
+    detail.anonymity_set = state.chain.anonymity_set(&tx, entry, current_height).await;
+    Ok(ApiOk(detail))
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +208,11 @@ async fn build_block_detail(state: &AppState, id: BlockId) -> Result<BlockDetail
         .await
         .map_err(|e| on_chain_error(&e, &block_not_found(id)))?;
 
-    Ok(block_detail(&got.block_header, &fetched.txs))
+    Ok(block_detail(
+        &got.block_header,
+        &fetched.txs,
+        BlockTree::of(&got).as_ref(),
+    ))
 }
 
 /// One block's API representation, from its header and its transactions.
@@ -212,7 +222,11 @@ async fn build_block_detail(state: &AppState, id: BlockId) -> Result<BlockDetail
 /// header rather than a whole `get_block`, because a range is answered from
 /// `get_block_headers_range` and never fetches the block body at all unless
 /// the block holds something.
-fn block_detail(header: &BlockHeader, entries: &[TxEntry]) -> BlockDetail {
+fn block_detail(
+    header: &BlockHeader,
+    entries: &[TxEntry],
+    tree: Option<&BlockTree>,
+) -> BlockDetail {
     let mut txs = Vec::with_capacity(entries.len());
     for entry in entries {
         match entry.parse_json() {
@@ -230,9 +244,11 @@ fn block_detail(header: &BlockHeader, entries: &[TxEntry]) -> BlockDetail {
         // reports current_height 3,765,613.
         current_height: header.height.saturating_add(header.depth).saturating_add(1),
         hash: normalise_hash(&header.hash),
+        n_tree_layers: tree.map(|t| t.n_layers),
         size: header.block_size,
         timestamp: header.timestamp,
         timestamp_utc: timestamp_utc(header.timestamp),
+        tree_root: tree.map(|t| t.root.clone()),
         txs,
     }
 }
@@ -1072,7 +1088,7 @@ pub async fn blocks_range(
     Ok(ApiOk(
         blocks
             .iter()
-            .map(|b| block_detail(&b.header, &b.txs))
+            .map(|b| block_detail(&b.header, &b.txs, b.tree.as_ref()))
             .collect(),
     ))
 }

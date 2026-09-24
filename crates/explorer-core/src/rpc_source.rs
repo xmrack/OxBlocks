@@ -8,7 +8,7 @@ use monerod_rpc::types::{
     FeeEstimate, GetAlternateChains, GetBlock, GetBlockHeader, GetBlockHeadersRange,
     GetBlockHeadersRangeRequest, GetBlockRequest, GetFeeEstimateRequest, GetInfo, GetOutsRequest,
     GetTransactionPool, GetTransactionPoolStats, GetTransactionsRequest, GetTxidsLooseRequest,
-    GetTxidsLooseResponse, OutKey, OutKeyRequest, TxEntry, TxInToKey, TxJson,
+    GetTxidsLooseResponse, OutKey, OutKeyRequest, TreeSizeQuery, TxEntry, TxInToKey, TxJson,
 };
 use monerod_rpc::{Client, RpcError};
 
@@ -63,6 +63,10 @@ pub struct RpcChainSource {
     /// The chain tip. Short-lived by nature, so it expires rather than being
     /// invalidated.
     info: Cache<(), GetInfo>,
+    /// Curve-tree sizes keyed by the block they were taken at, cached only once
+    /// that block is buried past [`REORG_WINDOW`]: a reorg gives a height a
+    /// different block, and with it a different tree.
+    tree_sizes: Cache<u64, u64>,
     /// Bounds how many RPC calls can be in flight against the daemon at once.
     ///
     /// The single choke point protecting the operator's node. Per-request
@@ -127,6 +131,29 @@ const MAX_TXS_PER_CALL: usize = 500;
 pub struct BlockWithTxs {
     pub header: monerod_rpc::types::BlockHeader,
     pub txs: Vec<TxEntry>,
+    /// The curve tree the block commits to, from its own JSON. `None` below
+    /// the FCMP++ fork, and when that JSON did not decode.
+    pub tree: Option<BlockTree>,
+}
+
+/// The curve tree a block commits to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockTree {
+    pub root: String,
+    pub n_layers: u8,
+}
+
+impl BlockTree {
+    /// Read from a fetched block. Both fields or neither: a root without its
+    /// layer count describes no tree anyone could check a proof against.
+    #[must_use]
+    pub fn of(block: &GetBlock) -> Option<Self> {
+        let body = block.parse_json().ok()?;
+        Some(Self {
+            root: body.fcmp_pp_tree_root?.to_lowercase(),
+            n_layers: body.fcmp_pp_n_tree_layers?,
+        })
+    }
 }
 
 /// Concurrent RPC calls allowed against the daemon.
@@ -151,6 +178,7 @@ impl RpcChainSource {
             // Long enough to collapse the several calls a single page makes,
             // short enough that the height on screen is never visibly stale.
             info: Cache::expiring(1, Duration::from_secs(5)),
+            tree_sizes: Cache::permanent(4096),
             rpc_permits: Arc::new(Semaphore::new(DEFAULT_MAX_INFLIGHT_RPC)),
             rpc_calls: Arc::new(AtomicU64::new(0)),
         }
@@ -196,6 +224,17 @@ impl RpcChainSource {
         self.client.endpoint(endpoint, body).await
     }
 
+    /// Call a binary endpoint, holding a permit for the duration.
+    async fn binary(
+        &self,
+        endpoint: &'static str,
+        fields: &[(&str, monerod_rpc::epee::Field<'_>)],
+    ) -> Result<monerod_rpc::epee::Section, RpcError> {
+        let _permit = self.permit().await;
+        self.rpc_calls.fetch_add(1, Ordering::Relaxed);
+        self.client.binary(endpoint, fields).await
+    }
+
     /// Acquire a permit for one call against the daemon.
     ///
     /// Returns `None` only if the semaphore has been closed, which this code
@@ -206,14 +245,54 @@ impl RpcChainSource {
     }
 
     /// Cache occupancy and hit counts, for `/health` and for tests.
-    pub fn cache_stats(&self) -> [(&'static str, crate::cache::Stats); 5] {
+    pub fn cache_stats(&self) -> [(&'static str, crate::cache::Stats); 6] {
         [
             ("blocks_by_hash", self.blocks_by_hash.stats()),
             ("blocks_by_height", self.blocks_by_height.stats()),
             ("txs", self.txs.stats()),
             ("outs", self.outs.stats()),
             ("info", self.info.stats()),
+            ("tree_sizes", self.tree_sizes.stats()),
         ]
+    }
+
+    /// How many outputs an FCMP++ transaction's inputs could each be spending:
+    /// the curve tree's size as of its reference block.
+    ///
+    /// `None` for a ring spend, for a transaction still in the pool (it has no
+    /// unified ids to probe with; see [`TreeSizeQuery`]), for one whose
+    /// reference block pruning took, and whenever the daemon cannot answer --
+    /// a daemon from before FCMP++ has no such endpoint. None of those is a
+    /// page failure, so none of them is an error.
+    ///
+    /// `chain_height` is the tip's height plus one, as `get_info` reports it,
+    /// and decides whether the answer is buried deep enough to keep.
+    pub async fn anonymity_set(
+        &self,
+        tx: &TxJson,
+        entry: &TxEntry,
+        chain_height: u64,
+    ) -> Option<u64> {
+        let reference = tx.reference_block()?;
+        if entry.in_pool {
+            return None;
+        }
+        if let Some(hit) = self.tree_sizes.get(&reference) {
+            return Some(*hit);
+        }
+        let probe = *entry.unified_ids.first()?;
+        let query = TreeSizeQuery::as_of_block(reference, probe)?;
+        let root = self
+            .binary(TreeSizeQuery::ENDPOINT, &query.fields())
+            .await
+            .map_err(|e| tracing::debug!("tree size as of {reference}: {e}"))
+            .ok()?;
+        let size = TreeSizeQuery::answer(&root)?;
+        let depth = chain_height.saturating_sub(reference.saturating_add(1));
+        if safe_to_cache_by_height(depth) {
+            self.tree_sizes.insert(reference, size);
+        }
+        Some(size)
     }
 
     pub async fn info(&self) -> Result<Arc<GetInfo>, ChainError> {
@@ -371,9 +450,15 @@ impl RpcChainSource {
     ) -> Result<Vec<BlockWithTxs>, ChainError> {
         let headers = self.headers_range(start, end).await?.headers;
 
+        // A block's body is fetched when it holds transactions, whose hashes
+        // only the body lists, and from the FCMP++ fork on, when its curve
+        // tree is in the body too. Below the fork a coinbase-only block still
+        // costs no call beyond the header range.
         let holding: Vec<u64> = headers
             .iter()
-            .filter(|h| h.num_txes > 0)
+            .filter(|h| {
+                h.num_txes > 0 || h.major_version >= monerod_rpc::types::HF_VERSION_FCMP_PLUS_PLUS
+            })
             .map(|h| h.height)
             .collect();
         let bodies =
@@ -415,6 +500,7 @@ impl RpcChainSource {
             .into_iter()
             .zip(wanted)
             .map(|(header, hashes)| BlockWithTxs {
+                tree: extra.get(&header.height).and_then(|b| BlockTree::of(b)),
                 header,
                 txs: hashes.iter().filter_map(|h| fetched.remove(h)).collect(),
             })
@@ -1247,6 +1333,43 @@ mod tests {
         let inputs = unexpanded_inputs(&fcmp_pp_tx());
         assert_eq!(inputs.len(), 2);
         assert!(inputs.iter().all(|i| !i.ring_unavailable));
+    }
+
+    /// The tree size is asked for only where it can be answered. A pool
+    /// transaction has no unified id to probe with, a ring spend has no tree,
+    /// and a pruned FCMP++ spend has no reference block; none of them may cost
+    /// a daemon call.
+    #[tokio::test]
+    async fn the_tree_size_is_not_asked_for_where_it_cannot_be_answered() {
+        let src = source();
+        let fcmp = fcmp_pp_tx();
+        let mut with_ref = fcmp.clone();
+        with_ref.rctsig_prunable = Some(monerod_rpc::types::RctSigPrunable {
+            reference_block: Some(120),
+            n_tree_layers: Some(2),
+            ..Default::default()
+        });
+
+        let mut pool = entry(hash(1));
+        pool.in_pool = true;
+        pool.unified_ids = vec![5];
+        assert_eq!(src.anonymity_set(&with_ref, &pool, 200).await, None);
+
+        // Pruned: FCMP++, but no reference block.
+        let mut mined = entry(hash(2));
+        mined.unified_ids = vec![5];
+        assert_eq!(src.anonymity_set(&fcmp, &mined, 200).await, None);
+
+        // A daemon that sent no unified ids.
+        let bare = entry(hash(3));
+        assert_eq!(src.anonymity_set(&with_ref, &bare, 200).await, None);
+
+        assert_eq!(src.rpc_calls(), 0);
+
+        // With everything in place the call is made, and an unreachable daemon
+        // reads as unknown rather than as an error.
+        assert_eq!(src.anonymity_set(&with_ref, &mined, 200).await, None);
+        assert_eq!(src.rpc_calls(), 1);
     }
 
     #[tokio::test]

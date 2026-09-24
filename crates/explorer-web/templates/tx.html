@@ -44,16 +44,27 @@
     so a coinbase shows no RingCT type at all.</p></details>
   </dd>
   {% if fcmp_pp %}
-  <dt>Anonymity set</dt><dd>Every output on the chain{% if let Some(r) = reference_block %}, as of block <a href="/block/{{ r }}">{{ r }}</a>{% endif %}{% if let Some(n) = n_tree_layers %} <span class="tag">{{ n }} tree layers</span>{% endif %}
+  <dt>Anonymity set</dt><dd>{% if let Some(count) = anonymity_set %}{{ count }} outputs{% else %}Every output on the chain{% endif %}{% if let Some(r) = reference_block %}, as of block <a href="/block/{{ r }}">{{ r }}</a>{% endif %}{% if let Some(n) = n_tree_layers %} <span class="tag">{{ n }} tree layers</span>{% endif %}
     <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
     <p>This transaction spends with FCMP++, so its inputs have no ring. Each
     input proves that it spends one of the outputs in a tree that holds every
     spendable output on the chain, and the proof does not say which. The
     anonymity set is that whole tree, not 16 outputs, so there are no decoys to
     list and no ages to compare. The block named here is the one whose tree
-    the proof was built against. A pruned node drops that number with the
-    rest of the proof.</p></details>
+    the proof was built against, and the count is how many outputs that
+    tree held then. A pruned node drops the block number with the rest of the
+    proof, and a transaction still in the pool has no count yet.</p></details>
   </dd>
+  {% if let Some(bytes) = proof_size %}
+  <dt>FCMP++ proof</dt><dd>{{ bytes }} bytes
+    <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
+    <p>The size of the proof that every input spends an output in the tree
+    and is authorised to. It is fixed by how many inputs the transaction has
+    and how many layers the tree had, so it says nothing about which outputs
+    were spent. It grows by a layer's worth of data each time the tree gains
+    a layer.</p></details>
+  </dd>
+  {% endif %}
   {% else %}
   <dt>Ring size</dt><dd>{% if coinbase %}&mdash;{% else %}{{ ring_size }}{% endif %}
     <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
@@ -213,11 +224,18 @@
     then wait to see whether the payment is acknowledged, and learn that the
     two addresses belong to the same person. Carrot added it. To anyone else it is random.</p></details>
   </div>{% endif %}
+  {% if has_unified_ids %}<div>Unified ID
+    <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
+    <p>The output's place in the single sequence of every output on the
+    chain, whatever its amount, that the FCMP++ tree is built from. A wallet
+    uses it to ask a node for the output's path through the tree, which it
+    needs to spend it. It is public: anyone can read it here.</p></details>
+  </div>{% endif %}
 </div>
 <div class="scroll">
 <table>
   <thead><tr><th class="num">#</th><th>Stealth address</th>
-    <th class="num">Amount</th>{% if has_view_tags %}<th>View tag</th>{% endif %}{% if carrot %}<th>Janus anchor</th>{% endif %}</tr></thead>
+    <th class="num">Amount</th>{% if has_view_tags %}<th>View tag</th>{% endif %}{% if carrot %}<th>Janus anchor</th>{% endif %}{% if has_unified_ids %}<th class="num">Unified ID</th>{% endif %}</tr></thead>
   <tbody>
   {% for o in outputs %}
     <tr>
@@ -226,6 +244,7 @@
       <td class="num">{% if let Some(amount) = o.amount %}{{ amount }}{% else %}<span class="tag">hidden</span>{% endif %}</td>
       {% if has_view_tags %}<td><code>{{ o.view_tag }}</code></td>{% endif %}
       {% if carrot %}<td><span class="hash">{{ o.anchor }}</span></td>{% endif %}
+      {% if has_unified_ids %}<td class="num">{% if let Some(id) = o.unified_id %}{{ id }}{% endif %}</td>{% endif %}
     </tr>
   {% endfor %}
   </tbody>

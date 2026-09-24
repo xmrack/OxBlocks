@@ -133,6 +133,11 @@ struct TxPage {
     /// spend whose prunable half this node no longer holds.
     reference_block: Option<u64>,
     n_tree_layers: Option<u8>,
+    /// The curve tree's size as of the reference block, digits grouped. `None`
+    /// wherever the API's `anonymity_set` is `null`.
+    anonymity_set: Option<String>,
+    /// The FCMP++ proof's length in bytes.
+    proof_size: Option<u64>,
     /// Any output is a Carrot output, which carries a three-byte view tag and
     /// an encrypted Janus anchor.
     carrot: bool,
@@ -142,6 +147,8 @@ struct TxPage {
     inputs: Vec<InputView>,
     outputs: Vec<OutputView>,
     has_view_tags: bool,
+    /// Every output has a unified id, which a pool transaction does not.
+    has_unified_ids: bool,
     extra: String,
     extra_fields: Vec<ExtraField>,
     extra_undecoded: bool,
@@ -335,6 +342,21 @@ struct OutputView {
     view_tag: String,
     /// The encrypted Janus anchor of a Carrot output, or empty.
     anchor: String,
+    unified_id: Option<u64>,
+}
+
+/// A count with its thousands separated, for a number a reader has to take in
+/// at a glance. The API publishes the bare integer.
+fn grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 struct ExtraField {
@@ -1029,6 +1051,14 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
 
     let f = TxFacts::from_entry(entry, &tx);
     let rings = state.chain.resolve_rings(&tx).await;
+    let anonymity_set = state
+        .chain
+        .anonymity_set(
+            &tx,
+            entry,
+            entry.block_height.saturating_add(entry.confirmations),
+        )
+        .await;
 
     // A transaction in the pool is in no block, so the time it carries is the
     // time it arrived: `block_timestamp` is 0 there and renders as 1970. The
@@ -1075,10 +1105,13 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
         .collect();
 
     let mut has_view_tags = false;
+    // Positional, so only when there is one per output.
+    let has_unified_ids = !tx.vout.is_empty() && entry.unified_ids.len() == tx.vout.len();
     let outputs = tx
         .vout
         .iter()
-        .map(|o| {
+        .enumerate()
+        .map(|(i, o)| {
             let (key, view_tag, anchor) = match &o.target {
                 TxOutTarget::Key(k) => (k.clone(), String::new(), String::new()),
                 TxOutTarget::TaggedKey(t) => {
@@ -1100,6 +1133,11 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
                 amount: visible_amount(o.amount),
                 view_tag,
                 anchor,
+                unified_id: if has_unified_ids {
+                    entry.unified_ids.get(i).copied()
+                } else {
+                    None
+                },
             }
         })
         .collect();
@@ -1166,6 +1204,8 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
             fcmp_pp: f.fcmp_pp.is_some(),
             reference_block: f.fcmp_pp.and_then(|x| x.reference_block),
             n_tree_layers: f.fcmp_pp.and_then(|x| x.n_tree_layers),
+            anonymity_set: anonymity_set.map(grouped),
+            proof_size: f.fcmp_pp.and_then(|x| x.proof_size),
             carrot: f.carrot,
             unlock_time: f.unlock_time,
             payment_id: f.payment_id_hex(),
@@ -1173,6 +1213,7 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
             inputs,
             outputs,
             has_view_tags,
+            has_unified_ids,
             extra: f.extra_hex(),
             extra_fields,
             extra_undecoded: !parsed.is_complete(),
@@ -2950,6 +2991,8 @@ mod tests {
             fcmp_pp: false,
             reference_block: None,
             n_tree_layers: None,
+            anonymity_set: None,
+            proof_size: None,
             carrot: false,
             unlock_time: 0,
             payment_id: String::new(),
@@ -2980,15 +3023,18 @@ mod tests {
                     amount: visible_amount(0),
                     view_tag: "94".to_owned(),
                     anchor: String::new(),
+                    unified_id: None,
                 },
                 OutputView {
                     public_key: "6".repeat(64),
                     amount: visible_amount(3_000_000_000_000),
                     view_tag: "d6".to_owned(),
                     anchor: String::new(),
+                    unified_id: None,
                 },
             ],
             has_view_tags: true,
+            has_unified_ids: false,
             extra: "01aa".to_owned(),
             extra_fields: Vec::new(),
             extra_undecoded: false,
@@ -3042,6 +3088,44 @@ mod tests {
             2
         );
         assert!(html.contains("RingCT type 7"));
+    }
+
+    /// With the tree's size known, the row gives the count; the proof size and
+    /// each output's unified id have rows and a column of their own.
+    #[test]
+    fn a_known_tree_size_is_the_anonymity_set_and_the_proof_has_a_size() {
+        let mut page = fcmp_tx_page();
+        page.anonymity_set = Some(grouped(1_234_567));
+        page.proof_size = Some(6_528);
+        page.has_unified_ids = true;
+        for (i, o) in page.outputs.iter_mut().enumerate() {
+            o.unified_id = Some(900 + i as u64);
+        }
+        let html = page.render().expect("renders");
+        assert!(
+            html.contains(r#"1,234,567 outputs, as of block <a href="/block/3012345">"#),
+            "{html}"
+        );
+        assert!(!html.contains("Every output on the chain,"));
+        assert!(html.contains("<dt>FCMP++ proof</dt><dd>6528 bytes"));
+        assert!(html.contains(r#"<th class="num">Unified ID</th>"#));
+        assert!(html.contains(r#"<td class="num">900</td>"#));
+        assert!(html.contains(r#"<td class="num">901</td>"#));
+
+        // Without them, none of it appears.
+        let bare = fcmp_tx_page().render().expect("renders");
+        assert!(bare.contains("Every output on the chain"));
+        assert!(!bare.contains("FCMP++ proof"));
+        assert!(!bare.contains("Unified ID"));
+    }
+
+    #[test]
+    fn counts_group_their_thousands() {
+        assert_eq!(grouped(0), "0");
+        assert_eq!(grouped(999), "999");
+        assert_eq!(grouped(1_000), "1,000");
+        assert_eq!(grouped(150_123_456), "150,123,456");
+        assert_eq!(grouped(u64::MAX), "18,446,744,073,709,551,615");
     }
 
     /// A pruned node knows the transaction is FCMP++ but not which tree it

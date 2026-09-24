@@ -45,9 +45,13 @@ fn load(rel: &str) -> Value {
 /// Keys oxblocks emits beyond xmrblocks, for FCMP++ and Carrot. Named rather
 /// than waved through, so an extra key nobody meant to add still fails.
 const EXTENSIONS: &[&str] = &[
+    "anonymity_set",
     "encrypted_janus_anchor",
+    "fcmp_pp_proof_size",
     "n_tree_layers",
     "reference_block",
+    "tree_root",
+    "unified_id",
     "view_tag",
 ];
 
@@ -122,9 +126,13 @@ fn render_block(height: u64) -> Value {
             "block_height": header.height,
             "current_height": header.height + header.depth + 1,
             "hash": header.hash,
+            // Every capture here is from before FCMP++, so the block has no
+            // tree and the handler answers null.
+            "n_tree_layers": null,
             "size": header.block_size,
             "timestamp": header.timestamp,
             "timestamp_utc": timestamp_utc(header.timestamp),
+            "tree_root": null,
             "txs": txs,
         },
         "status": "success",
@@ -267,6 +275,23 @@ fn a_captured_fcmp_pp_transaction_fills_the_extensions() {
         let reference = detail["reference_block"].as_u64().expect("a number");
         assert!(reference < entry.block_height);
         assert!(detail["n_tree_layers"].as_u64().is_some_and(|n| n >= 1));
+        let proof = tx.rctsig_prunable.as_ref().and_then(|p| p.fcmp_pp_len());
+        assert_eq!(
+            detail["fcmp_pp_proof_size"].as_u64(),
+            proof.map(|n| n as u64)
+        );
+        assert!(proof.is_some_and(|n| n > 0));
+        let ids: Vec<u64> = detail["outputs"]
+            .as_array()
+            .expect("outputs")
+            .iter()
+            .map(|o| {
+                o["unified_id"]
+                    .as_u64()
+                    .expect("a confirmed output has one")
+            })
+            .collect();
+        assert_eq!(ids, entry.unified_ids);
         for out in detail["outputs"].as_array().expect("outputs") {
             assert_eq!(out["view_tag"].as_str().map(str::len), Some(6));
             assert_eq!(

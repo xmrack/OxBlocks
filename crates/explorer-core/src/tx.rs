@@ -19,6 +19,9 @@ pub struct FcmpFacts {
     /// The height whose curve tree the inputs were proven against.
     pub reference_block: Option<u64>,
     pub n_tree_layers: Option<u8>,
+    /// The proof's length in bytes. It is fixed by the input count and the
+    /// layer count, so it grows as the tree does.
+    pub proof_size: Option<u64>,
 }
 
 /// Facts derived from a transaction, shared by every presentation of it.
@@ -115,6 +118,11 @@ impl TxFacts {
         let fcmp_pp = tx.is_fcmp_pp().then(|| FcmpFacts {
             reference_block: tx.reference_block(),
             n_tree_layers: tx.n_tree_layers(),
+            proof_size: tx
+                .rctsig_prunable
+                .as_ref()
+                .and_then(monerod_rpc::types::RctSigPrunable::fcmp_pp_len)
+                .map(|n| n as u64),
         });
         let carrot = tx.vout.iter().any(|o| o.target.is_carrot());
 
@@ -273,6 +281,7 @@ mod tests {
         t.rctsig_prunable = Some(monerod_rpc::types::RctSigPrunable {
             reference_block: Some(3_012_345),
             n_tree_layers: Some(6),
+            fcmp_pp: Some("ab".repeat(4256)),
             ..Default::default()
         });
         for o in &mut t.vout {
@@ -292,6 +301,7 @@ mod tests {
             Some(FcmpFacts {
                 reference_block: Some(3_012_345),
                 n_tree_layers: Some(6),
+                proof_size: Some(4256),
             })
         );
     }

@@ -7,9 +7,10 @@
   Every endpoint below is a <code class="lit">GET</code>. None of them needs a
   key, a header or a session. The response bodies carry every key that
   xmrblocks does, with the same values, so a client written for that explorer
-  reads these without changes. Transactions carry four keys more, for FCMP++
-  and Carrot, which xmrblocks has never had. They are listed under
-  <a href="#shape-txsummary">the transaction shapes</a>.
+  reads these without changes. Blocks and transactions carry more keys, for
+  FCMP++ and Carrot, which xmrblocks has never had. They are listed under
+  <a href="#shape-block">the block</a> and
+  <a href="#shape-txsummary">transaction</a> shapes.
 </p>
 
 <p>
@@ -247,7 +248,9 @@
     it costs none beyond the transaction itself.
   </p>
   <p>
-    Returns a <a href="#shape-txdetail">transaction detail object</a>. It also
+    Returns a <a href="#shape-txdetail">transaction detail object</a>, and is
+    the only endpoint that fills its <code class="lit">anonymity_set</code>:
+    for an FCMP++ transaction that costs one more daemon call. It also
     serves a transaction in the pool, which reports
     <code class="lit">block_height</code> 0,
     <code class="lit">confirmations</code> 0, and the time it arrived in place
@@ -466,6 +469,14 @@
     The explorer works it out from the depth of this block, so it costs no
     second call.
   </p>
+  <p>
+    Two keys xmrblocks does not have: <code class="lit">tree_root</code>, the
+    root of the curve tree the block commits to, in hex, and
+    <code class="lit">n_tree_layers</code>, the tree's layer count. Both are
+    <code class="lit">null</code> below the FCMP++ fork, whose block format
+    has no tree. An FCMP++ proof names the block whose tree it was built
+    against, and these are what it is checked against.
+  </p>
 </section>
 
 <section class="endpoint" id="shape-txsummary">
@@ -477,9 +488,10 @@
     <code class="lit">tx_fee</code>, <code class="lit">tx_hash</code>,
     <code class="lit">tx_size</code>, <code class="lit">tx_version</code>,
     <code class="lit">unlock_time</code>, <code class="lit">xmr_inputs</code>,
-    <code class="lit">xmr_outputs</code>, and two keys xmrblocks does not have:
-    <code class="lit">reference_block</code> and
-    <code class="lit">n_tree_layers</code>.
+    <code class="lit">xmr_outputs</code>, and three keys xmrblocks does not
+    have: <code class="lit">reference_block</code>,
+    <code class="lit">n_tree_layers</code> and
+    <code class="lit">fcmp_pp_proof_size</code>.
   </p>
   <p>
     <code class="lit">reference_block</code> is the height of the block whose
@@ -489,7 +501,9 @@
     Both sit in the prunable half of the transaction, so they are also
     <code class="lit">null</code> for an FCMP++ transaction that a pruned node
     no longer holds in full. Its <code class="lit">rct_type</code> still reads
-    7.
+    7. <code class="lit">fcmp_pp_proof_size</code> is the FCMP++ proof's
+    length in bytes, which the input count and the layer count fix, and it is
+    <code class="lit">null</code> in the same cases.
   </p>
   <p>
     <code class="lit">mixin</code> is the <strong>ring size</strong>, not the
@@ -517,7 +531,18 @@
     Everything in the summary, plus <code class="lit">block_height</code>,
     <code class="lit">confirmations</code>, <code class="lit">current_height</code>,
     <code class="lit">timestamp</code>, <code class="lit">timestamp_utc</code>,
-    <code class="lit">inputs</code> and <code class="lit">outputs</code>.
+    <code class="lit">inputs</code>, <code class="lit">outputs</code> and
+    <code class="lit">anonymity_set</code>.
+  </p>
+  <p>
+    <code class="lit">anonymity_set</code> is not in xmrblocks. It is how many
+    outputs the curve tree held as of <code class="lit">reference_block</code>,
+    which is how many outputs each FCMP++ input could be spending. It is
+    <code class="lit">null</code> for a ring spend, for a transaction still in
+    the pool, wherever <code class="lit">reference_block</code> is
+    <code class="lit">null</code>, on every endpoint but
+    <a href="#transaction">/api/transaction</a>, and when the daemon cannot
+    answer, as one from before FCMP++ cannot.
   </p>
   <p>
     <code class="lit">inputs</code> is <code class="lit">null</code> for a
@@ -534,9 +559,13 @@
   </p>
   <p>
     Each output carries <code class="lit">amount</code>,
-    <code class="lit">public_key</code>, <code class="lit">view_tag</code> and
-    <code class="lit">encrypted_janus_anchor</code>. The last two are not in
-    xmrblocks. <code class="lit">public_key</code> is the one-time address,
+    <code class="lit">public_key</code>, <code class="lit">view_tag</code>,
+    <code class="lit">encrypted_janus_anchor</code> and
+    <code class="lit">unified_id</code>. The last three are not in
+    xmrblocks. <code class="lit">unified_id</code> is the output's place in the
+    one sequence of every output that the curve tree is built from, which a
+    wallet uses to ask for the output's path. It is
+    <code class="lit">null</code> for a transaction still in the pool. <code class="lit">public_key</code> is the one-time address,
     Carrot's included. <code class="lit">view_tag</code> is two hex characters
     for an output from before Carrot and six for a Carrot output, and
     <code class="lit">null</code> for an output from before view tags.

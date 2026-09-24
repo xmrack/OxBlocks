@@ -53,6 +53,10 @@ pub struct ApiOutput {
     /// every output from before Carrot, which has none.
     pub encrypted_janus_anchor: Option<String>,
     pub public_key: String,
+    /// The output's place in the one sequence the curve tree is built over,
+    /// which a wallet uses to ask for the output's path. `null` for a
+    /// transaction still in the pool, and on a daemon from before FCMP++.
+    pub unified_id: Option<u64>,
     /// Two hex characters before Carrot and six from it. `null` for an output
     /// from before view tags, not `""`, which would read as a tag of no bytes.
     pub view_tag: Option<String>,
@@ -64,6 +68,9 @@ pub struct ApiOutput {
 pub struct TxSummary {
     pub coinbase: bool,
     pub extra: String,
+    /// The FCMP++ proof's length in bytes. `null` in the same cases as
+    /// `reference_block`.
+    pub fcmp_pp_proof_size: Option<u64>,
     pub mixin: u64,
     /// The curve tree's layer count when the FCMP++ proof was built. `null`
     /// in the same cases as `reference_block`.
@@ -90,11 +97,19 @@ pub struct TxSummary {
 /// `/api/transaction` — the shared keys plus seven more.
 #[derive(Debug, Clone, Serialize)]
 pub struct TxDetail {
+    /// How many outputs the curve tree held as of `reference_block`: the
+    /// number of outputs each FCMP++ input could be spending. `null` for a
+    /// ring spend, for a transaction still in the pool, where `reference_block`
+    /// is `null`, and when the daemon cannot say. Filled only by
+    /// `/api/transaction`, because it costs a daemon call.
+    pub anonymity_set: Option<u64>,
     pub block_height: u64,
     pub coinbase: bool,
     pub confirmations: u64,
     pub current_height: u64,
     pub extra: String,
+    /// See [`TxSummary::fcmp_pp_proof_size`].
+    pub fcmp_pp_proof_size: Option<u64>,
     /// `null`, not `[]`, for a coinbase transaction, which spends nothing.
     pub inputs: Option<Vec<ApiInput>>,
     pub mixin: u64,
@@ -123,11 +138,17 @@ pub struct BlockDetail {
     pub block_height: u64,
     pub current_height: u64,
     pub hash: String,
+    /// The curve tree's layer count, from the FCMP++ fork on; `null` below
+    /// it.
+    pub n_tree_layers: Option<u8>,
     /// Integer here. The *same* value is a JSON float in `/api/transactions`.
     /// On one block that is 95511 against 95511.0.
     pub size: u64,
     pub timestamp: u64,
     pub timestamp_utc: String,
+    /// The curve tree root this block commits to, hex, from the FCMP++ fork
+    /// on; `null` below it.
+    pub tree_root: Option<String>,
     pub txs: Vec<TxSummary>,
 }
 
@@ -150,6 +171,7 @@ impl TxSummary {
         Self {
             coinbase: f.coinbase,
             extra: f.extra_hex(),
+            fcmp_pp_proof_size: f.fcmp_pp.and_then(|x| x.proof_size),
             mixin: f.ring_size as u64,
             n_tree_layers: f.fcmp_pp.and_then(|x| x.n_tree_layers),
             payment_id: f.payment_id_hex(),
@@ -210,6 +232,7 @@ impl TxDetail {
             &entry.tx_hash,
             &TxFacts::from_entry(entry, tx),
             tx,
+            &entry.unified_ids,
             rings,
             &Placement::of(entry, current_height),
             current_height,
@@ -233,6 +256,7 @@ impl TxDetail {
             &info.id_hash,
             &TxFacts::from_pool(info, tx),
             tx,
+            &[],
             rings,
             &Placement::pool(info.receive_time),
             current_height,
@@ -243,6 +267,7 @@ impl TxDetail {
         hash: &str,
         f: &TxFacts,
         tx: &TxJson,
+        unified_ids: &[u64],
         rings: &[ResolvedInput],
         at: &Placement,
         current_height: u64,
@@ -275,10 +300,18 @@ impl TxDetail {
             )
         };
 
+        // Positional, so only when there is one per output: a short list could
+        // not say which output an id belongs to.
+        let unified: &[u64] = if unified_ids.len() == tx.vout.len() {
+            unified_ids
+        } else {
+            &[]
+        };
         let outputs = tx
             .vout
             .iter()
-            .map(|o| ApiOutput {
+            .enumerate()
+            .map(|(i, o)| ApiOutput {
                 amount: o.amount,
                 // Legacy script outputs exist only in the pre-v1 era and carry
                 // no one-time key, so they render empty rather than inventing
@@ -290,16 +323,19 @@ impl TxDetail {
                     _ => None,
                 },
                 public_key: o.target.public_key().map(str::to_owned).unwrap_or_default(),
+                unified_id: unified.get(i).copied(),
                 view_tag: o.target.view_tag().map(str::to_owned),
             })
             .collect();
 
         Self {
+            anonymity_set: None,
             block_height: at.block_height,
             coinbase: f.coinbase,
             confirmations: at.confirmations,
             current_height,
             extra: f.extra_hex(),
+            fcmp_pp_proof_size: f.fcmp_pp.and_then(|x| x.proof_size),
             inputs,
             mixin: f.ring_size as u64,
             n_tree_layers: f.fcmp_pp.and_then(|x| x.n_tree_layers),
@@ -422,6 +458,7 @@ mod tests {
         TxSummary {
             coinbase: false,
             extra: String::new(),
+            fcmp_pp_proof_size: None,
             mixin: 16,
             n_tree_layers: None,
             payment_id: String::new(),
@@ -440,11 +477,13 @@ mod tests {
 
     fn detail() -> TxDetail {
         TxDetail {
+            anonymity_set: None,
             block_height: 0,
             coinbase: false,
             confirmations: 0,
             current_height: 0,
             extra: String::new(),
+            fcmp_pp_proof_size: None,
             inputs: Some(vec![ApiInput {
                 amount: 0,
                 key_image: String::new(),
@@ -456,6 +495,7 @@ mod tests {
                 amount: 0,
                 encrypted_janus_anchor: None,
                 public_key: String::new(),
+                unified_id: None,
                 view_tag: None,
             }],
             payment_id: String::new(),
@@ -493,6 +533,7 @@ mod tests {
                 amount: 0,
                 encrypted_janus_anchor: Some(String::new()),
                 public_key: String::new(),
+                unified_id: Some(0),
                 view_tag: Some(String::new()),
             }),
             "ApiOutput",
@@ -504,9 +545,11 @@ mod tests {
                 block_height: 0,
                 current_height: 0,
                 hash: String::new(),
+                n_tree_layers: Some(2),
                 size: 0,
                 timestamp: 0,
                 timestamp_utc: String::new(),
+                tree_root: Some(String::new()),
                 txs: vec![summary()],
             }),
             "BlockDetail",
@@ -531,18 +574,25 @@ mod tests {
             keys.iter().any(|k| k == "inputs") && keys.iter().any(|k| k == "outputs"),
             "the containing fields themselves were missed"
         );
-        assert_eq!(keys.len(), 22, "TxDetail has 22 fields of its own");
+        assert_eq!(keys.len(), 24, "TxDetail has 24 fields of its own");
 
         // A value that happens to be a string must not be read as a key.
         let probe = ApiOutput {
             amount: 0,
             encrypted_janus_anchor: None,
             public_key: "not_a_key".to_owned(),
+            unified_id: None,
             view_tag: None,
         };
         assert_eq!(
             declared_keys(&probe),
-            vec!["amount", "encrypted_janus_anchor", "public_key", "view_tag"]
+            vec![
+                "amount",
+                "encrypted_janus_anchor",
+                "public_key",
+                "unified_id",
+                "view_tag"
+            ]
         );
     }
 
@@ -585,6 +635,12 @@ mod tests {
         let summary = TxSummary::build(&entry, &tx);
         assert_eq!(summary.reference_block, Some(3_012_390));
         assert_eq!(summary.n_tree_layers, Some(6));
+
+        // Filled by the handler, which pays the daemon call for it.
+        assert_eq!(detail.anonymity_set, None);
+        // No proof in this document, and no unified ids on this entry.
+        assert_eq!(detail.fcmp_pp_proof_size, None);
+        assert_eq!(detail.outputs[0].unified_id, None);
         let inputs = detail.inputs.as_ref().expect("a spend lists its inputs");
         assert_eq!(inputs.len(), 1);
         assert_eq!(
