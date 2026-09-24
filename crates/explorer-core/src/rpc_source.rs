@@ -622,6 +622,15 @@ impl RpcChainSource {
     /// `join_all` preserves order, which ring display depends on: ring `n`
     /// must belong to input `n`.
     pub async fn resolve_rings(&self, tx: &TxJson) -> Vec<ResolvedInput> {
+        // An FCMP++ input proves it spends one of every output on the chain.
+        // There is no ring to fetch, and nothing was refused, so the answer is
+        // complete without asking the daemon anything. Checked by type rather
+        // than left to the empty offset lists below, which would also reach no
+        // daemon but only by way of a fallback written for a different case.
+        if tx.is_fcmp_pp() {
+            return ringless_inputs(tx);
+        }
+
         let inputs: Vec<&TxInToKey> = tx
             .vin
             .iter()
@@ -751,8 +760,15 @@ fn newest_first(txs: &mut [monerod_rpc::types::PoolTxInfo]) {
 /// `"inputs": []` for a transaction that spends something is not an
 /// abbreviation of the truth, it is a different claim, and it contradicts the
 /// `"coinbase": false` sitting beside it.
+///
+/// An FCMP++ transaction is the exception: its inputs have no ring to
+/// withhold, so they are reported as complete and empty rather than as
+/// unavailable.
 #[must_use]
 pub fn unexpanded_inputs(tx: &TxJson) -> Vec<ResolvedInput> {
+    if tx.is_fcmp_pp() {
+        return ringless_inputs(tx);
+    }
     tx.vin
         .iter()
         .filter_map(|input| match input {
@@ -761,6 +777,23 @@ pub fn unexpanded_inputs(tx: &TxJson) -> Vec<ResolvedInput> {
                 key_image: k.k_image.parse().unwrap_or(Hash32::ZERO),
                 ring: Vec::new(),
                 ring_unavailable: true,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The inputs of an FCMP++ transaction: amount and key image, no ring, and
+/// nothing unavailable.
+fn ringless_inputs(tx: &TxJson) -> Vec<ResolvedInput> {
+    tx.vin
+        .iter()
+        .filter_map(|input| match input {
+            monerod_rpc::types::TxIn::Key(k) => Some(ResolvedInput {
+                amount: k.amount,
+                key_image: k.k_image.parse().unwrap_or(Hash32::ZERO),
+                ring: Vec::new(),
+                ring_unavailable: false,
             }),
             _ => None,
         })
@@ -1178,6 +1211,44 @@ mod tests {
 
     /// An unreachable daemon marks the ring unavailable rather than erroring
     /// the page or silently rendering an empty ring as though it were real.
+    fn fcmp_pp_tx() -> TxJson {
+        serde_json::from_value(serde_json::json!({
+            "version": 2, "unlock_time": 0,
+            "vin": [
+                {"key": {"amount": 0, "key_offsets": [], "k_image": "aa".repeat(32)}},
+                {"key": {"amount": 0, "key_offsets": [], "k_image": "bb".repeat(32)}},
+            ],
+            "vout": [], "extra": [],
+            "rct_signatures": {"type": 7, "txnFee": 1},
+        }))
+        .expect("an FCMP++ transaction")
+    }
+
+    /// An FCMP++ input has no ring, so resolving one must not reach the
+    /// daemon. The source here points at a port nothing listens on: a call
+    /// would come back unavailable, and the count would move.
+    #[tokio::test]
+    async fn an_fcmp_pp_transaction_resolves_without_asking_the_daemon() {
+        let src = source();
+        let resolved = src.resolve_rings(&fcmp_pp_tx()).await;
+        assert_eq!(resolved.len(), 2, "every input is still listed");
+        for r in &resolved {
+            assert!(r.ring.is_empty());
+            assert!(!r.ring_unavailable, "nothing was refused");
+        }
+        assert_eq!(resolved[1].key_image, "bb".repeat(32).parse().unwrap());
+        assert_eq!(src.rpc_calls(), 0);
+    }
+
+    /// The k-anonymous endpoint withholds rings, but an FCMP++ input has none
+    /// to withhold. Reporting it unavailable would claim a lookup was skipped.
+    #[test]
+    fn an_unexpanded_fcmp_pp_input_is_complete_not_withheld() {
+        let inputs = unexpanded_inputs(&fcmp_pp_tx());
+        assert_eq!(inputs.len(), 2);
+        assert!(inputs.iter().all(|i| !i.ring_unavailable));
+    }
+
     #[tokio::test]
     async fn an_unreachable_daemon_marks_the_ring_unavailable() {
         let input = TxInToKey {

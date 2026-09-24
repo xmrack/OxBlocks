@@ -21,5 +21,5 @@ pub use hash::{Hash32, HashParseError};
 pub use rpc_source::{
     BlockWithTxs, DEFAULT_MAX_INFLIGHT_RPC, FetchedTxs, RpcChainSource, unexpanded_inputs,
 };
-pub use tx::TxFacts;
+pub use tx::{FcmpFacts, TxFacts};
 pub use tx_extra::{ParsedTxExtra, PaymentId8, TxExtraField};
