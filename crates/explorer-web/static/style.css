@@ -434,7 +434,7 @@ dl.kv.spaced { margin-top: 0.8rem; }
 .curve-tree .bar.root { opacity: 1; }
 .curve-tree .bar.leaf { opacity: 0.32; }
 .curve-tree .cut { stroke: var(--bg-raised); stroke-width: 1.5; }
-.curve-tree .label { fill: var(--fg-muted); font-size: 13px; }
+.curve-tree .label { fill: var(--accent); font-size: 13px; }
 .curve-tree .curve { fill: var(--fg-faint); }
 .curve-tree .count { fill: var(--fg-muted); font-size: 13px; font-variant-numeric: tabular-nums; }
 .curve-tree .root-hash {

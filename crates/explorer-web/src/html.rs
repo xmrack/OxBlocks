@@ -3336,7 +3336,9 @@ mod tests {
         );
         assert!(html.contains(r#"<polygon class="web" points="395,28 405,28 650,44 150,44"/>"#));
         assert!(html.contains(r#"<line class="cut" x1="172" y1="44" x2="172" y2="58"/>"#));
-        assert!(html.contains(r#"<tspan class="curve"> · Selene</tspan>"#));
+        assert!(html.contains(
+            r#"<text class="label" x="0" y="26">Root<tspan class="curve"> · Selene</tspan>"#
+        ));
         assert!(html.contains(r#"text-anchor="end">22</text>"#));
         assert!(html.contains(">abababababababab…</text>"));
         assert!(
