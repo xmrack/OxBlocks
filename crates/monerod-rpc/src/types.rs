@@ -26,6 +26,13 @@
 //! and need a second parse. See [`BlockJson`] and [`TxJson`], and note that the
 //! string can be empty: [`NestedJsonError::Absent`].
 //!
+//! The FCMP++ and Carrot hard fork (version 17) is described too, as the
+//! `fcmp++-beta-stressnet-v3` branch of monerod writes it. It adds a `carrot_v1`
+//! output target, RingCT type 7 with its proof in `rctsig_prunable`, inputs
+//! with no ring, two curve-tree fields on the block, and `unified_ids` beside
+//! `output_indices`. Every addition is optional on the Rust side, so the same
+//! types still read a daemon that has never heard of the fork.
+//!
 //! Request types live here too, and several of them hide their fields. That is
 //! deliberate: the traps in this protocol are almost all "a field you did not
 //! set defaulted to something that silently returns the wrong data" (see
@@ -411,6 +418,17 @@ pub struct BlockJson {
     /// serializer keeps empty arrays, unlike epee.
     #[serde(default)]
     pub tx_hashes: Vec<String>,
+    /// From hard fork 17 only; absent below it, because the block format
+    /// itself gains the field at the fork. The curve tree's layer count, which
+    /// with the root below lets a light client check an FCMP++ proof without
+    /// the tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fcmp_pp_n_tree_layers: Option<u8>,
+    /// From hard fork 17 only. The root of the curve tree this block commits
+    /// to, hex. An output joins the tree when it unlocks rather than when it
+    /// is mined, so the root does not cover the outputs of this block itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fcmp_pp_tree_root: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -662,6 +680,13 @@ pub struct TxEntry {
     pub block_timestamp: u64,
     #[serde(default)]
     pub output_indices: Vec<u64>,
+    /// One per output, like `output_indices`, from a daemon built with FCMP++.
+    /// The output's place in the single sequence the curve tree is built over,
+    /// which covers every output on the chain whatever its amount -- unlike
+    /// `output_indices`, which counts within one denomination. Absent from an
+    /// older daemon, and absent (not empty) whenever `output_indices` is.
+    #[serde(default)]
+    pub unified_ids: Vec<u64>,
 
     // Present only when `in_pool` is true.
     #[serde(default)]
@@ -1175,7 +1200,7 @@ fn parse_nested_json<T: serde::de::DeserializeOwned>(raw: &str) -> Result<T, Nes
 }
 
 /// A decoded transaction, total across every era of the chain: v1 pre-RingCT
-/// through BulletproofPlus, pruned and complete, coinbase and not.
+/// through BulletproofPlus and FCMP++, pruned and complete, coinbase and not.
 ///
 /// Modelled as one flat struct with optional halves rather than as an untagged
 /// enum. The variant is chosen by a *sibling scalar* (`version`, then `type`),
@@ -1224,6 +1249,37 @@ impl TxJson {
         self.version <= 1
     }
 
+    /// Whether this transaction spends with FCMP++ rather than with rings.
+    ///
+    /// Read from the RingCT type, not from empty `key_offsets`: a malformed
+    /// ring-era input with no offsets is not an FCMP++ spend, and an FCMP++
+    /// coinbase does not exist (a coinbase is type 0 in every era).
+    #[must_use]
+    pub fn is_fcmp_pp(&self) -> bool {
+        self.rct_type() == Some(RctType::FcmpPlusPlus)
+    }
+
+    /// The FCMP++ reference block, or `None` for a ring-era transaction and
+    /// for an FCMP++ one whose prunable half this node no longer holds: the
+    /// field is in `rctsig_prunable`, so pruning takes it.
+    #[must_use]
+    pub fn reference_block(&self) -> Option<u64> {
+        if !self.is_fcmp_pp() {
+            return None;
+        }
+        self.rctsig_prunable.as_ref()?.reference_block
+    }
+
+    /// The curve tree's layer count the FCMP++ proof was built for. `None` in
+    /// the same cases as [`TxJson::reference_block`].
+    #[must_use]
+    pub fn n_tree_layers(&self) -> Option<u8> {
+        if !self.is_fcmp_pp() {
+            return None;
+        }
+        self.rctsig_prunable.as_ref()?.n_tree_layers
+    }
+
     /// The RingCT type, or `None` for a v1 transaction.
     ///
     /// Returning `None` rather than `RctType::Null` keeps "pre-RingCT" and "a
@@ -1239,7 +1295,7 @@ impl TxJson {
     /// transaction's RingCT type.
     ///
     /// They live in `rct_signatures` for type 2 and in `rctsig_prunable` for
-    /// types 3 through 6, and do not exist at all for type 1. Looking in only
+    /// types 3 through 7, and do not exist at all for type 1. Looking in only
     /// one place silently yields nothing for half of the chain's history.
     #[must_use]
     pub fn pseudo_outs(&self) -> &[String] {
@@ -1254,7 +1310,8 @@ impl TxJson {
                 RctType::Bulletproof
                 | RctType::Bulletproof2
                 | RctType::Clsag
-                | RctType::BulletproofPlus,
+                | RctType::BulletproofPlus
+                | RctType::FcmpPlusPlus,
             ) => self
                 .rctsig_prunable
                 .as_ref()
@@ -1395,6 +1452,10 @@ pub struct TxInToKey {
     pub amount: u64,
     /// **Relative** offsets. Member `i` sits at `sum(key_offsets[0..=i])`; only
     /// the first is absolute. See [`TxInToKey::ring_members`].
+    ///
+    /// Present and **empty** for every input of an FCMP++ transaction (RingCT
+    /// type 7). Such an input spends one of every output on the chain, not one
+    /// of a ring, so there are no members to name.
     pub key_offsets: Vec<u64>,
     pub k_image: String,
 }
@@ -1442,17 +1503,26 @@ pub struct TxOut {
 
 /// An output target.
 ///
-/// The two live variants nest differently, which is the trap: `key`'s body is a
+/// The live variants nest differently, which is the trap: `key`'s body is a
 /// bare hex string because the C++ type is blob-serialized, while
-/// `tagged_key`'s body is an object. A `struct { key: String }` parses every
-/// pre-view-tag output and then fails on everything after mainnet height
-/// 2689608.
+/// `tagged_key`'s and `carrot_v1`'s bodies are objects. A `struct { key:
+/// String }` parses every pre-view-tag output and then fails on everything
+/// after mainnet height 2689608.
+///
+/// `carrot_v1` is the FCMP++ fork's output (hard fork 17). It took over wire
+/// tag `0x01`, which `scripthash` held with zero chain occurrences, so monerod
+/// built from the FCMP++ branch no longer emits `scripthash` for an output at
+/// all. The variant is kept here so that an older daemon's answer still
+/// parses. Before this variant existed, every transaction in a post-fork block
+/// failed to decode, and the block page dropped them silently.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TxOutTarget {
     #[serde(rename = "key")]
     Key(String),
     #[serde(rename = "tagged_key")]
     TaggedKey(TaggedKey),
+    #[serde(rename = "carrot_v1")]
+    CarrotV1(CarrotV1),
     #[serde(rename = "script")]
     Script(serde_json::Value),
     #[serde(rename = "scripthash")]
@@ -1466,17 +1536,26 @@ impl TxOutTarget {
         match self {
             Self::Key(k) => Some(k),
             Self::TaggedKey(t) => Some(&t.key),
+            Self::CarrotV1(c) => Some(&c.key),
             _ => None,
         }
     }
 
-    /// The view tag, if this output has one.
+    /// The view tag, if this output has one. One byte before Carrot and three
+    /// bytes from it, so two or six hex characters.
     #[must_use]
     pub fn view_tag(&self) -> Option<&str> {
         match self {
             Self::TaggedKey(t) => Some(&t.view_tag),
+            Self::CarrotV1(c) => Some(&c.view_tag),
             _ => None,
         }
+    }
+
+    /// Whether this is a Carrot output.
+    #[must_use]
+    pub const fn is_carrot(&self) -> bool {
+        matches!(self, Self::CarrotV1(_))
     }
 }
 
@@ -1485,6 +1564,24 @@ pub struct TaggedKey {
     pub key: String,
     /// One byte, so exactly two hex characters.
     pub view_tag: String,
+}
+
+/// `txout_to_carrot_v1`.
+///
+/// The amount commitment and the encrypted amount are not here. They sit in
+/// `rct_signatures` (`outPk` and `ecdhInfo`), as they do for every RingCT
+/// output, which lets a coinbase and an ordinary transaction share this one
+/// output type.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CarrotV1 {
+    /// The one-time address `K_o`.
+    pub key: String,
+    /// Three bytes, so exactly six hex characters.
+    pub view_tag: String,
+    /// The Janus anchor, encrypted: 16 bytes, so 32 hex characters. The
+    /// recipient decrypts it to check that the sender did not build the output
+    /// against a different address of theirs.
+    pub encrypted_janus_anchor: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -1507,6 +1604,11 @@ pub enum RctType {
     Bulletproof2,
     Clsag,
     BulletproofPlus,
+    /// FCMP++, from hard fork 17. Bulletproofs+ still prove the ranges; what
+    /// changes is the spend proof. Each input proves membership in the set of
+    /// every output on the chain rather than in a ring of 16, so an input has
+    /// no `key_offsets` and there are no ring members to look up.
+    FcmpPlusPlus,
     /// A scheme this build does not know. Kept rather than rejected so that a
     /// future fork degrades instead of failing to parse.
     Unknown(u8),
@@ -1523,6 +1625,7 @@ impl RctType {
             4 => Self::Bulletproof2,
             5 => Self::Clsag,
             6 => Self::BulletproofPlus,
+            7 => Self::FcmpPlusPlus,
             other => Self::Unknown(other),
         }
     }
@@ -1537,6 +1640,7 @@ impl RctType {
             Self::Bulletproof2 => 4,
             Self::Clsag => 5,
             Self::BulletproofPlus => 6,
+            Self::FcmpPlusPlus => 7,
             Self::Unknown(other) => other,
         }
     }
@@ -1546,9 +1650,11 @@ impl RctType {
     pub const fn pseudo_outs_location(self) -> PseudoOutsLocation {
         match self {
             Self::Simple => PseudoOutsLocation::Base,
-            Self::Bulletproof | Self::Bulletproof2 | Self::Clsag | Self::BulletproofPlus => {
-                PseudoOutsLocation::Prunable
-            }
+            Self::Bulletproof
+            | Self::Bulletproof2
+            | Self::Clsag
+            | Self::BulletproofPlus
+            | Self::FcmpPlusPlus => PseudoOutsLocation::Prunable,
             Self::Null | Self::Full | Self::Unknown(_) => PseudoOutsLocation::Absent,
         }
     }
@@ -1559,7 +1665,9 @@ impl RctType {
     pub const fn ecdh_form(self) -> Option<EcdhForm> {
         match self {
             Self::Full | Self::Simple | Self::Bulletproof => Some(EcdhForm::Full),
-            Self::Bulletproof2 | Self::Clsag | Self::BulletproofPlus => Some(EcdhForm::Compact),
+            Self::Bulletproof2 | Self::Clsag | Self::BulletproofPlus | Self::FcmpPlusPlus => {
+                Some(EcdhForm::Compact)
+            }
             Self::Null | Self::Unknown(_) => None,
         }
     }
@@ -1584,7 +1692,7 @@ pub struct RctSigBase {
     pub rct_type: u8,
     #[serde(default, rename = "txnFee", skip_serializing_if = "Option::is_none")]
     pub txn_fee: Option<u64>,
-    /// Present here for type 2 only; types 3 to 6 put it in `rctsig_prunable`.
+    /// Present here for type 2 only; types 3 to 7 put it in `rctsig_prunable`.
     /// Use [`TxJson::pseudo_outs`] rather than reaching in.
     #[serde(
         default,
@@ -1611,14 +1719,14 @@ impl RctSigBase {
 pub enum EcdhForm {
     /// Types 1, 2, 3: `{"mask": <64 hex>, "amount": <64 hex>}`.
     Full,
-    /// Types 4, 5, 6: `{"amount": <16 hex>}`, with `mask` gone — the key is
+    /// Types 4 to 7: `{"amount": <16 hex>}`, with `mask` gone — the key is
     /// absent, not null, and the amount is 8 bytes rather than 32.
     Compact,
 }
 
 /// Hex width of a 32-byte `ecdhInfo` amount (types 1, 2, 3).
 pub const ECDH_FULL_HEX_LEN: usize = 64;
-/// Hex width of the truncated 8-byte `ecdhInfo` amount (types 4, 5, 6).
+/// Hex width of the truncated 8-byte `ecdhInfo` amount (types 4 to 7).
 pub const ECDH_COMPACT_HEX_LEN: usize = 16;
 
 /// One `ecdhInfo` element.
@@ -1665,7 +1773,7 @@ impl EcdhInfo {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RctSigPrunable {
     /// Number of bulletproofs. A **number**, not an array — present for types 3
-    /// to 6 and absent for types 1 and 2, which emit `rangeSigs` instead. It
+    /// to 7 and absent for types 1 and 2, which emit `rangeSigs` instead. It
     /// can exceed 1: pre-padding wallets emitted several proofs per
     /// transaction, so `bp[0]` is not necessarily the whole proof set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1676,7 +1784,7 @@ pub struct RctSigPrunable {
     /// Bulletproofs — types 3, 4, 5.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bp: Option<Vec<Bulletproof>>,
-    /// Bulletproof+ — type 6.
+    /// Bulletproof+ — types 6 and 7.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bpp: Option<Vec<BulletproofPlus>>,
     /// MLSAGs — types 1, 2, 3, 4.
@@ -1685,13 +1793,40 @@ pub struct RctSigPrunable {
     /// CLSAGs — types 5, 6.
     #[serde(default, rename = "CLSAGs", skip_serializing_if = "Option::is_none")]
     pub clsags: Option<Vec<Clsag>>,
-    /// Types 3 to 6 only. Use [`TxJson::pseudo_outs`].
+    /// FCMP++ — type 7. The block whose curve tree the proof was built
+    /// against: the transaction proves that each input spends one of the
+    /// outputs in that tree, and the verifier reads the tree root as of this
+    /// block. A height, not a hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_block: Option<u64>,
+    /// FCMP++ — type 7. The curve tree's layer count as of `reference_block`.
+    /// Stored although it could be derived, because the proof's length depends
+    /// on it and deserializing the proof must not need a database read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_tree_layers: Option<u8>,
+    /// FCMP++ — type 7. One flat hex blob: the membership proof for every
+    /// input at once, preceded by each input's re-randomized tuple and its
+    /// spend-authorization proof. Its length is fixed by the input count and
+    /// `n_tree_layers`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fcmp_pp: Option<String>,
+    /// Types 3 to 7 only. Use [`TxJson::pseudo_outs`].
     #[serde(
         default,
         rename = "pseudoOuts",
         skip_serializing_if = "Option::is_none"
     )]
     pub pseudo_outs: Option<Vec<String>>,
+}
+
+impl RctSigPrunable {
+    /// Byte length of the FCMP++ proof, or `None` where there is none or its
+    /// hex is odd-length.
+    #[must_use]
+    pub fn fcmp_pp_len(&self) -> Option<usize> {
+        let hex = self.fcmp_pp.as_deref()?;
+        hex.len().is_multiple_of(2).then_some(hex.len() / 2)
+    }
 }
 
 /// A Borromean range proof. Both members are blob-serialized, so they are two
@@ -1857,6 +1992,7 @@ mod tests {
             RctType::Bulletproof2,
             RctType::Clsag,
             RctType::BulletproofPlus,
+            RctType::FcmpPlusPlus,
         ] {
             assert_eq!(t.pseudo_outs_location(), PseudoOutsLocation::Prunable);
         }
@@ -1880,16 +2016,17 @@ mod tests {
             RctType::BulletproofPlus.ecdh_form(),
             Some(EcdhForm::Compact)
         );
+        assert_eq!(RctType::FcmpPlusPlus.ecdh_form(), Some(EcdhForm::Compact));
         assert_eq!(RctType::Null.ecdh_form(), None);
     }
 
     #[test]
     fn unknown_rct_type_round_trips_rather_than_being_rejected() {
-        let t = RctType::from_raw(7);
-        assert_eq!(t, RctType::Unknown(7));
-        assert_eq!(t.to_raw(), 7);
+        let t = RctType::from_raw(8);
+        assert_eq!(t, RctType::Unknown(8));
+        assert_eq!(t.to_raw(), 8);
         assert_eq!(t.ecdh_form(), None);
-        for raw in 0u8..=6 {
+        for raw in 0u8..=7 {
             assert_eq!(RctType::from_raw(raw).to_raw(), raw);
         }
     }
@@ -2033,11 +2170,11 @@ mod tests {
         let raw = r#"{"version":2,"unlock_time":0,
              "vin":[{"key":{"amount":0,"key_offsets":[1,2],"k_image":"aa"}}],
              "vout":[],"extra":[],
-             "rct_signatures":{"type":7},
+             "rct_signatures":{"type":8},
              "rctsig_prunable":{"pseudoOuts":["a"]}}"#;
         let tx: TxJson = serde_json::from_str(raw).expect("parses");
 
-        assert_eq!(tx.rct_type(), Some(RctType::Unknown(7)));
+        assert_eq!(tx.rct_type(), Some(RctType::Unknown(8)));
         assert_eq!(
             tx.pseudo_outs(),
             ["a".to_owned()],
@@ -2051,7 +2188,7 @@ mod tests {
         let raw = r#"{"version":2,"unlock_time":0,
              "vin":[{"key":{"amount":0,"key_offsets":[1],"k_image":"aa"}}],
              "vout":[],"extra":[],
-             "rct_signatures":{"type":7},
+             "rct_signatures":{"type":8},
              "rctsig_prunable":{}}"#;
         let tx: TxJson = serde_json::from_str(raw).expect("parses");
         assert!(tx.pseudo_outs().is_empty());
@@ -2255,6 +2392,25 @@ mod tests {
         .unwrap();
         assert_eq!(tagged.target.public_key(), Some("57048229"));
         assert_eq!(tagged.target.view_tag(), Some("9f"));
+        assert!(!tagged.target.is_carrot());
+    }
+
+    /// The FCMP++ fork's output. Before this variant existed the whole
+    /// transaction failed to parse, and with it every post-fork block's list.
+    #[test]
+    fn a_carrot_output_parses_and_answers_like_the_others() {
+        let carrot: TxOut = serde_json::from_str(
+            r#"{"amount":0,"target":{"carrot_v1":{"key":"8f3b62c1","view_tag":"a1b2c3",
+                "encrypted_janus_anchor":"00112233445566778899aabbccddeeff"}}}"#,
+        )
+        .unwrap();
+        assert!(carrot.target.is_carrot());
+        assert_eq!(carrot.target.public_key(), Some("8f3b62c1"));
+        assert_eq!(carrot.target.view_tag(), Some("a1b2c3"));
+        let TxOutTarget::CarrotV1(c) = &carrot.target else {
+            panic!("not a carrot output");
+        };
+        assert_eq!(c.encrypted_janus_anchor.len(), 32);
     }
 
     /// No fixture exists for a type 6 transaction — the local mainnet node has
@@ -2278,6 +2434,8 @@ mod tests {
         assert_eq!(tx.rct_type(), Some(RctType::BulletproofPlus));
         assert!(!tx.is_coinbase());
         assert!(!tx.looks_pruned());
+        assert!(!tx.is_fcmp_pp());
+        assert_eq!(tx.reference_block(), None);
 
         let prunable = tx.rctsig_prunable.as_ref().unwrap();
         assert_eq!(prunable.nbp, Some(1));
@@ -2296,6 +2454,89 @@ mod tests {
             .as_ref()
             .unwrap();
         assert_eq!(ecdh.first().unwrap().form(), Some(EcdhForm::Compact));
+    }
+
+    /// Type 7 in the layout the FCMP++ branch's serializer writes it: no ring
+    /// in the input, no CLSAGs, and the proof as one blob beside the tree it
+    /// was built against. The captured fixtures under `fixtures/fcmp` hold the
+    /// same shape from a real daemon.
+    #[test]
+    fn a_constructed_fcmp_pp_transaction_parses() {
+        let raw = r#"{"version":2,"unlock_time":0,
+            "vin":[{"key":{"amount":0,"key_offsets":[],"k_image":"86e1cc68"}},
+                   {"key":{"amount":0,"key_offsets":[],"k_image":"77aa0011"}}],
+            "vout":[{"amount":0,"target":{"carrot_v1":{"key":"570482","view_tag":"9f00a1",
+                "encrypted_janus_anchor":"00112233445566778899aabbccddeeff"}}}],
+            "extra":[1,39,23],
+            "rct_signatures":{"type":7,"txnFee":30660000,
+                "ecdhInfo":[{"amount":"64717b40fad782d9"}],
+                "outPk":["aabb"]},
+            "rctsig_prunable":{"nbp":1,
+                "bpp":[{"A":"a1","A1":"a2","B":"b1","r1":"r","s1":"s","d1":"d",
+                        "L":["l1","l2"],"R":["r1","r2"]}],
+                "reference_block":3012345,"n_tree_layers":6,"fcmp_pp":"0a0b0c",
+                "pseudoOuts":["po1","po2"]}}"#;
+        let tx: TxJson = serde_json::from_str(raw).unwrap();
+        assert_eq!(tx.rct_type(), Some(RctType::FcmpPlusPlus));
+        assert!(tx.is_fcmp_pp());
+        assert!(!tx.is_coinbase());
+        assert!(!tx.looks_pruned());
+        assert_eq!(tx.reference_block(), Some(3_012_345));
+        assert_eq!(tx.n_tree_layers(), Some(6));
+        assert_eq!(
+            tx.pseudo_outs().len(),
+            2,
+            "one per input, in the prunable half"
+        );
+
+        let prunable = tx.rctsig_prunable.as_ref().unwrap();
+        assert!(prunable.clsags.is_none(), "type 7 has no ring signatures");
+        assert_eq!(prunable.fcmp_pp_len(), Some(3));
+        for input in &tx.vin {
+            let k = input.as_key().unwrap();
+            assert_eq!(k.ring_size(), 0);
+            assert_eq!(k.ring_members(), Some(vec![]));
+        }
+    }
+
+    /// Pruning takes the reference block with it, because it sits in the
+    /// prunable half. The transaction is still FCMP++; the tree it named is
+    /// simply no longer known here.
+    #[test]
+    fn a_pruned_fcmp_pp_transaction_is_still_fcmp_pp_without_its_reference_block() {
+        let raw = r#"{"version":2,"unlock_time":0,
+            "vin":[{"key":{"amount":0,"key_offsets":[],"k_image":"86e1cc68"}}],
+            "vout":[],"extra":[],
+            "rct_signatures":{"type":7,"txnFee":1,"ecdhInfo":[],"outPk":[]}}"#;
+        let tx: TxJson = serde_json::from_str(raw).unwrap();
+        assert!(tx.is_fcmp_pp());
+        assert!(tx.looks_pruned());
+        assert_eq!(tx.reference_block(), None);
+        assert_eq!(tx.n_tree_layers(), None);
+    }
+
+    /// A block below the fork has no tree fields and one above has both. The
+    /// block format gains them at the fork, so absence below it is the rule.
+    #[test]
+    fn block_json_carries_the_tree_only_from_the_fork() {
+        let miner = r#"{"version":2,"unlock_time":70,"vin":[{"gen":{"height":10}}],
+            "vout":[],"extra":[],"rct_signatures":{"type":0}}"#;
+        let before: BlockJson = serde_json::from_str(&format!(
+            r#"{{"major_version":16,"minor_version":16,"timestamp":1,"prev_id":"aa",
+                "nonce":0,"miner_tx":{miner},"tx_hashes":[]}}"#
+        ))
+        .unwrap();
+        assert_eq!(before.fcmp_pp_n_tree_layers, None);
+        assert_eq!(before.fcmp_pp_tree_root, None);
+
+        let after: BlockJson = serde_json::from_str(&format!(
+            r#"{{"major_version":17,"minor_version":17,"timestamp":1,"prev_id":"aa",
+                "nonce":0,"miner_tx":{miner},"tx_hashes":[],
+                "fcmp_pp_n_tree_layers":4,"fcmp_pp_tree_root":"5d0c"}}"#
+        ))
+        .unwrap();
+        assert_eq!(after.fcmp_pp_n_tree_layers, Some(4));
+        assert_eq!(after.fcmp_pp_tree_root.as_deref(), Some("5d0c"));
     }
 
     /// Likewise no fixture: a v2 transaction whose prunable half this node
@@ -2329,6 +2570,7 @@ mod tests {
             confirmations: 1,
             block_timestamp: 0,
             output_indices: vec![24, 25],
+            unified_ids: vec![],
             relayed: false,
             received_timestamp: 0,
         };
@@ -2361,6 +2603,7 @@ mod tests {
             confirmations: 1,
             block_timestamp: 0,
             output_indices: vec![],
+            unified_ids: vec![],
             relayed: false,
             received_timestamp: 0,
         };
@@ -2607,6 +2850,7 @@ mod tests {
             confirmations: 140,
             block_timestamp: 1_789_744_451,
             output_indices: vec![],
+            unified_ids: vec![],
             relayed: false,
             received_timestamp: 0,
         }
