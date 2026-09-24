@@ -1,7 +1,7 @@
 {
   "data": {
-    "fee": 20000,
-    "fee_per_kb": 20000,
+    "fee": 1200000,
+    "fee_per_kb": 1200000,
     "grace_blocks": 10
   },
   "status": "success"

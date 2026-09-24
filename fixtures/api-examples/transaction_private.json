@@ -3,37 +3,60 @@
     "missed_txs": [],
     "txs": [
       {
-        "block_height": 3767835,
+        "block_height": 421,
         "coinbase": false,
-        "confirmations": 324,
-        "current_height": 3768159,
-        "extra": "0164a27d78443dfefd27cf5e8a879116e408f1564360b33dbe9341ce6fe8d75784020901c042db09a03c1486",
+        "confirmations": 11,
+        "current_height": 432,
+        "extra": "0404cd14fc1d28e1fce94ee3ff45908cb64dd3da52a4ea8ad2c4f21c87308590700685a02b06b055da0f955c363b02911e5e5a68b45e2e4edc735183901343d8670aadad7ebc74fb194c3f7f67d8b78e0afde67dad776cbaaee4e99e81b17d9ff60e13ca02dde8ae085e8a25689529c74ff830bcdc6affab85ab633a0f4d1fbd8668020901639d440426171377",
         "inputs": [
           {
             "amount": 0,
-            "key_image": "b4bf4cad96846eabab65a0c2c528ce2f11471e724398626692436ff7e9ce371a",
-            "mixins": null
-          }
-        ],
-        "mixin": 16,
-        "outputs": [
-          {
-            "amount": 0,
-            "public_key": "d8e6951e54306136a15807990682d109781960034e41b15819e220a3ac3101a6"
+            "key_image": "ab629f9bdc1dca95fda3a2353184ea7c8d18aebedae0ecd7076a710210efeb45",
+            "mixins": []
           },
           {
             "amount": 0,
-            "public_key": "5a14c8923d7898db56ab782a2c759eb5ff3a98110e712e49c29872ed45d04595"
+            "key_image": "22833d0dcc9554bf989d6f2976c64cf3e9bc6a8b26addf1746c15274492748c7",
+            "mixins": []
+          }
+        ],
+        "mixin": 0,
+        "n_tree_layers": 2,
+        "outputs": [
+          {
+            "amount": 0,
+            "encrypted_janus_anchor": "d8c227a1ff71a0adaade41c3c8e8c7bc",
+            "public_key": "2e1221caf9af399c7c548066a31c8afbc12176bf253ef0e400235185d05f2e3c",
+            "view_tag": "ba11a9"
+          },
+          {
+            "amount": 0,
+            "encrypted_janus_anchor": "c852c22803e1c614aa7206470d269536",
+            "public_key": "75dbe18d1ce76db314dff8d4d08e9dd97e59df316d2e87ae0ad4e77dd4ecf1d4",
+            "view_tag": "b5a187"
+          },
+          {
+            "amount": 0,
+            "encrypted_janus_anchor": "f81daf01d8d9d2e5f177f2c848d2557d",
+            "public_key": "afa47a8bda2b7ab2ef362ef327c2dee5b9aa4bec089a2ff6c5dabe066dc33657",
+            "view_tag": "6b778d"
+          },
+          {
+            "amount": 0,
+            "encrypted_janus_anchor": "215585b3d1b2c55087e893eb341b122e",
+            "public_key": "d38c21ad2fd7e29589317e7afeae04038053dc293ad7137750e5b4ec1f548599",
+            "view_tag": "666399"
           }
         ],
         "payment_id": "",
-        "payment_id8": "c042db09a03c1486",
-        "rct_type": 6,
-        "timestamp": 1790055155,
-        "timestamp_utc": "2026-09-22 05:32:35",
-        "tx_fee": 30700000,
-        "tx_hash": "bae9ea23fd1aa7d8f6c59b44432075288a9b00b0f4973ce60dda89d6c5519ef3",
-        "tx_size": 1535,
+        "payment_id8": "639d440426171377",
+        "rct_type": 7,
+        "reference_block": 420,
+        "timestamp": 1790217010,
+        "timestamp_utc": "2026-09-24 02:30:10",
+        "tx_fee": 11329200000,
+        "tx_hash": "e686b06cde345d0948ea813bf4b5cd2ecc900519d3a2452bdf112ac5b36c9bc2",
+        "tx_size": 7897,
         "tx_version": 2,
         "unlock_time": 0,
         "xmr_inputs": 0,

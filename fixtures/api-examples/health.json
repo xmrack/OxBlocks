@@ -3,14 +3,14 @@
     "blocks_by_hash": {
       "capacity": 512,
       "hits": 0,
-      "len": 77,
+      "len": 390,
       "misses": 0
     },
     "blocks_by_height": {
       "capacity": 2048,
-      "hits": 1,
-      "len": 77,
-      "misses": 77
+      "hits": 0,
+      "len": 340,
+      "misses": 391
     },
     "info": {
       "capacity": 1,
@@ -26,12 +26,12 @@
     },
     "txs": {
       "capacity": 8192,
-      "hits": 5,
-      "len": 2383,
-      "misses": 2383
+      "hits": 0,
+      "len": 341,
+      "misses": 394
     }
   },
-  "rpc_calls": 163,
+  "rpc_calls": 790,
   "status": "ok",
   "version": "0.1.0"
 }

@@ -5,8 +5,17 @@
 
 <p>
   Every endpoint below is a <code class="lit">GET</code>. None of them needs a
-  key, a header or a session. The response bodies match those of xmrblocks, so
-  a client written for that explorer reads these without changes.
+  key, a header or a session. The response bodies carry every key that
+  xmrblocks does, with the same values, so a client written for that explorer
+  reads these without changes. Transactions carry four keys more, for FCMP++
+  and Carrot, which xmrblocks has never had. They are listed under
+  <a href="#shape-txsummary">the transaction shapes</a>.
+</p>
+
+<p>
+  The example responses on this page were recorded from a regtest chain run by
+  monerod's FCMP++ branch, so their heights are small and their transactions
+  spend with FCMP++. Every hash and amount in them is one that chain holds.
 </p>
 
 <p>
@@ -117,7 +126,7 @@
     The API revision and the version string of the daemon.
     <code class="lit">api</code> is
     <code class="lit">(major &lt;&lt; 16) | minor</code>, which reads 65539 for
-    these shapes. The three <code class="lit">git_*</code> fields are always
+    the xmrblocks 1.3 shapes these extend. The three <code class="lit">git_*</code> fields are always
     empty, because oxblocks embeds no build metadata. The keys stay because
     clients index them. <code class="lit">oxblocks_version</code> is an extra
     key, so a client can tell which explorer answered.
@@ -234,7 +243,8 @@
     One transaction, with <strong>every ring resolved</strong>. Each input
     lists its ring members with the height, one time key and source transaction
     of each. This is the only endpoint that resolves rings, because it costs
-    one daemon call for each input.
+    one daemon call for each input. An FCMP++ transaction has no rings, so
+    it costs none beyond the transaction itself.
   </p>
   <p>
     Returns a <a href="#shape-txdetail">transaction detail object</a>. It also
@@ -467,7 +477,19 @@
     <code class="lit">tx_fee</code>, <code class="lit">tx_hash</code>,
     <code class="lit">tx_size</code>, <code class="lit">tx_version</code>,
     <code class="lit">unlock_time</code>, <code class="lit">xmr_inputs</code>,
-    <code class="lit">xmr_outputs</code>.
+    <code class="lit">xmr_outputs</code>, and two keys xmrblocks does not have:
+    <code class="lit">reference_block</code> and
+    <code class="lit">n_tree_layers</code>.
+  </p>
+  <p>
+    <code class="lit">reference_block</code> is the height of the block whose
+    curve tree an FCMP++ transaction's inputs were proven against, and
+    <code class="lit">n_tree_layers</code> is how many layers that tree had.
+    Both are <code class="lit">null</code> for a ring spend and a coinbase.
+    Both sit in the prunable half of the transaction, so they are also
+    <code class="lit">null</code> for an FCMP++ transaction that a pruned node
+    no longer holds in full. Its <code class="lit">rct_type</code> still reads
+    7.
   </p>
   <p>
     <code class="lit">mixin</code> is the <strong>ring size</strong>, not the
@@ -511,10 +533,15 @@
     on every endpoint, because there is no ring to withhold.
   </p>
   <p>
-    Each output carries <code class="lit">amount</code> and
-    <code class="lit">public_key</code>. For a Carrot output that is the
-    one-time address. Its view tag and encrypted Janus anchor are in
-    <a href="#rawtransaction">/api/rawtransaction</a>.
+    Each output carries <code class="lit">amount</code>,
+    <code class="lit">public_key</code>, <code class="lit">view_tag</code> and
+    <code class="lit">encrypted_janus_anchor</code>. The last two are not in
+    xmrblocks. <code class="lit">public_key</code> is the one-time address,
+    Carrot's included. <code class="lit">view_tag</code> is two hex characters
+    for an output from before Carrot and six for a Carrot output, and
+    <code class="lit">null</code> for an output from before view tags.
+    <code class="lit">encrypted_janus_anchor</code> is 32 hex characters on a
+    Carrot output and <code class="lit">null</code> on every other.
   </p>
 </section>
 

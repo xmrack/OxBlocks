@@ -1,73 +1,88 @@
 {
   "data": {
-    "current_height": 3768159,
-    "from_height": 3768158,
+    "current_height": 432,
+    "from_height": 431,
     "mempool_txs_no": 1,
-    "to_height": 3768158,
+    "to_height": 431,
     "txs": [
       {
         "block_height": 0,
         "coinbase": false,
         "confirmations": 0,
-        "current_height": 3768159,
-        "extra": "01d3d0925db532a12b5d16eef8627f9aaf224aeaa5fdd7dc3f47d92616eb49c38e020901141684dabcbc8734",
+        "current_height": 432,
+        "extra": "01676f79b7b2a9c35d4794d666376dc1e8977893af162492ad353012b97cb3e61a020901378a7e8f654fd3c9",
         "inputs": [
           {
             "amount": 0,
-            "key_image": "b98e6dc5993f3c7237be16b7816dc0a169e66ef479225442ddea501a3f489051",
-            "mixins": null
-          }
-        ],
-        "mixin": 16,
-        "outputs": [
-          {
-            "amount": 0,
-            "public_key": "27216398b30d71c27f7ae251b844047c3246233bb2e1a8d48b25c78b7d68963f"
+            "key_image": "beb74a994e5926209f633cd0af9446258a1ce0daa70a3dc55b919992a5372a4e",
+            "mixins": []
           },
           {
             "amount": 0,
-            "public_key": "78db177c1a7604f2bdc83d1a76c9ad4b9d1d87f3fb39c94c97fbdaa7bfed6528"
+            "key_image": "92131a15dc58fa801456726a94e1fbc67c4f07eb995715c5f760942050383e37",
+            "mixins": []
+          }
+        ],
+        "mixin": 0,
+        "n_tree_layers": 2,
+        "outputs": [
+          {
+            "amount": 0,
+            "encrypted_janus_anchor": "81c8bd919e7c1e3efb7b8d1c7690785a",
+            "public_key": "3ddb1a1b0126b083ad9b242e94a0dce976676db985217cce6c209a430d51b61b",
+            "view_tag": "7b5176"
+          },
+          {
+            "amount": 0,
+            "encrypted_janus_anchor": "613649832fc61d80a04510df65be2546",
+            "public_key": "e8cf07af903a567984444ac9432f6e0d551f1d90cd913eb93873201d09a8452f",
+            "view_tag": "4a5998"
           }
         ],
         "payment_id": "",
-        "payment_id8": "141684dabcbc8734",
-        "rct_type": 6,
-        "timestamp": 1790092581,
-        "timestamp_utc": "2026-09-22 15:56:21",
-        "tx_fee": 30660000,
-        "tx_hash": "6eb969e26200f074001924129a1a00bf9894cc6e9877a89791c990b2a7dc7da7",
-        "tx_size": 1533,
+        "payment_id8": "378a7e8f654fd3c9",
+        "rct_type": 7,
+        "reference_block": 431,
+        "timestamp": 1790217011,
+        "timestamp_utc": "2026-09-24 02:30:11",
+        "tx_fee": 10911600000,
+        "tx_hash": "4323efd8aef8d93fee07012e38abae851d3e2cb453b0ced9c3a5c242087a9792",
+        "tx_size": 7549,
         "tx_version": 2,
         "unlock_time": 0,
         "xmr_inputs": 0,
         "xmr_outputs": 0
       },
       {
-        "block_height": 3768158,
+        "block_height": 431,
         "coinbase": true,
         "confirmations": 1,
-        "current_height": 3768159,
-        "extra": "03210098a8c4459dd1fe42d91a5b9bd8cd1e653794483e526efe30ad9fce08ef573d1001e50be6a17644f514a53c1879391aa2ff1b3a9803257bb17e21fe8f88749f489c0220000005f74f6b3454000000000000000000000000000000000000000000000000",
+        "current_height": 432,
+        "extra": "015405a1ac6b0f0eb3572108a9f72be0ad7102dee7389376fdb3f46e46c1005500020100",
         "inputs": null,
         "mixin": 0,
+        "n_tree_layers": null,
         "outputs": [
           {
-            "amount": 633159400000,
-            "public_key": "e1c187cb39ecdb60691698b87d312eefbc6d7a8ee1061d85df889093bb34ed4e"
+            "amount": 35155493553256,
+            "encrypted_janus_anchor": "7842f440d54d73d2360adc7ced4eb04c",
+            "public_key": "f2d688d55268aa641a5a2a6d91aa6d83fce0d42e2a8f7714e706f4c031e57825",
+            "view_tag": "553116"
           }
         ],
         "payment_id": "",
         "payment_id8": "",
         "rct_type": 0,
-        "timestamp": 1790092397,
-        "timestamp_utc": "2026-09-22 15:53:17",
+        "reference_block": null,
+        "timestamp": 1790217010,
+        "timestamp_utc": "2026-09-24 02:30:10",
         "tx_fee": 0,
-        "tx_hash": "a3f9cae457ba73236d3f7be71aa98a846969f31ffe2ace1958bc9ada733d55bc",
-        "tx_size": 156,
+        "tx_hash": "2a293b6d3697656466f8d7cf3feacd54aff41331594be025a76b1185582726f6",
+        "tx_size": 105,
         "tx_version": 2,
-        "unlock_time": 3768218,
+        "unlock_time": 491,
         "xmr_inputs": 0,
-        "xmr_outputs": 633159400000
+        "xmr_outputs": 35155493553256
       }
     ]
   },

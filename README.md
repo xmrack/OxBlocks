@@ -8,7 +8,8 @@ nothing to disk. For each request it asks the daemon over RPC and renders the an
 The JSON API serves the same response bodies as
 [xmrblocks](https://github.com/moneroexamples/onion-monero-blockchain-explorer),
 so a client that reads the body works without changes. It differs on two
-points, both listed under [JSON API](#json-api).
+points, both listed under [JSON API](#json-api), and adds four keys for FCMP++
+and Carrot.
 
 ## Requirements
 
@@ -266,15 +267,24 @@ reports.
 
 ### What changes in the API
 
-The response shapes do not change. The values do:
+Every key xmrblocks has keeps its meaning. The values change:
 
 * `rct_type` is 7.
 * `mixin` is 0, because there is no ring. Read `rct_type` before you read 0 as
   no anonymity set.
 * Each input's `mixins` is `[]`, never `null`, on every endpoint. There is no
   ring to resolve or to withhold.
-* Each output's `public_key` is the Carrot one-time address. The view tag and
-  the anchor are in `/api/rawtransaction`.
+* Each output's `public_key` is the Carrot one-time address.
+
+Four keys are new. xmrblocks has none of them. They are always present and
+hold `null` where the chain has no value:
+
+| Key | Where | Holds |
+| --- | --- | --- |
+| `reference_block` | every transaction object | The height whose curve tree the FCMP++ proof was built against. |
+| `n_tree_layers` | every transaction object | The tree's layer count at that height. |
+| `view_tag` | each output in `/api/transaction` | 2 hex characters before Carrot, 6 from it, `null` before view tags. |
+| `encrypted_janus_anchor` | each output in `/api/transaction` | 32 hex characters, Carrot outputs only. |
 
 An FCMP++ transaction needs no ring lookups, so `/api/transaction` asks the
 daemon for the transaction and nothing else.
@@ -283,7 +293,8 @@ daemon for the transaction and nothing else.
 
 The reference block and the layer count sit in the prunable half of the
 transaction. A pruned node that no longer holds that half still shows the
-transaction as FCMP++, but it cannot say which tree the proof named.
+transaction as FCMP++, but it cannot say which tree the proof named. The API
+answers `null` for both, beside an `rct_type` of 7.
 
 ### Fixtures
 
@@ -291,6 +302,10 @@ transaction as FCMP++, but it cannot say which tree the proof named.
 `fcmp++-beta-stressnet-v3` branch. Regtest runs the newest fork from block 1,
 so every spend there is an FCMP++ spend. `tools/capture-fcmp-fixtures.py`
 records them again and says how to start the daemon and wallet it needs.
+
+The example responses on the `/api` page, in `fixtures/api-examples/`, come
+from the same kind of regtest chain, recorded by `tools/capture-api-examples.py`
+from an explorer reading it.
 
 ## Architecture
 
