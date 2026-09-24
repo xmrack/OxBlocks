@@ -28,6 +28,7 @@ it records are only meaningful on a chain it built.
 import argparse
 import json
 import pathlib
+import struct
 import sys
 import urllib.request
 
@@ -79,6 +80,28 @@ def open_wallet(wallet, name, seed):
     return rpc(wallet, "restore_deterministic_wallet", {
         "filename": name, "password": "", "seed": seed, "restore_height": 0,
     })["result"]["address"]
+
+
+def epee_request(as_of_n_blocks, unified_ids):
+    """A /get_path_by_unified_id.bin request in epee's binary format.
+
+    Two fields, so every count here fits epee's one-byte varint (value << 2).
+    """
+    out = struct.pack("<IIB", 0x01011101, 0x01020101, 1)
+    out += bytes([2 << 2])
+    name = b"as_of_n_blocks"
+    out += bytes([len(name)]) + name + bytes([5]) + struct.pack("<Q", as_of_n_blocks)
+    name = b"unified_ids"
+    out += bytes([len(name)]) + name + bytes([5 | 0x80, len(unified_ids) << 2])
+    out += b"".join(struct.pack("<Q", u) for u in unified_ids)
+    return out
+
+
+def post_bin(url, body):
+    req = urllib.request.Request(
+        url, data=body, headers={"Content-Type": "application/octet-stream"})
+    with urllib.request.urlopen(req, timeout=600) as r:
+        return r.read()
 
 
 def get_transactions(daemon, hashes, prune=False):
@@ -141,6 +164,19 @@ def main():
     write("get_transactions_fcmp_pruned", get_transactions(d, [small], prune=True))
     write("get_transactions_coinbase",
           get_transactions(d, [block["result"]["miner_tx_hash"]]))
+    # The tree size as of the small transaction's reference block, asked two
+    # ways: probed with the transaction's own first output, which joins the
+    # tree later and so costs no tree lookup, and with output 1, an early
+    # coinbase already in the tree, whose answer carries a whole path.
+    fetched = get_transactions(d, [small])["txs"][0]
+    reference = json.loads(fetched["as_json"])["rctsig_prunable"]["reference_block"]
+    for name, probe in (("probe_own_output", fetched["unified_ids"][0]),
+                        ("probe_in_tree", 1)):
+        body = post_bin(d + "/get_path_by_unified_id.bin",
+                        epee_request(reference + 1, [probe]))
+        (OUT / f"get_path_by_unified_id_{name}.bin").write_bytes(body)
+        print(f"  get_path_by_unified_id_{name}.bin  {len(body):>9,} bytes"
+              f"  (as of block {reference}, probe {probe})")
     write("get_info", rpc(d, "get_info"))
     write("get_version", rpc(d, "get_version"))
     write("get_fee_estimate", rpc(d, "get_fee_estimate"))

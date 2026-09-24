@@ -2299,15 +2299,23 @@ fn an_fcmp_pp_spend_has_no_ring_and_names_the_tree_it_proved_against() {
         assert_eq!(tx.pseudo_outs().len(), tx.vin.len());
     }
 
-    // The proof grows with the inputs it covers.
+    // The proof's length is fixed by the input count at a given layer count:
+    // the same count gives the same length, and more inputs a longer proof.
+    // Which counts the wallet chose varies from one capture to the next.
     let lens: Vec<(usize, usize)> = txs
         .iter()
         .map(|(_, tx)| {
             let p = tx.rctsig_prunable.as_ref().unwrap();
+            assert_eq!(tx.n_tree_layers(), txs[0].1.n_tree_layers());
             (tx.vin.len(), p.fcmp_pp_len().expect("an even-length blob"))
         })
         .collect();
-    assert_eq!(lens, vec![(1, 4256), (2, 6528)]);
+    for (a_in, a_len) in &lens {
+        assert!(*a_len > 0);
+        for (b_in, b_len) in &lens {
+            assert_eq!(a_in.cmp(b_in), a_len.cmp(b_len), "{lens:?}");
+        }
+    }
 }
 
 /// The prunable key set is the per-type fingerprint. Type 7 keeps `nbp`,
@@ -2417,4 +2425,47 @@ fn an_fcmp_pp_pool_entry_decodes() {
         // entry depends on.
         assert_eq!(tx.reference_block(), Some(t.max_used_block_height));
     }
+}
+
+// ---------------------------------------------------------------------------
+// /get_path_by_unified_id.bin, in epee's binary format
+// ---------------------------------------------------------------------------
+
+fn binary(rel: &str) -> monerod_rpc::epee::Section {
+    let path = fixtures_root().join(rel);
+    let bytes = std::fs::read(&path)
+        .unwrap_or_else(|e| panic!("cannot read fixture {}: {e}", path.display()));
+    monerod_rpc::epee::decode(&bytes).unwrap_or_else(|e| panic!("{rel} did not decode: {e}"))
+}
+
+/// The same tree size, asked two ways as of block 120 of the capture chain.
+/// Regtest's coinbases unlock after 60 blocks, so by then coinbases 0 to 61
+/// are in the tree: 62 outputs.
+#[test]
+fn the_tree_size_is_the_same_whichever_output_probes_it() {
+    use monerod_rpc::epee::Entry;
+    use monerod_rpc::types::TreeSizeQuery;
+
+    let own = binary("fcmp/get_path_by_unified_id_probe_own_output.bin");
+    let in_tree = binary("fcmp/get_path_by_unified_id_probe_in_tree.bin");
+    assert_eq!(own.text("status"), Some("OK"));
+    assert_eq!(TreeSizeQuery::answer(&own), Some(62));
+    assert_eq!(TreeSizeQuery::answer(&in_tree), Some(62));
+
+    // Probed with an output that joins the tree later, the path is empty:
+    // that skip is what makes the explorer's probe cheap.
+    let path_of = |root: &monerod_rpc::epee::Section| match root.get("paths") {
+        Some(Entry::Array(paths)) => match paths.first() {
+            Some(Entry::Object(p)) => p.clone(),
+            other => panic!("paths[0] is not an object: {other:?}"),
+        },
+        other => panic!("paths is not an array: {other:?}"),
+    };
+    let own_path = path_of(&own);
+    assert_eq!(own_path.unsigned("leaf_idx"), Some(0));
+
+    // Probed with an early coinbase, the answer carries a whole path through
+    // the tree, nested objects and all, and it still decodes.
+    let tree_path = path_of(&in_tree);
+    assert!(matches!(tree_path.get("path"), Some(Entry::Object(p)) if !p.is_empty()));
 }

@@ -6,6 +6,9 @@
 //!   member alongside HTTP 200.
 //! * `POST /<endpoint>` — a bare JSON body (`/get_transactions`, `/get_outs`,
 //!   …). Failures arrive as a `"status"` string alongside HTTP 200.
+//! * `POST /<endpoint>.bin` — the same, in epee's binary format rather than
+//!   JSON. Used for the one figure monerod reports nowhere else; see
+//!   [`crate::epee`].
 //!
 //! Both are normalised into [`RpcError`] here so that callers never have to
 //! remember which convention a given call uses.
@@ -173,19 +176,32 @@ impl Client {
         context: &'static str,
         body: &impl Serialize,
     ) -> Result<serde_json::Value, RpcError> {
+        let payload =
+            serde_json::to_vec(body).map_err(|source| RpcError::Encode { context, source })?;
+        let bytes = self
+            .exchange(path, context, "application/json", payload)
+            .await?;
+        serde_json::from_slice(&bytes).map_err(|source| RpcError::Decode { context, source })
+    }
+
+    /// POST `payload` to `path` and return the body of a successful answer.
+    async fn exchange(
+        &self,
+        path: &str,
+        context: &'static str,
+        media_type: &'static str,
+        payload: Vec<u8>,
+    ) -> Result<Bytes, RpcError> {
         let uri = self
             .base
             .join(path)
             .map_err(|e| RpcError::BadUrl(format!("{}{path}", self.base.as_str()), e))?;
 
-        let payload =
-            serde_json::to_vec(body).map_err(|source| RpcError::Encode { context, source })?;
-
         let mut request = Request::builder()
             .method(Method::POST)
             .uri(uri)
-            .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
-            .header(ACCEPT, HeaderValue::from_static("application/json"))
+            .header(CONTENT_TYPE, HeaderValue::from_static(media_type))
+            .header(ACCEPT, HeaderValue::from_static(media_type))
             .body(Full::new(Bytes::from(payload)))
             .map_err(|e| RpcError::BadUrl(path.to_owned(), e.to_string()))?;
         if let Some(ua) = &self.user_agent {
@@ -234,7 +250,7 @@ impl Client {
             });
         }
 
-        serde_json::from_slice(&bytes).map_err(|source| RpcError::Decode { context, source })
+        Ok(bytes)
     }
 
     /// Call a JSON-RPC 2.0 method on `/json_rpc`.
@@ -318,6 +334,36 @@ impl Client {
             context: endpoint,
             source,
         })
+    }
+
+    /// Call a binary endpoint, e.g. `/get_path_by_unified_id.bin`, and return
+    /// its root section.
+    ///
+    /// `endpoint` is given without a leading slash and with its `.bin`. The
+    /// `status` check is the same one the JSON endpoints get.
+    pub async fn binary(
+        &self,
+        endpoint: &'static str,
+        fields: &[(&str, crate::epee::Field<'_>)],
+    ) -> Result<crate::epee::Section, RpcError> {
+        let payload = crate::epee::encode(fields).map_err(|source| RpcError::BinaryEncode {
+            context: endpoint,
+            source,
+        })?;
+        let bytes = self
+            .exchange(endpoint, endpoint, "application/octet-stream", payload)
+            .await?;
+        let root = crate::epee::decode(&bytes).map_err(|source| RpcError::BinaryDecode {
+            context: endpoint,
+            source,
+        })?;
+        if let Some(raw) = root.text("status") {
+            let status = Status::parse(raw);
+            if !status.is_ok() {
+                return Err(RpcError::Status { endpoint, status });
+            }
+        }
+        Ok(root)
     }
 
     /// Reject a payload whose `status` is present and not `OK`.

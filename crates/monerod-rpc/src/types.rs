@@ -959,6 +959,72 @@ pub struct OutKey {
 }
 
 // ---------------------------------------------------------------------------
+// /get_path_by_unified_id.bin
+// ---------------------------------------------------------------------------
+
+/// How many outputs the curve tree held as of a block: the size of an FCMP++
+/// transaction's anonymity set, when asked for its reference block.
+///
+/// monerod reports the figure as `n_leaf_tuples`, and only from
+/// `/get_path_by_unified_id.bin`. That call exists to hand a wallet the tree
+/// paths of its own outputs, and it answers the tree size beside them. It
+/// answers 0 when asked about no outputs at all, so it has to be asked about
+/// one.
+///
+/// The one asked about is the **probe**, and choosing it well is what makes
+/// the call cheap and safe. An output that joins the tree only after the block
+/// asked about is skipped before any tree lookup, so it costs one output read
+/// and cannot fail on a missing leaf. Every output of the transaction being
+/// looked at is such an output: it was created in a block after the reference
+/// block, and an output joins the tree only when it unlocks, some blocks after
+/// that. So the probe is the transaction's own first output, by its unified
+/// id. Any output of the chain would do for the count; this one guarantees the
+/// skip.
+///
+/// The fields are private so that the one-block offset cannot be dropped:
+/// monerod takes a block *count*, and treats a count of 0 as "now".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeSizeQuery {
+    as_of_n_blocks: u64,
+    probe: [u64; 1],
+}
+
+impl TreeSizeQuery {
+    pub const ENDPOINT: &'static str = "get_path_by_unified_id.bin";
+
+    /// The tree as of `reference_block`, probed with `probe_unified_id`.
+    ///
+    /// `None` only for a reference block of `u64::MAX`, which has no count.
+    #[must_use]
+    pub fn as_of_block(reference_block: u64, probe_unified_id: u64) -> Option<Self> {
+        Some(Self {
+            as_of_n_blocks: reference_block.checked_add(1)?,
+            probe: [probe_unified_id],
+        })
+    }
+
+    #[must_use]
+    pub fn fields(&self) -> [(&'static str, crate::epee::Field<'_>); 2] {
+        [
+            (
+                "as_of_n_blocks",
+                crate::epee::Field::U64(self.as_of_n_blocks),
+            ),
+            ("unified_ids", crate::epee::Field::U64s(&self.probe)),
+        ]
+    }
+
+    /// The tree size from the daemon's answer. `None` when the answer does
+    /// not carry one, and for 0: a tree that an FCMP++ proof was built against
+    /// holds at least the output being spent, so 0 is the daemon's answer to
+    /// a question other than the one asked.
+    #[must_use]
+    pub fn answer(root: &crate::epee::Section) -> Option<u64> {
+        root.unsigned("n_leaf_tuples").filter(|n| *n > 0)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // /is_key_image_spent
 // ---------------------------------------------------------------------------
 
@@ -1565,6 +1631,10 @@ pub struct TaggedKey {
     /// One byte, so exactly two hex characters.
     pub view_tag: String,
 }
+
+/// The hard fork that brings FCMP++ and Carrot, and with them the block's
+/// curve-tree fields. A block below it has no tree to report.
+pub const HF_VERSION_FCMP_PLUS_PLUS: u8 = 17;
 
 /// `txout_to_carrot_v1`.
 ///
@@ -2393,6 +2463,25 @@ mod tests {
         assert_eq!(tagged.target.public_key(), Some("57048229"));
         assert_eq!(tagged.target.view_tag(), Some("9f"));
         assert!(!tagged.target.is_carrot());
+    }
+
+    /// The count monerod takes is one past the block asked about, and the
+    /// probe travels as a one-element array.
+    #[test]
+    fn a_tree_size_query_asks_for_the_block_after_as_a_count() {
+        let q = TreeSizeQuery::as_of_block(420, 1234).unwrap();
+        let [(n, count), (u, ids)] = q.fields();
+        assert_eq!((n, count), ("as_of_n_blocks", crate::epee::Field::U64(421)));
+        assert_eq!((u, ids), ("unified_ids", crate::epee::Field::U64s(&[1234])));
+        assert!(TreeSizeQuery::as_of_block(u64::MAX, 0).is_none());
+
+        let answer = |n: u64| {
+            let bytes =
+                crate::epee::encode(&[("n_leaf_tuples", crate::epee::Field::U64(n))]).unwrap();
+            TreeSizeQuery::answer(&crate::epee::decode(&bytes).unwrap())
+        };
+        assert_eq!(answer(9_876), Some(9_876));
+        assert_eq!(answer(0), None, "0 answers a different question");
     }
 
     /// The FCMP++ fork's output. Before this variant existed the whole

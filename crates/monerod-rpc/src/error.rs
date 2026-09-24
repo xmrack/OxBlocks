@@ -109,11 +109,28 @@ pub enum RpcError {
         source: serde_json::Error,
     },
 
+    /// A `.bin` endpoint answered with a body that is not portable storage.
+    #[error("could not decode monerod's binary response to {context}: {source}")]
+    BinaryDecode {
+        context: &'static str,
+        #[source]
+        source: crate::epee::EpeeError,
+    },
+
     /// monerod answered, but the payload did not contain what the call promises.
     #[error("monerod's response to {context} had no {field} field")]
     Missing {
         context: &'static str,
         field: &'static str,
+    },
+
+    /// A request could not be written in epee's binary format. Not reachable
+    /// from remote input: the requests are this crate's own.
+    #[error("could not encode the binary request for {context}: {source}")]
+    BinaryEncode {
+        context: &'static str,
+        #[source]
+        source: crate::epee::EpeeError,
     },
 
     #[error("{0} is not a usable monerod URL: {1}")]

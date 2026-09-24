@@ -11,6 +11,7 @@
 //! ```
 
 pub mod client;
+pub mod epee;
 pub mod error;
 pub mod types;
 mod url;
