@@ -299,8 +299,8 @@ hold `null` where the chain has no value:
 | `view_tag` | each output in `/api/transaction` | 2 hex characters before Carrot, 6 from it, `null` before view tags. |
 | `encrypted_janus_anchor` | each output in `/api/transaction` | 32 hex characters, Carrot outputs only. |
 | `unified_id` | each output in `/api/transaction` | The output's place in the sequence the tree is built from. `null` in the pool. |
-| `tree_root` | every block object | The curve tree root the block commits to. `null` below the fork. |
-| `n_tree_layers` | every block object | That tree's layer count. `null` below the fork. |
+| `tree_root` | every block object | The curve tree root the block commits to. `null` below the fork, and in `/api/blocks` for a block whose body the daemon did not hand over. |
+| `n_tree_layers` | every block object | That tree's layer count. `null` in the same cases. |
 
 ### The tree size
 

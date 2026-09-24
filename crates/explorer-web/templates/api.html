@@ -474,13 +474,19 @@
     Two keys xmrblocks does not have: <code class="lit">tree_root</code>, the
     root of the curve tree the block commits to, in hex, and
     <code class="lit">n_tree_layers</code>, the tree's layer count. Both are
-    <code class="lit">null</code> below the FCMP++ fork, whose block format
-    has no tree. The root runs eight blocks ahead of the block: block H
+    <code class="lit">null</code> when no tree is reported: below the FCMP++
+    fork, whose block format has no tree, and in
+    <a href="#blocks">/api/blocks</a> for a post-fork block whose contents the
+    daemon did not hand over in time. The two cases are told apart by the
+    block's height against the fork; ask
+    <a href="#block">/api/block</a> again for the second. Both fields sit in
+    the block's body, after its transaction list, not in its header, so no
+    header call returns them. The root runs eight blocks ahead of the block: block H
     carries the tree as it stands at height H + 8. A proof whose
     <code class="lit">reference_block</code> is R was therefore checked
     against the <code class="lit">tree_root</code> of block R &minus; 8, not
     of block R. For a reference block less than eight past the fork, block
-    R &minus; 8 is from before it and no header carries that root.
+    R &minus; 8 is from before it and no block carries that root.
   </p>
 </section>
 
@@ -502,7 +508,7 @@
     <code class="lit">reference_block</code> is the height the curve tree was
     taken at when an FCMP++ transaction's inputs were proven: the tree of
     every output spendable with that block as the tip. Its root is in the
-    header of block <code class="lit">reference_block</code> &minus; 8; see
+    body of block <code class="lit">reference_block</code> &minus; 8; see
     <a href="#shape-block">the block object</a>. And
     <code class="lit">n_tree_layers</code> is how many layers that tree had.
     Both are <code class="lit">null</code> for a ring spend and a coinbase.

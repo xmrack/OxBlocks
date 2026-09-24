@@ -1687,18 +1687,20 @@ pub const HF_VERSION_FCMP_PLUS_PLUS: u8 = 17;
 /// when R was the chain tip. Block H commits to the tree as of tip
 /// `get_default_last_locked_block_index(H - 1)`, which is `H - 1 + 9`: the
 /// default spendable age of 10 blocks, less one. So the root a proof naming R
-/// was checked against is the one in block `R - 8`'s header, not block R's.
+/// was checked against is the one block `R - 8` carries, not block R's. The
+/// root is in the block's body, after its transaction list, not in the header
+/// the header calls return; only `get_block` has it.
 ///
 /// From the check in `Blockchain::handle_block_to_main_chain`
 /// (`src/cryptonote_core/blockchain.cpp`) and
 /// `CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE` in `src/cryptonote_config.h`.
 pub const TREE_ROOT_LAG: u64 = 8;
 
-/// The height whose block header would carry the root an FCMP++ proof naming
+/// The height of the block that would carry the root an FCMP++ proof naming
 /// `reference_block` was checked against: `reference_block - 8`, or `None`
 /// below height 8.
 ///
-/// Arithmetic only, so it answers for heights no header can serve. Consensus
+/// Arithmetic only, so it answers for heights no block can serve. Consensus
 /// accepts a reference block from one block before the fork, and blocks carry
 /// a tree only from the fork on, so for the first reference blocks after the
 /// fork this names a block from before it, which has no root at all. A caller

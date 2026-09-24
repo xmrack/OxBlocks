@@ -208,8 +208,12 @@ async fn build_block_detail(state: &AppState, id: BlockId) -> Result<BlockDetail
         .await
         .map_err(|e| on_chain_error(&e, &block_not_found(id)))?;
 
+    // A cached block carries the depth it had when fetched; the answer counts
+    // from the tip as it is now. See `RpcChainSource::depth_now`.
+    let depth = state.chain.depth_now(&got.block_header).await;
     Ok(block_detail(
         &got.block_header,
+        depth,
         &fetched.txs,
         BlockTree::of(&got).as_ref(),
     ))
@@ -224,6 +228,7 @@ async fn build_block_detail(state: &AppState, id: BlockId) -> Result<BlockDetail
 /// the block holds something.
 fn block_detail(
     header: &BlockHeader,
+    depth: u64,
     entries: &[TxEntry],
     tree: Option<&BlockTree>,
 ) -> BlockDetail {
@@ -238,11 +243,10 @@ fn block_detail(
 
     BlockDetail {
         block_height: header.height,
-        // The tip, derived from this block's own depth rather than a second
-        // round trip: `depth` is 0 for the tip, and `current_height` is the
-        // chain *height* (tip + 1). Block 2,000,000 at depth 1,765,612
-        // reports current_height 3,765,613.
-        current_height: header.height.saturating_add(header.depth).saturating_add(1),
+        // The tip, derived from this block's depth: `depth` is 0 for the tip,
+        // and `current_height` is the chain *height* (tip + 1). Block
+        // 2,000,000 at depth 1,765,612 reports current_height 3,765,613.
+        current_height: header.height.saturating_add(depth).saturating_add(1),
         hash: normalise_hash(&header.hash),
         n_tree_layers: tree.map(|t| t.n_layers),
         size: header.block_size,
@@ -1032,10 +1036,15 @@ pub async fn transaction_private(
 /// the endpoint is to hide *which* block was wanted, and a hundred candidates
 /// does that — while bounding the cost at one header range, one `get_block`
 /// per block that holds transactions, and one `get_transactions`. On a chain
-/// where every block is full that is 102 calls; on a quiet one before the
-/// FCMP++ fork it is two. From the fork on it is 102 either way, because the
-/// response carries each block's curve tree, which is in the block's body;
-/// bodies are fetched by hash, so a range served before is mostly cached.
+/// where every block holds transactions that is 102 calls, plus one more
+/// `get_transactions` per 500 transactions past the first 500 (the batch
+/// size, `MAX_TXS_PER_CALL`): about 121 for a hundred mainnet blocks of ten
+/// thousand transactions, and more on a full stressnet. On a quiet chain
+/// before the FCMP++ fork it is two. From the fork on every block's body is
+/// fetched, because the response carries each block's curve tree, which is in
+/// the body; bodies come from cache by hash, or by height once buried, so a
+/// range served before costs little more than its header call and its
+/// transactions.
 ///
 /// **What it does not bound is bytes.** A hundred blocks is roughly ten
 /// thousand mainnet transactions, and every one of them is fetched whole
@@ -1095,7 +1104,8 @@ pub async fn blocks_range(
     Ok(ApiOk(
         blocks
             .iter()
-            .map(|b| block_detail(&b.header, &b.txs, b.tree.as_ref()))
+            // A range's headers are fetched fresh, so their depth is current.
+            .map(|b| block_detail(&b.header, b.header.depth, &b.txs, b.tree.as_ref()))
             .collect(),
     ))
 }

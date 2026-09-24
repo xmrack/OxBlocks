@@ -142,8 +142,9 @@ pub struct BlockDetail {
     pub block_height: u64,
     pub current_height: u64,
     pub hash: String,
-    /// The curve tree's layer count, from the FCMP++ fork on; `null` below
-    /// it.
+    /// The curve tree's layer count, from the FCMP++ fork on. `null` when no
+    /// tree is reported: below the fork, and in `/api/blocks` for a post-fork
+    /// block whose body could not be fetched.
     pub n_tree_layers: Option<u8>,
     /// Integer here. The *same* value is a JSON float in `/api/transactions`.
     /// On one block that is 95511 against 95511.0.
@@ -151,7 +152,7 @@ pub struct BlockDetail {
     pub timestamp: u64,
     pub timestamp_utc: String,
     /// The curve tree root this block commits to, hex, from the FCMP++ fork
-    /// on; `null` below it.
+    /// on. `null` in the same cases as `n_tree_layers`.
     pub tree_root: Option<String>,
     pub txs: Vec<TxSummary>,
 }

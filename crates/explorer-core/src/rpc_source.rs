@@ -350,13 +350,89 @@ impl RpcChainSource {
         // Keyed by height: only once buried past the reorg window, because a
         // reorg reassigns a height to a different block. `depth` is the
         // daemon's own count of how far down the chain this block sits.
-        if safe_to_cache_by_height(fresh.block_header.depth) {
+        //
+        // And never for an orphan. monerod serves an alternative chain's block
+        // by hash, with a depth counted from the main tip like any other, so
+        // one looked up once buried would otherwise take the main chain's
+        // place at its height for every later lookup by height.
+        if safe_to_cache_by_height(fresh.block_header.depth) && !fresh.block_header.orphan_status {
             return Ok(self
                 .blocks_by_height
                 .insert(fresh.block_header.height, fresh));
         }
 
         Ok(Arc::new(fresh))
+    }
+
+    /// The body of the block `header` names, from whichever cache holds it.
+    ///
+    /// By hash, which names one block forever, so the body cache serves it at
+    /// any depth and a reorg since `header` was fetched cannot substitute a
+    /// different block. A block buried past the reorg window may sit in the
+    /// larger height cache instead, and is taken from there when its hash
+    /// matches: a scan of deep ranges wider than the hash cache would
+    /// otherwise miss on every block.
+    async fn body_for(
+        &self,
+        header: &monerod_rpc::types::BlockHeader,
+    ) -> Result<Arc<GetBlock>, ChainError> {
+        if safe_to_cache_by_height(header.depth)
+            && let Some(hit) = self.blocks_by_height.get(&header.height)
+            && hit.block_header.hash.eq_ignore_ascii_case(&header.hash)
+        {
+            return Ok(hit);
+        }
+        let id = header
+            .hash
+            .parse::<Hash32>()
+            .map_or(BlockId::Height(header.height), BlockId::Hash);
+        self.block(id).await
+    }
+
+    /// The block at `height`, without re-fetching a recent block's body on
+    /// every call.
+    ///
+    /// [`Self::block`] by height caches only blocks buried past the reorg
+    /// window, so a recent height costs a whole body each time. This asks for
+    /// the header instead, which is small, and takes the body by the hash it
+    /// names, which the hash cache holds after the first time.
+    pub async fn block_at(&self, height: u64) -> Result<Arc<GetBlock>, ChainError> {
+        if let Some(hit) = self.blocks_by_height.get(&height) {
+            return Ok(hit);
+        }
+        let range = self.headers_range(height, height).await?;
+        let Some(header) = range.headers.first() else {
+            return Err(ChainError::BlockNotFound(BlockId::Height(height)));
+        };
+        self.body_for(header).await
+    }
+
+    /// The block carrying the root an FCMP++ proof naming `reference_block`
+    /// was checked against, with that root: `reference_block - 8`, once it is
+    /// known to carry one.
+    ///
+    /// Arithmetic alone names a block from before the fork for the first
+    /// reference blocks after it, which carries no root, so the block is
+    /// fetched and asked. `None` for such a block, below height 8, and when
+    /// the block cannot be had.
+    pub async fn proof_root(&self, reference_block: u64) -> Option<(u64, String)> {
+        let height = monerod_rpc::types::tree_root_block(reference_block)?;
+        let block = self.block_at(height).await.ok()?;
+        BlockTree::of(&block).map(|t| (height, t.root))
+    }
+
+    /// How deep `header`'s block sits below the tip now.
+    ///
+    /// `depth` is counted from the tip at the moment the daemon answered, and a
+    /// cached block keeps the count it had then: a block cached as the tip
+    /// reads as the tip for as long as it stays cached. Anything shown to a
+    /// reader is recounted from the current tip. When the tip cannot be had,
+    /// the stored count is the best there is.
+    pub async fn depth_now(&self, header: &monerod_rpc::types::BlockHeader) -> u64 {
+        match self.info().await {
+            Ok(info) => info.height.saturating_sub(header.height.saturating_add(1)),
+            Err(_) => header.depth,
+        }
     }
 
     pub async fn transactions(&self, hashes: &[Hash32]) -> Result<FetchedTxs, ChainError> {
@@ -474,34 +550,33 @@ impl RpcChainSource {
         // in the body too but is optional: a block whose body could not be had
         // for its tree alone reports no tree rather than failing the range.
         //
-        // By the hash each header carries, not by height. A hash names one
-        // block forever, so the body cache serves it at any depth, where the
-        // height cache holds only blocks buried past the reorg window; and a
-        // reorg between the header call and this one cannot pair one block's
-        // header with another's transactions.
-        let wanted_bodies: Vec<(u64, BlockId, bool)> = headers
+        // Through `body_for`, which fetches by the hash each header carries:
+        // see there for why, and for which cache serves it.
+        let wanted_bodies: Vec<(&monerod_rpc::types::BlockHeader, bool)> = headers
             .iter()
             .filter_map(|h| {
                 let needed = h.num_txes > 0;
                 let for_tree =
                     with_tree && h.major_version >= monerod_rpc::types::HF_VERSION_FCMP_PLUS_PLUS;
-                let id = h
-                    .hash
-                    .parse::<Hash32>()
-                    .map_or(BlockId::Height(h.height), BlockId::Hash);
-                (needed || for_tree).then_some((h.height, id, needed))
+                (needed || for_tree).then_some((h, needed))
             })
             .collect();
         let bodies =
-            futures_util::future::join_all(wanted_bodies.iter().map(|(_, id, _)| self.block(*id)))
+            futures_util::future::join_all(wanted_bodies.iter().map(|(h, _)| self.body_for(h)))
                 .await;
 
         let mut extra: HashMap<u64, Arc<GetBlock>> = HashMap::with_capacity(wanted_bodies.len());
-        for ((height, _, needed), body) in wanted_bodies.iter().zip(bodies) {
+        for ((header, needed), body) in wanted_bodies.iter().zip(bodies) {
             match body {
-                Ok(body) => drop(extra.insert(*height, body)),
+                Ok(body) => drop(extra.insert(header.height, body)),
+                // Reported as no tree, which the API documents as "none
+                // reported" rather than "none exists". Logged at warn so an
+                // operator can tell a busy daemon from a pre-fork block.
                 Err(e) if !needed => {
-                    tracing::debug!("block {height}'s tree left out of the range: {e}");
+                    tracing::warn!(
+                        "block {}'s curve tree left out of the range: {e}",
+                        header.height
+                    );
                 }
                 Err(e) => return Err(e),
             }
@@ -1426,6 +1501,366 @@ mod tests {
         // reads as unknown rather than as an error.
         assert_eq!(src.anonymity_set(&with_ref, &mined, 200).await, None);
         assert_eq!(src.rpc_calls(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // A stand-in daemon, for the paths whose behaviour is which calls they make
+    // -----------------------------------------------------------------------
+
+    /// A loopback HTTP server answering like monerod for the few calls the
+    /// range and cache code makes, and recording each one. Bounded throughout:
+    /// the listener polls, every read has a timeout, and dropping it stops and
+    /// joins the thread, so a broken build fails instead of hanging.
+    struct FakeDaemon {
+        port: u16,
+        calls: Arc<std::sync::Mutex<Vec<String>>>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    type Answer = dyn Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync;
+
+    impl FakeDaemon {
+        /// `answer` gets the method (for `/json_rpc`) or the endpoint, and the
+        /// request body, and returns the whole response body.
+        fn start(
+            answer: impl Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
+        ) -> Self {
+            use std::io::{Read, Write};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let answer: Arc<Answer> = Arc::new(answer);
+            let (c, st) = (Arc::clone(&calls), Arc::clone(&stop));
+            let handle = std::thread::spawn(move || {
+                while !st.load(Ordering::Relaxed) {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(2));
+                        continue;
+                    };
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    let (head_end, length) = loop {
+                        let n = stream.read(&mut chunk).unwrap_or(0);
+                        if n == 0 {
+                            break (None, 0);
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8_lossy(&buf[..i]).to_lowercase();
+                            let length = head
+                                .lines()
+                                .find_map(|l| l.strip_prefix("content-length:"))
+                                .and_then(|v| v.trim().parse::<usize>().ok())
+                                .unwrap_or(0);
+                            break (Some(i + 4), length);
+                        }
+                    };
+                    let Some(start) = head_end else { continue };
+                    while buf.len() < start + length {
+                        let n = stream.read(&mut chunk).unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                    }
+                    let request_line = String::from_utf8_lossy(&buf[..start]).to_string();
+                    let path = request_line
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or("")
+                        .trim_start_matches('/')
+                        .to_owned();
+                    let body: serde_json::Value =
+                        serde_json::from_slice(&buf[start..start + length]).unwrap_or_default();
+                    let what = if path == "json_rpc" {
+                        body["method"].as_str().unwrap_or("").to_owned()
+                    } else {
+                        path
+                    };
+                    c.lock().unwrap().push(what.clone());
+                    let reply = answer(&what, &body).to_string();
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                        reply.len()
+                    );
+                }
+            });
+            Self {
+                port,
+                calls,
+                stop,
+                handle: Some(handle),
+            }
+        }
+
+        fn source(&self) -> RpcChainSource {
+            RpcChainSource::new(Client::new(format!("http://127.0.0.1:{}", self.port)).unwrap())
+        }
+
+        fn count(&self, what: &str) -> usize {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| *c == what)
+                .count()
+        }
+    }
+
+    impl Drop for FakeDaemon {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            if let Some(h) = self.handle.take() {
+                let _ = h.join();
+            }
+        }
+    }
+
+    /// A small chain for the stand-in: block `h` has hash `hash_of(h)`, the
+    /// tip is `tip`, and every block from `fork` on carries a curve tree.
+    #[derive(Clone, Copy)]
+    struct Chain {
+        tip: u64,
+        fork: u64,
+    }
+
+    fn hash_of(height: u64) -> String {
+        format!("{:064x}", height + 1)
+    }
+
+    impl Chain {
+        fn header(self, height: u64, orphan: bool) -> serde_json::Value {
+            let version = if height >= self.fork { 17 } else { 16 };
+            serde_json::json!({
+                "major_version": version, "minor_version": version, "timestamp": height,
+                "prev_hash": hash_of(height.saturating_sub(1)), "nonce": 0,
+                "orphan_status": orphan, "height": height,
+                "depth": self.tip.saturating_sub(height),
+                "hash": if orphan { format!("{:064x}", height + 1_000_000) } else { hash_of(height) },
+                "difficulty": 1, "difficulty_top64": 0, "wide_difficulty": "0x1",
+                "cumulative_difficulty": 1, "cumulative_difficulty_top64": 0,
+                "wide_cumulative_difficulty": "0x1", "reward": 1, "block_size": 100,
+                "num_txes": 0, "pow_hash": "", "miner_tx_hash": "",
+            })
+        }
+
+        fn block(self, height: u64, orphan: bool) -> serde_json::Value {
+            let tree = if height >= self.fork {
+                format!(
+                    r#","fcmp_pp_n_tree_layers":2,"fcmp_pp_tree_root":"{:064x}""#,
+                    height + 500
+                )
+            } else {
+                String::new()
+            };
+            let json = format!(
+                r#"{{"major_version":17,"minor_version":17,"timestamp":0,"prev_id":"","nonce":0,"miner_tx":{{"version":2,"unlock_time":0,"vin":[],"vout":[],"extra":[]}},"tx_hashes":[]{tree}}}"#
+            );
+            serde_json::json!({
+                "block_header": self.header(height, orphan),
+                "miner_tx_hash": "", "blob": "", "json": json, "status": "OK",
+            })
+        }
+
+        fn info(self) -> serde_json::Value {
+            serde_json::json!({
+                "height": self.tip + 1, "target_height": 0, "difficulty": 1, "difficulty_top64": 0,
+                "target": 120, "tx_count": 0, "tx_pool_size": 0, "alt_blocks_count": 0,
+                "outgoing_connections_count": 0, "incoming_connections_count": 0,
+                "white_peerlist_size": 0, "grey_peerlist_size": 0, "testnet": true,
+                "stagenet": false, "nettype": "testnet", "top_block_hash": hash_of(self.tip),
+                "cumulative_difficulty": 1, "cumulative_difficulty_top64": 0,
+                "block_size_limit": 0, "block_size_median": 0, "start_time": 0,
+                "version": "test", "restricted": false, "status": "OK",
+            })
+        }
+
+        /// A daemon for this chain. `busy` names heights whose `get_block`
+        /// answers BUSY; `orphan_at` makes a lookup by hash of an unknown hash
+        /// answer an orphan at that height.
+        fn daemon(self, busy: &'static [u64], orphan_at: Option<u64>) -> FakeDaemon {
+            FakeDaemon::start(move |what, body| {
+                let ok =
+                    |r: serde_json::Value| serde_json::json!({"jsonrpc":"2.0","id":"0","result":r});
+                match what {
+                    "get_info" => ok(self.info()),
+                    "get_block_headers_range" => {
+                        let (a, b) = (
+                            body["params"]["start_height"].as_u64().unwrap(),
+                            body["params"]["end_height"].as_u64().unwrap(),
+                        );
+                        ok(serde_json::json!({
+                            "headers": (a..=b).map(|h| self.header(h, false)).collect::<Vec<_>>(),
+                            "status": "OK",
+                        }))
+                    }
+                    "get_block" => {
+                        let p = &body["params"];
+                        let (height, orphan) = if let Some(h) = p["height"].as_u64() {
+                            (h, false)
+                        } else {
+                            let hash = p["hash"].as_str().unwrap();
+                            match (0..=self.tip).find(|h| hash_of(*h) == hash) {
+                                Some(h) => (h, false),
+                                None => (orphan_at.unwrap(), true),
+                            }
+                        };
+                        if busy.contains(&height) {
+                            return serde_json::json!({"jsonrpc":"2.0","id":"0",
+                                "error":{"code":-9,"message":"Core is busy"}});
+                        }
+                        ok(self.block(height, orphan))
+                    }
+                    _ => serde_json::json!({"status": "OK"}),
+                }
+            })
+        }
+    }
+
+    /// A post-fork block wanted only for its tree, whose body the daemon will
+    /// not hand over, costs that block its tree and nothing else.
+    #[tokio::test]
+    async fn a_block_wanted_only_for_its_tree_does_not_fail_the_range() {
+        let chain = Chain { tip: 9, fork: 0 };
+        let daemon = chain.daemon(&[5], None);
+        let blocks = daemon.source().blocks_in_range(0, 9, true).await.unwrap();
+        assert_eq!(blocks.len(), 10);
+        for b in &blocks {
+            assert_eq!(
+                b.tree.is_some(),
+                b.header.height != 5,
+                "block {}",
+                b.header.height
+            );
+        }
+        assert_eq!(daemon.count("get_block"), 10);
+    }
+
+    /// Without the tree the same range fetches no bodies at all.
+    #[tokio::test]
+    async fn a_range_that_does_not_show_the_tree_does_not_pay_for_it() {
+        let chain = Chain { tip: 9, fork: 0 };
+        let daemon = chain.daemon(&[], None);
+        let blocks = daemon.source().blocks_in_range(0, 9, false).await.unwrap();
+        assert!(blocks.iter().all(|b| b.tree.is_none()));
+        assert_eq!(daemon.count("get_block"), 0);
+    }
+
+    /// Recent bodies are fetched by hash, so a repeated range is served from
+    /// the hash cache although none of them is deep enough for the height one.
+    #[tokio::test]
+    async fn a_repeated_recent_range_is_served_from_the_hash_cache() {
+        let chain = Chain { tip: 9, fork: 0 };
+        let daemon = chain.daemon(&[], None);
+        let src = daemon.source();
+        src.blocks_in_range(0, 9, true).await.unwrap();
+        src.blocks_in_range(0, 9, true).await.unwrap();
+        assert_eq!(
+            daemon.count("get_block"),
+            10,
+            "the second pass fetched bodies again"
+        );
+        assert_eq!(daemon.count("get_block_headers_range"), 2);
+    }
+
+    /// A deep body already in the height cache is taken from there when its
+    /// hash matches the header, and fetched by hash when it does not.
+    #[tokio::test]
+    async fn a_deep_range_uses_the_height_cache_when_the_hash_matches() {
+        let chain = Chain { tip: 200, fork: 0 };
+        let daemon = chain.daemon(&[], None);
+        let src = daemon.source();
+        for h in 0..10 {
+            let block: GetBlock = serde_json::from_value(chain.block(h, false)).unwrap();
+            src.blocks_by_height.insert(h, block);
+        }
+        // A stale entry for height 3: a different block than the header names.
+        let stale: GetBlock = serde_json::from_value(chain.block(3, true)).unwrap();
+        src.blocks_by_height.insert(3, stale);
+
+        let blocks = src.blocks_in_range(0, 9, true).await.unwrap();
+        assert!(blocks.iter().all(|b| b.tree.is_some()));
+        assert_eq!(
+            daemon.count("get_block"),
+            1,
+            "only the mismatched block is fetched"
+        );
+    }
+
+    /// An orphan looked up by hash once buried must not take the main chain's
+    /// place at its height.
+    #[tokio::test]
+    async fn an_orphan_is_never_cached_by_height() {
+        let chain = Chain { tip: 200, fork: 0 };
+        let daemon = chain.daemon(&[], Some(5));
+        let src = daemon.source();
+        let alt: Hash32 = format!("{:064x}", 5 + 1_000_000).parse().unwrap();
+        let orphan = src.block(BlockId::Hash(alt)).await.unwrap();
+        assert!(orphan.block_header.orphan_status);
+
+        let main = src.block(BlockId::Height(5)).await.unwrap();
+        assert!(
+            !main.block_header.orphan_status,
+            "the orphan was served by height"
+        );
+        assert_eq!(main.block_header.hash, hash_of(5));
+        assert_eq!(daemon.count("get_block"), 2);
+    }
+
+    /// `block_at` asks for a recent block's header each time but its body
+    /// only once.
+    #[tokio::test]
+    async fn a_recent_block_by_height_costs_its_body_once() {
+        let chain = Chain { tip: 9, fork: 0 };
+        let daemon = chain.daemon(&[], None);
+        let src = daemon.source();
+        src.block_at(5).await.unwrap();
+        src.block_at(5).await.unwrap();
+        assert_eq!(daemon.count("get_block"), 1);
+        assert_eq!(daemon.count("get_block_headers_range"), 2);
+    }
+
+    /// The root link is fetched, not computed: for a reference block less than
+    /// eight past the fork, block R - 8 is from before it and has no root.
+    #[tokio::test]
+    async fn a_proof_root_is_linked_only_where_a_block_carries_one() {
+        let chain = Chain { tip: 40, fork: 20 };
+        let daemon = chain.daemon(&[], None);
+        let src = daemon.source();
+        assert_eq!(
+            src.proof_root(25).await,
+            None,
+            "block 17 is before the fork"
+        );
+        assert_eq!(
+            src.proof_root(30).await,
+            Some((22, format!("{:064x}", 22 + 500)))
+        );
+        assert_eq!(src.proof_root(5).await, None, "block -3 does not exist");
+    }
+
+    /// A block's depth is counted from the tip as it is now, not as it was
+    /// when the block was cached.
+    #[tokio::test]
+    async fn depth_is_counted_from_the_current_tip() {
+        let chain = Chain { tip: 100, fork: 0 };
+        let daemon = chain.daemon(&[], None);
+        let src = daemon.source();
+        let mut header: monerod_rpc::types::BlockHeader =
+            serde_json::from_value(chain.header(90, false)).unwrap();
+        header.depth = 0; // as cached when block 90 was the tip
+        assert_eq!(src.depth_now(&header).await, 10);
+
+        // With no tip to count from, the stored count is all there is.
+        assert_eq!(source().depth_now(&header).await, 0);
     }
 
     /// An unreachable daemon marks the ring unavailable rather than erroring

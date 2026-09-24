@@ -132,7 +132,7 @@ struct TxPage {
     /// spend whose prunable half this node no longer holds.
     reference_block: Option<u64>,
     n_tree_layers: Option<u8>,
-    /// The block whose header carries the root the proof was checked
+    /// The block that carries the root the proof was checked
     /// against, eight below the reference block (see
     /// [`monerod_rpc::types::TREE_ROOT_LAG`]), and that root. `None` when that
     /// block carries no tree, which is so for the first reference blocks after
@@ -967,6 +967,12 @@ pub async fn block(
     // document that does not decode costs this one row and nothing else:
     // everything above it came from the header.
     let tree = BlockTree::of(&got);
+    // A cached block carries the depth it had when fetched, so a block cached
+    // as the tip would read as the tip for as long as it stayed cached.
+    // Counted from the tip the status strip shows instead.
+    let depth = chain.as_ref().map_or(header.depth, |c| {
+        c.height.saturating_sub(header.height.saturating_add(1))
+    });
 
     render(
         StatusCode::OK,
@@ -975,7 +981,7 @@ pub async fn block(
             query: None,
             chain,
             height: header.height,
-            depth: header.depth,
+            depth,
             hash: header.hash.to_lowercase(),
             prev_hash: header.prev_hash.to_lowercase(),
             timestamp: header.timestamp,
@@ -1053,31 +1059,23 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
 
     let f = TxFacts::from_entry(entry, &tx);
     let rings = state.chain.resolve_rings(&tx).await;
-    let anonymity_set = state
-        .chain
-        .anonymity_set(
+    // The tree size and the block carrying the proof's root are independent,
+    // so they are asked for together. See `RpcChainSource::proof_root` for why
+    // the root block is fetched rather than computed.
+    let reference = f.fcmp_pp.and_then(|x| x.reference_block);
+    let (anonymity_set, root_block) = tokio::join!(
+        state.chain.anonymity_set(
             &tx,
             entry,
             entry.block_height.saturating_add(entry.confirmations),
-        )
-        .await;
-    // The block that carries the proof's root, linked only once it is known to
-    // carry one: arithmetic alone names a pre-fork block for the first
-    // reference blocks after the fork. One `get_block`, cached once buried.
-    let root_block = match f
-        .fcmp_pp
-        .and_then(|x| x.reference_block)
-        .and_then(monerod_rpc::types::tree_root_block)
-    {
-        Some(height) => state
-            .chain
-            .block(BlockId::Height(height))
-            .await
-            .ok()
-            .and_then(|b| BlockTree::of(&b))
-            .map(|t| (height, t.root)),
-        None => None,
-    };
+        ),
+        async {
+            match reference {
+                Some(r) => state.chain.proof_root(r).await,
+                None => None,
+            }
+        },
+    );
 
     // A transaction in the pool is in no block, so the time it carries is the
     // time it arrived: `block_timestamp` is 0 there and renders as 1970. The
