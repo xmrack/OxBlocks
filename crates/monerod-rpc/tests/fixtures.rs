@@ -23,11 +23,11 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 use monerod_rpc::types::{
-    BlockHeader, ChainInfo, EcdhForm, EcdhInfo, FeeEstimate, GetAlternateChains, GetBlock,
-    GetBlockCount, GetBlockHeader, GetBlockHeadersRange, GetHeight, GetInfo, GetOutsResponse,
-    GetTransactionPool, GetTransactionsResponse, IsKeyImageSpentResponse, NestedJsonError, OutKey,
-    OutKeyRequest, PseudoOutsLocation, RctSigBase, RctType, SpentStatus, TxEntry, TxIn, TxJson,
-    TxOutTarget, parse_wide, reassemble_u128, split_ring_signatures,
+    BlockHeader, BlockJson, ChainInfo, EcdhForm, EcdhInfo, FeeEstimate, GetAlternateChains,
+    GetBlock, GetBlockCount, GetBlockHeader, GetBlockHeadersRange, GetHeight, GetInfo,
+    GetOutsResponse, GetTransactionPool, GetTransactionsResponse, IsKeyImageSpentResponse,
+    NestedJsonError, OutKey, OutKeyRequest, PseudoOutsLocation, RctSigBase, RctType, SpentStatus,
+    TxEntry, TxIn, TxJson, TxOutTarget, parse_wide, reassemble_u128, split_ring_signatures,
 };
 
 /// `"signatures": [ ]` — present and empty, which is what a v1 coinbase emits
@@ -135,30 +135,56 @@ const REPLAYED: &[&str] = &[
     "mainnet/get_transactions_rct6_complete.json",
     "mainnet/get_transactions_rct6_bulletproofplus.json",
     "mainnet/tx_ringct_as_json_parsed.json",
+    "fcmp/get_info.json",
+    "fcmp/get_block_fcmp.json",
+    "fcmp/get_block_coinbase_only.json",
+    "fcmp/get_last_block_header.json",
+    "fcmp/get_fee_estimate.json",
+    "fcmp/get_transaction_pool.json",
+    "fcmp/get_transactions_fcmp.json",
+    "fcmp/get_transactions_fcmp_pruned.json",
+    "fcmp/get_transactions_coinbase.json",
+    "fcmp/get_transactions_pool.json",
 ];
 
 fn replay_by_name(rel: &str) {
     match rel {
-        "testnet/get_info.json" | "testnet/get_info_master.json" => {
+        "testnet/get_info.json" | "testnet/get_info_master.json" | "fcmp/get_info.json" => {
             drop(replay::<GetInfo>(&result_of(rel), rel));
         }
         "testnet/get_block_134721.json"
         | "testnet/get_block_coinbase_only.json"
-        | "mainnet/get_block_ringct.json" => drop(replay::<GetBlock>(&result_of(rel), rel)),
+        | "mainnet/get_block_ringct.json"
+        | "fcmp/get_block_fcmp.json"
+        | "fcmp/get_block_coinbase_only.json" => {
+            let block: GetBlock = replay(&result_of(rel), rel);
+            // The block's own JSON is a second wire format, and the one that
+            // carries the curve tree.
+            let nested: Value = serde_json::from_str(&block.json)
+                .unwrap_or_else(|e| panic!("{rel} json is not JSON: {e}"));
+            drop(replay::<BlockJson>(&nested, &format!("{rel}:json")));
+        }
         "testnet/get_block_headers_range.json" => {
             drop(replay::<GetBlockHeadersRange>(&result_of(rel), rel));
         }
-        "testnet/get_last_block_header.json" => {
+        "testnet/get_last_block_header.json" | "fcmp/get_last_block_header.json" => {
             drop(replay::<GetBlockHeader>(&result_of(rel), rel));
         }
         "testnet/get_block_count.json" => drop(replay::<GetBlockCount>(&result_of(rel), rel)),
-        "testnet/get_fee_estimate.json" => drop(replay::<FeeEstimate>(&result_of(rel), rel)),
+        "testnet/get_fee_estimate.json" | "fcmp/get_fee_estimate.json" => {
+            drop(replay::<FeeEstimate>(&result_of(rel), rel));
+        }
         "testnet/get_alternate_chains.json" => {
             drop(replay::<GetAlternateChains>(&result_of(rel), rel));
         }
         "testnet/get_height.json" => drop(replay::<GetHeight>(&raw(rel), rel)),
-        "testnet/get_transaction_pool.json" => {
-            drop(replay::<GetTransactionPool>(&raw(rel), rel));
+        "testnet/get_transaction_pool.json" | "fcmp/get_transaction_pool.json" => {
+            let pool: GetTransactionPool = replay(&raw(rel), rel);
+            for t in &pool.transactions {
+                let nested: Value = serde_json::from_str(&t.tx_json)
+                    .unwrap_or_else(|e| panic!("{rel} tx_json is not JSON: {e}"));
+                drop(replay::<TxJson>(&nested, &format!("{rel}:{}", t.id_hash)));
+            }
         }
         "testnet/get_transactions_ring.json"
         | "testnet/get_transactions_coinbase.json"
@@ -171,7 +197,11 @@ fn replay_by_name(rel: &str) {
         | "mainnet/get_transactions_rct5_clsag.json"
         | "mainnet/get_transactions_coinbase_v2.json"
         | "mainnet/get_transactions_rct6_complete.json"
-        | "mainnet/get_transactions_rct6_bulletproofplus.json" => {
+        | "mainnet/get_transactions_rct6_bulletproofplus.json"
+        | "fcmp/get_transactions_fcmp.json"
+        | "fcmp/get_transactions_fcmp_pruned.json"
+        | "fcmp/get_transactions_coinbase.json"
+        | "fcmp/get_transactions_pool.json" => {
             let resp: GetTransactionsResponse = replay(&raw(rel), rel);
             // The nested documents are a second wire format; replay them too.
             for entry in &resp.txs {
@@ -210,7 +240,7 @@ fn every_known_fixture_round_trips_without_losing_a_field() {
 #[test]
 fn every_fixture_on_disk_is_at_least_valid_json() {
     let mut on_disk = std::collections::BTreeSet::new();
-    for net in ["testnet", "mainnet"] {
+    for net in ["testnet", "mainnet", "fcmp"] {
         let dir = fixtures_root().join(net);
         let entries = std::fs::read_dir(&dir)
             .unwrap_or_else(|e| panic!("cannot list {}: {e}", dir.display()));
@@ -682,11 +712,13 @@ fn the_corpus_covers_every_rct_type_reachable_from_these_nodes() {
     // Every scheme Monero has ever used on mainnet, each behind a real capture.
     // Type 6 (BulletproofPlus) was out of reach when this corpus was first
     // built -- HF15 is height 2,688,888 and the node was at 2,583,912 -- and is
-    // now covered by mainnet tx 281d0f52...9981 at height 3,120,801.
+    // now covered by mainnet tx 281d0f52...9981 at height 3,120,801. Type 7
+    // (FCMP++) comes from a regtest daemon built from the stressnet branch;
+    // see `fixtures/fcmp`.
     assert_eq!(
         seen,
-        vec![0, 1, 2, 3, 4, 5, 6],
-        "every RingCT type from Null to BulletproofPlus has a real capture behind it"
+        vec![0, 1, 2, 3, 4, 5, 6, 7],
+        "every RingCT type from Null to FCMP++ has a real capture behind it"
     );
 }
 
@@ -2232,4 +2264,157 @@ fn a_pruned_bulletproof_plus_transaction_loses_only_its_prunable_half() {
 
     // Type 6 keeps pseudo-outs in the prunable half, so pruning takes them.
     assert!(tx.pseudo_outs().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// FCMP++ and Carrot, from a daemon built from the stressnet branch
+// ---------------------------------------------------------------------------
+
+/// Regtest runs the newest fork from block 1, so every spend in these captures
+/// is an FCMP++ spend and every output a Carrot output.
+#[test]
+fn an_fcmp_pp_spend_has_no_ring_and_names_the_tree_it_proved_against() {
+    let txs = decoded_txs("fcmp/get_transactions_fcmp.json");
+    assert_eq!(txs.len(), 2);
+    for (entry, tx) in &txs {
+        assert_eq!(tx.rct_type(), Some(RctType::FcmpPlusPlus));
+        assert!(tx.is_fcmp_pp());
+        assert!(!tx.looks_pruned());
+        assert!(!entry.prunable_missing(tx));
+
+        for input in &tx.vin {
+            let k = input
+                .as_key()
+                .expect("an FCMP++ input is still a key input");
+            assert!(k.key_offsets.is_empty(), "present and empty, not a ring");
+        }
+
+        // The reference block is below the block the transaction landed in,
+        // and the layer count matches what the block reports for its tree.
+        let reference = tx.reference_block().expect("a complete tx names its tree");
+        assert!(reference < entry.block_height);
+        assert!(tx.n_tree_layers().expect("and its layer count") >= 1);
+
+        // One pseudo-output per input, in the prunable half as for types 3-6.
+        assert_eq!(tx.pseudo_outs().len(), tx.vin.len());
+    }
+
+    // The proof grows with the inputs it covers.
+    let lens: Vec<(usize, usize)> = txs
+        .iter()
+        .map(|(_, tx)| {
+            let p = tx.rctsig_prunable.as_ref().unwrap();
+            (tx.vin.len(), p.fcmp_pp_len().expect("an even-length blob"))
+        })
+        .collect();
+    assert_eq!(lens, vec![(1, 4256), (2, 6528)]);
+}
+
+/// The prunable key set is the per-type fingerprint. Type 7 keeps `nbp`,
+/// `bpp` and `pseudoOuts` from type 6 and replaces `CLSAGs` with the proof and
+/// the two tree fields.
+#[test]
+fn type_7_trades_clsags_for_the_proof_and_its_tree() {
+    for doc in nested_raw("fcmp/get_transactions_fcmp.json") {
+        assert_eq!(
+            prunable_keys(&doc),
+            [
+                "bpp",
+                "fcmp_pp",
+                "n_tree_layers",
+                "nbp",
+                "pseudoOuts",
+                "reference_block"
+            ]
+        );
+    }
+}
+
+#[test]
+fn carrot_outputs_carry_a_three_byte_view_tag_and_an_anchor() {
+    let mut txs = decoded_txs("fcmp/get_transactions_fcmp.json");
+    txs.extend(decoded_txs("fcmp/get_transactions_coinbase.json"));
+    for (entry, tx) in &txs {
+        assert!(!tx.vout.is_empty());
+        for out in &tx.vout {
+            let TxOutTarget::CarrotV1(c) = &out.target else {
+                panic!("{} has a non-Carrot output", entry.tx_hash);
+            };
+            assert_eq!(c.key.len(), 64);
+            assert_eq!(c.view_tag.len(), 6, "three bytes, not one");
+            assert_eq!(c.encrypted_janus_anchor.len(), 32);
+            assert_eq!(out.target.public_key(), Some(c.key.as_str()));
+        }
+        // One unified id per output, beside the per-amount indices.
+        assert_eq!(entry.unified_ids.len(), tx.vout.len());
+        assert_eq!(entry.output_indices.len(), tx.vout.len());
+    }
+    for (_, tx) in decoded_txs("fcmp/get_transactions_fcmp.json") {
+        for e in ecdh_of(&tx) {
+            assert_eq!(e.form(), Some(EcdhForm::Compact));
+        }
+    }
+}
+
+/// A coinbase after the fork is still type 0 with a public amount; only its
+/// output type changed.
+#[test]
+fn a_post_fork_coinbase_is_public_and_not_fcmp_pp() {
+    let txs = decoded_txs("fcmp/get_transactions_coinbase.json");
+    let (_, tx) = txs.first().unwrap();
+    assert!(tx.is_coinbase());
+    assert_eq!(tx.rct_type(), Some(RctType::Null));
+    assert!(!tx.is_fcmp_pp());
+    assert!(tx.vout.iter().all(|o| o.amount > 0 && o.target.is_carrot()));
+}
+
+/// Pruning takes the proof and the tree fields with it. The transaction is
+/// still recognisably FCMP++ from the half that remains.
+#[test]
+fn a_pruned_fcmp_pp_spend_keeps_its_type_and_loses_its_tree() {
+    let txs = decoded_txs("fcmp/get_transactions_fcmp_pruned.json");
+    let (entry, tx) = txs.first().unwrap();
+    assert!(tx.is_fcmp_pp());
+    assert!(tx.looks_pruned());
+    assert!(entry.prunable_missing(tx));
+    assert_eq!(tx.reference_block(), None);
+    assert_eq!(tx.n_tree_layers(), None);
+    assert!(tx.vin.iter().all(|i| i.as_key().is_some()));
+}
+
+#[test]
+fn an_fcmp_pp_block_commits_to_its_curve_tree() {
+    for rel in [
+        "fcmp/get_block_fcmp.json",
+        "fcmp/get_block_coinbase_only.json",
+    ] {
+        let block: GetBlock = serde_json::from_value(result_of(rel)).unwrap();
+        let body = block.parse_json().unwrap();
+        assert!(body.major_version >= 17, "{rel}");
+        assert!(body.fcmp_pp_n_tree_layers.is_some_and(|n| n >= 1), "{rel}");
+        let root = body.fcmp_pp_tree_root.as_deref().unwrap();
+        assert_eq!(root.len(), 64, "{rel}");
+        assert!(root.bytes().all(|b| b.is_ascii_hexdigit()));
+    }
+
+    // Below the fork there are no tree fields at all.
+    let old: GetBlock = serde_json::from_value(result_of("testnet/get_block_134721.json")).unwrap();
+    let body = old.parse_json().unwrap();
+    assert_eq!(body.fcmp_pp_n_tree_layers, None);
+    assert_eq!(body.fcmp_pp_tree_root, None);
+}
+
+/// The mempool's nested documents are FCMP++ too, and still decode.
+#[test]
+fn an_fcmp_pp_pool_entry_decodes() {
+    let pool: GetTransactionPool =
+        serde_json::from_value(raw("fcmp/get_transaction_pool.json")).unwrap();
+    assert!(!pool.transactions.is_empty());
+    for t in &pool.transactions {
+        let tx = t.parse_json().unwrap();
+        assert!(tx.is_fcmp_pp());
+        // monerod reports the reference block as the highest block the pool
+        // entry depends on.
+        assert_eq!(tx.reference_block(), Some(t.max_used_block_height));
+    }
 }
