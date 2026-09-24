@@ -4,12 +4,12 @@
 //! One call needs it: `/get_path_by_unified_id.bin`, the cheapest place the
 //! FCMP++ daemon reports how many outputs its curve tree held as of a block.
 //! (`/getblocks.bin` reports it too, when asked to start a tree sync, beside a
-//! batch of whole blocks.) Every other call this crate makes is JSON, so this module covers exactly what that
-//! one exchange needs: an encoder for a flat section of unsigned integers, and
-//! a reader that pulls a few named scalars out of the root of the answer and
-//! walks past everything else.
+//! batch of whole blocks.) Every other call this crate makes is JSON, so this
+//! module covers exactly what that one exchange needs: an encoder for a flat
+//! section of unsigned integers, and a reader that pulls a few named scalars
+//! out of the root of the answer and walks past everything else.
 //!
-//! The layout, from `contrib/epee/include/storages/portable_storage_*.h`:
+//! The layout:
 //!
 //! * a nine-byte header: two little-endian `u32` signatures, `0x01011101` and
 //!   `0x01020101`, and a version byte of 1;
@@ -26,7 +26,7 @@
 //! skips; the one thing it holds per entry is a borrowed name for each root
 //! key, to catch a repeated one. It does one pass over the bytes, so its time
 //! grows only linearly, and it caps nesting well inside any stack. Callers
-//! also cap the body: [`crate::client::MAX_BINARY_RESPONSE_BYTES`].
+//! also cap the body, e.g. [`crate::types::TreeSizeQuery::MAX_ANSWER_BYTES`].
 //!
 //! What it refuses: an empty name, a bool other than 0 or 1, a repeated root
 //! key, any array of arrays, and bytes after the root. Inside a value it
@@ -57,9 +57,10 @@ const FLAG_ARRAY: u8 = 0x80;
 
 /// Sections nested inside the root, at most.
 ///
-/// The deepest answer this crate reads nests three: a path, inside a path
-/// entry, inside the root's list of them. Recursion is bounded by this and nothing else,
-/// because an array element this reader accepts is a scalar or a section.
+/// The deepest answer this crate reads nests three: the chunks of a path,
+/// inside the path, inside a path entry in the root's list of them. Recursion
+/// is bounded by this and nothing else, because an array element this reader
+/// accepts is a scalar or a section.
 pub const MAX_DEPTH: usize = 32;
 
 /// Why a body is not a portable-storage document this module accepts.
@@ -138,8 +139,8 @@ impl Root {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field<'a> {
     U64(u64),
-    /// Written as an array of `uint64`. epee drops an empty container rather
-    /// than writing it, so an empty slice is left out here too.
+    /// Written as an array of `uint64`. An empty slice is left out of the
+    /// section altogether.
     U64s(&'a [u64]),
 }
 
@@ -370,9 +371,8 @@ impl<'a> Reader<'a> {
             }
             TYPE_OBJECT => self.skip_section(depth + 1),
             // A bare "array" entry: a type byte of 13, then the array's own
-            // typed header. monerod writes an array held in a field with the
-            // 0x80 flag instead, and following this form is how an array of
-            // arrays gets its depth, so it is refused.
+            // typed header. It is how an array of arrays is written, so it is
+            // refused; an array in a field is read by its 0x80 flag.
             TYPE_ARRAY => Err(EpeeError::NestedArray),
             other => Err(EpeeError::UnknownType(other)),
         }
@@ -435,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_encodes_the_way_epee_lays_it_out() {
+    fn a_request_encodes_as_a_header_and_two_entries() {
         let bytes = encode(&[
             ("as_of_n_blocks", Field::U64(421)),
             ("unified_ids", Field::U64s(&[7])),
@@ -456,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_array_is_left_out_as_epee_does() {
+    fn an_empty_array_is_left_out() {
         let bytes = encode(&[("unified_ids", Field::U64s(&[]))]).unwrap();
         assert_eq!(bytes, doc(0, &[]));
     }
@@ -528,7 +528,7 @@ mod tests {
         // without the depth check.
         let nested = doc(1, &entry(b"x", TYPE_ARRAY | FLAG_ARRAY, &[1 << 2]));
         assert_eq!(read_root(&nested, &[]), Err(EpeeError::NestedArray));
-        // A bare array entry, which monerod never writes. See `skip_one`.
+        // A bare array entry. See `skip_one`.
         let bare = doc(1, &entry(b"x", TYPE_ARRAY, &[TYPE_UINT8 | FLAG_ARRAY, 0]));
         assert_eq!(read_root(&bare, &[]), Err(EpeeError::NestedArray));
 

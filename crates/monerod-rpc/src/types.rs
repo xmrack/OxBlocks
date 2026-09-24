@@ -996,9 +996,8 @@ pub struct OutKey {
 /// `/get_path_by_unified_id.bin`, and from `/getblocks.bin` when asked to
 /// start a tree sync, beside a batch of whole blocks. The first is the cheap
 /// one. It exists to hand a wallet the tree paths of its own outputs, and it
-/// answers the tree size beside them. It
-/// answers 0 when asked about no outputs at all, so it has to be asked about
-/// one.
+/// answers the tree size beside them. It answers 0 when asked about no
+/// outputs at all, so it has to be asked about one.
 ///
 /// The one asked about is the **probe**, and choosing it well keeps the call
 /// cheap and safe. For an output that joins the tree only after the block
@@ -1022,6 +1021,13 @@ pub struct TreeSizeQuery {
 
 impl TreeSizeQuery {
     pub const ENDPOINT: &'static str = "get_path_by_unified_id.bin";
+
+    /// The largest answer accepted.
+    ///
+    /// The answer is 115 bytes when the probe is not yet in the tree and about
+    /// 3 KB when it is, with a path that grows by one chunk per tree layer,
+    /// and monerod caps the tree at 12 layers.
+    pub const MAX_ANSWER_BYTES: u64 = 64 * 1024;
 
     /// The root entries [`Self::answer`] reads. Everything else in the answer,
     /// the paths included, is walked past without being kept.

@@ -42,13 +42,6 @@ const MAX_ERROR_BODY: usize = 256;
 /// near this.
 pub const DEFAULT_MAX_RESPONSE_BYTES: u64 = 256 * 1024 * 1024;
 
-/// The largest answer [`Client::binary`] will accept.
-///
-/// The one binary answer read here is 115 bytes when the probe output is not
-/// yet in the tree and about 3 KB when it is, with a path that grows by one
-/// chunk per tree layer, and monerod caps the tree at 12 layers.
-pub const MAX_BINARY_RESPONSE_BYTES: u64 = 64 * 1024;
-
 #[cfg(feature = "tls")]
 type Connector = hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
 #[cfg(not(feature = "tls"))]
@@ -225,7 +218,7 @@ impl Client {
         // One deadline across the whole exchange -- connect, send, read the
         // head, read the body -- rather than one per stage, which would let a
         // daemon that stalls in each stage in turn take twice as long as the
-        // operator configured. reqwest applied its timeout the same way.
+        // operator configured.
         let deadline = tokio::time::Instant::now() + self.timeout;
         let expired = |stage: &str| RpcError::Transport {
             context,
@@ -355,18 +348,18 @@ impl Client {
     /// the root entries named in `wanted`.
     ///
     /// `endpoint` is given without a leading slash and with its `.bin`. The
-    /// answer is held to [`MAX_BINARY_RESPONSE_BYTES`], far below the general
-    /// ceiling, because the only binary answer read here is a few kilobytes.
+    /// answer is held to `max_bytes`, and to the client's general ceiling if
+    /// that is lower: each binary answer has a size its caller can bound,
+    /// and it is far smaller than the largest JSON one.
     ///
-    /// `status` is checked as it is for the JSON endpoints, with one
-    /// difference: a `status` that is present but is not text, or is not
-    /// UTF-8, is a failure here rather than treated as missing. An answer
-    /// whose status cannot be read is not one to trust.
+    /// Every binary answer monerod writes carries `status`, so the answer
+    /// must have one, it must be UTF-8 text, and it must be `OK`.
     pub async fn binary(
         &self,
         endpoint: &'static str,
         fields: &[(&str, crate::epee::Field<'_>)],
         wanted: &[&str],
+        max_bytes: u64,
     ) -> Result<crate::epee::Root, RpcError> {
         let payload = crate::epee::encode(fields).map_err(|source| RpcError::BinaryEncode {
             context: endpoint,
@@ -378,7 +371,7 @@ impl Client {
                 endpoint,
                 "application/octet-stream",
                 payload,
-                MAX_BINARY_RESPONSE_BYTES.min(self.max_response_bytes),
+                max_bytes.min(self.max_response_bytes),
             )
             .await?;
         let mut keep: Vec<&str> = wanted.to_vec();
@@ -394,14 +387,16 @@ impl Client {
         Ok(root)
     }
 
-    /// The binary form of [`Self::check_status`]. See [`Self::binary`] for the
-    /// one way it is stricter.
+    /// The binary form of [`Self::check_status`], which requires `status`.
     fn check_binary_status(
         root: &crate::epee::Root,
         endpoint: &'static str,
     ) -> Result<(), RpcError> {
         if root.get("status").is_none() {
-            return Ok(());
+            return Err(RpcError::Missing {
+                context: endpoint,
+                field: "status",
+            });
         }
         let status = root
             .text("status")
@@ -475,7 +470,7 @@ mod tests {
     /// message. Everything here is bounded: accept, read and join.
     struct Peer {
         port: u16,
-        handle: std::thread::JoinHandle<String>,
+        handle: std::thread::JoinHandle<Vec<u8>>,
     }
 
     /// Serves `body` as a JSON 200, with the length computed rather than typed.
@@ -526,6 +521,10 @@ mod tests {
     }
 
     fn serve_owned(reply: String) -> Peer {
+        serve_bytes(reply.into_bytes())
+    }
+
+    fn serve_bytes(reply: Vec<u8>) -> Peer {
         let listener =
             std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port is available");
         let port = listener.local_addr().expect("bound").port();
@@ -538,14 +537,14 @@ mod tests {
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             let mut socket = loop {
                 if std::time::Instant::now() > deadline {
-                    return String::new();
+                    return Vec::new();
                 }
                 match listener.accept() {
                     Ok((socket, _)) => break socket,
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(10));
                     }
-                    Err(_) => return String::new(),
+                    Err(_) => return Vec::new(),
                 }
             };
             socket
@@ -554,19 +553,21 @@ mod tests {
             let _ = socket.set_read_timeout(Some(Duration::from_secs(5)));
             let mut scratch = [0u8; 8192];
             let n = socket.read(&mut scratch).unwrap_or(0);
-            let stall_after_writing = reply.contains("Content-Length: 4096");
+            let stall_after_writing = reply
+                .windows(b"Content-Length: 4096".len())
+                .any(|w| w == b"Content-Length: 4096");
             if reply.is_empty() {
                 // Hold the connection open with no response, so the only thing
                 // that can end the exchange is the client giving up.
                 std::thread::sleep(Duration::from_secs(10));
             } else {
-                let _ = socket.write_all(reply.as_bytes());
+                let _ = socket.write_all(&reply);
                 let _ = socket.flush();
                 if stall_after_writing {
                     std::thread::sleep(Duration::from_secs(10));
                 }
             }
-            String::from_utf8_lossy(scratch.get(..n).unwrap_or_default()).into_owned()
+            scratch.get(..n).unwrap_or_default().to_vec()
         });
 
         Peer { port, handle }
@@ -576,6 +577,10 @@ mod tests {
         /// The request bytes the client actually sent, or empty if it never
         /// connected.
         fn request(self) -> String {
+            String::from_utf8_lossy(&self.request_bytes()).into_owned()
+        }
+
+        fn request_bytes(self) -> Vec<u8> {
             self.handle.join().expect("the server thread finished")
         }
     }
@@ -882,8 +887,162 @@ mod tests {
         assert!(Client::check_binary_status(&root(b"Failed"), "x.bin").is_err());
         assert!(Client::check_binary_status(&root(b"OK\xff"), "x.bin").is_err());
         assert!(
-            Client::check_binary_status(&crate::epee::Root::default(), "x.bin").is_ok(),
-            "absent is tolerated, as for JSON"
+            matches!(
+                Client::check_binary_status(&crate::epee::Root::default(), "x.bin"),
+                Err(RpcError::Missing {
+                    field: "status",
+                    ..
+                })
+            ),
+            "a binary answer without a status is refused"
+        );
+    }
+
+    /// A portable-storage root section holding `entries`, each a name, a type
+    /// byte and the value's bytes.
+    fn epee_doc(entries: &[(&str, u8, &[u8])]) -> Vec<u8> {
+        let mut b = vec![0x01, 0x11, 0x01, 0x01, 0x01, 0x01, 0x02, 0x01, 0x01];
+        b.push((entries.len() as u8) << 2);
+        for (name, ty, value) in entries {
+            b.push(name.len() as u8);
+            b.extend_from_slice(name.as_bytes());
+            b.push(*ty);
+            b.extend_from_slice(value);
+        }
+        b
+    }
+
+    fn epee_text(text: &str) -> Vec<u8> {
+        let mut v = vec![(text.len() as u8) << 2];
+        v.extend_from_slice(text.as_bytes());
+        v
+    }
+
+    fn serve_binary(body: &[u8]) -> Peer {
+        let mut reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        reply.extend_from_slice(body);
+        serve_bytes(reply)
+    }
+
+    const PROBE: [(&str, crate::epee::Field<'static>); 2] = [
+        ("as_of_n_blocks", crate::epee::Field::U64(421)),
+        ("unified_ids", crate::epee::Field::U64s(&[7])),
+    ];
+
+    #[tokio::test]
+    async fn a_binary_call_posts_the_encoded_request_and_reads_the_answer() {
+        let answer = epee_doc(&[
+            ("n_leaf_tuples", 5, &62u64.to_le_bytes()),
+            ("status", 10, &epee_text("OK")),
+        ]);
+        let peer = serve_binary(&answer);
+        let client = Client::new(format!("http://127.0.0.1:{}", peer.port)).expect("valid url");
+        let root = client
+            .binary(
+                "get_path_by_unified_id.bin",
+                &PROBE,
+                &["n_leaf_tuples"],
+                1024,
+            )
+            .await
+            .expect("the answer is accepted");
+        assert_eq!(root.unsigned("n_leaf_tuples"), Some(62));
+
+        let sent = peer.request_bytes();
+        let head_end = sent
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .expect("a complete head");
+        let head = String::from_utf8_lossy(sent.get(..head_end).unwrap()).to_ascii_lowercase();
+        assert!(
+            head.starts_with("post /get_path_by_unified_id.bin "),
+            "{head}"
+        );
+        assert!(
+            head.contains("content-type: application/octet-stream"),
+            "{head}"
+        );
+        assert_eq!(
+            sent.get(head_end + 4..).unwrap(),
+            crate::epee::encode(&PROBE).unwrap().as_slice(),
+            "the body is the encoded request"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_binary_answer_over_its_limit_is_refused() {
+        let peer = serve_binary(&vec![0u8; 2048]);
+        let client = Client::new(format!("http://127.0.0.1:{}", peer.port)).expect("valid url");
+        let outcome = client
+            .binary("get_path_by_unified_id.bin", &PROBE, &[], 1024)
+            .await;
+        let _ = peer.request();
+        assert!(
+            matches!(outcome, Err(RpcError::ResponseTooLarge { len: 2048, .. })),
+            "{outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_binary_answer_that_failed_or_has_no_status_is_an_error() {
+        let failed = epee_doc(&[
+            ("n_leaf_tuples", 5, &0u64.to_le_bytes()),
+            ("status", 10, &epee_text("Failed")),
+        ]);
+        let silent = epee_doc(&[("n_leaf_tuples", 5, &62u64.to_le_bytes())]);
+        for (body, want_status) in [(failed, true), (silent, false)] {
+            let peer = serve_binary(&body);
+            let client = Client::new(format!("http://127.0.0.1:{}", peer.port)).expect("valid url");
+            let outcome = client
+                .binary(
+                    "get_path_by_unified_id.bin",
+                    &PROBE,
+                    &["n_leaf_tuples"],
+                    1024,
+                )
+                .await;
+            let _ = peer.request();
+            if want_status {
+                assert!(
+                    matches!(
+                        outcome,
+                        Err(RpcError::Status {
+                            status: Status::Failed,
+                            ..
+                        })
+                    ),
+                    "{outcome:?}"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        outcome,
+                        Err(RpcError::Missing {
+                            field: "status",
+                            ..
+                        })
+                    ),
+                    "{outcome:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_binary_call_that_meets_an_http_error_reports_it() {
+        let peer = serve(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+        let client = Client::new(format!("http://127.0.0.1:{}", peer.port)).expect("valid url");
+        let outcome = client
+            .binary("get_path_by_unified_id.bin", &PROBE, &[], 1024)
+            .await;
+        let _ = peer.request();
+        assert!(
+            matches!(outcome, Err(RpcError::Http { status: 404, .. })),
+            "{outcome:?}"
         );
     }
 }

@@ -2480,3 +2480,43 @@ fn the_tree_size_is_the_same_whichever_output_probes_it() {
     assert_eq!(TreeSizeQuery::answer(&lean), Some(62));
     assert_eq!(lean.get("paths"), None, "nothing unasked for is kept");
 }
+
+/// The reader is fed remote input, so every corruption of a real answer must
+/// come back as a value or an error, never a panic or a hang: each
+/// truncation, and each byte replaced by values that hit the type, count and
+/// length codes.
+#[test]
+fn a_corrupted_binary_answer_never_panics_the_reader() {
+    use monerod_rpc::types::TreeSizeQuery;
+
+    let path = fixtures_root().join("fcmp/get_path_by_unified_id_probe_in_tree.bin");
+    let original = std::fs::read(&path).expect("the fixture is readable");
+    let wanted = TreeSizeQuery::WANTED;
+
+    for len in 0..original.len() {
+        let cut = original.get(..len).expect("a prefix");
+        assert!(
+            monerod_rpc::epee::read_root(cut, wanted).is_err(),
+            "a body cut to {len} bytes was accepted"
+        );
+    }
+
+    let mut accepted = 0usize;
+    let mut body = original.clone();
+    for at in 0..original.len() {
+        let was = *original.get(at).expect("in range");
+        for value in [0x00, 0x01, 0x03, 0x0c, 0x0d, 0x7f, 0x80, 0x8d, 0xfe, 0xff] {
+            if value == was {
+                continue;
+            }
+            *body.get_mut(at).expect("in range") = value;
+            if monerod_rpc::epee::read_root(&body, wanted).is_ok() {
+                accepted += 1;
+            }
+        }
+        *body.get_mut(at).expect("in range") = was;
+    }
+    // Most bytes are key material inside strings, where any value frames the
+    // same; what matters is that none of the corruptions panicked.
+    assert!(accepted > 0, "the corruptions include harmless ones");
+}

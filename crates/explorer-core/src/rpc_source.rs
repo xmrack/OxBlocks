@@ -237,10 +237,13 @@ impl RpcChainSource {
         endpoint: &'static str,
         fields: &[(&str, monerod_rpc::epee::Field<'_>)],
         wanted: &[&str],
+        max_bytes: u64,
     ) -> Result<monerod_rpc::epee::Root, RpcError> {
         let _permit = self.permit().await;
         self.rpc_calls.fetch_add(1, Ordering::Relaxed);
-        self.client.binary(endpoint, fields, wanted).await
+        self.client
+            .binary(endpoint, fields, wanted, max_bytes)
+            .await
     }
 
     /// Acquire a permit for one call against the daemon.
@@ -295,6 +298,7 @@ impl RpcChainSource {
                 TreeSizeQuery::ENDPOINT,
                 &query.fields(),
                 TreeSizeQuery::WANTED,
+                TreeSizeQuery::MAX_ANSWER_BYTES,
             )
             .await
             .map_err(|e| tracing::debug!("tree size as of {reference}: {e}"))

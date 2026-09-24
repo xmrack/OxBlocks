@@ -16,6 +16,12 @@ pub enum Status {
     Other(String),
 }
 
+/// How much of an unrecognised status is kept, in characters.
+///
+/// The string is remote input on its way into logs and error pages, so it is
+/// bounded, and control characters are replaced so that it stays on one line.
+const MAX_STATUS_CHARS: usize = 64;
+
 impl Status {
     pub fn parse(raw: &str) -> Self {
         match raw {
@@ -23,7 +29,13 @@ impl Status {
             "BUSY" => Self::Busy,
             "Failed" => Self::Failed,
             "NOT MINING" => Self::NotMining,
-            other => Self::Other(other.to_owned()),
+            other => Self::Other(
+                other
+                    .chars()
+                    .take(MAX_STATUS_CHARS)
+                    .map(|c| if c.is_control() { '?' } else { c })
+                    .collect(),
+            ),
         }
     }
 
@@ -174,6 +186,17 @@ mod tests {
         let s = Status::parse("SOMETHING_NEW");
         assert!(!s.is_ok());
         assert_eq!(s.to_string(), "SOMETHING_NEW");
+    }
+
+    #[test]
+    fn an_unknown_status_is_kept_short_and_on_one_line() {
+        let long = format!("A\nB\u{1b}[31m{}", "x".repeat(10_000));
+        let Status::Other(kept) = Status::parse(&long) else {
+            panic!("an unknown status is Other");
+        };
+        assert_eq!(kept.chars().count(), MAX_STATUS_CHARS);
+        assert!(kept.starts_with("A?B?[31m"), "{kept:?}");
+        assert!(!kept.chars().any(char::is_control));
     }
 
     /// A daemon that is down or slow is worth retrying; one that answered with
