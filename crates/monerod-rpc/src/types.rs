@@ -1722,6 +1722,41 @@ pub const fn tree_root_block(reference_block: u64) -> Option<u64> {
     reference_block.checked_sub(TREE_ROOT_LAG)
 }
 
+/// Children per parent in the curve tree. The leaves' parents are Selene
+/// nodes, theirs Helios, alternating up to the root.
+///
+/// `SELENE_CHUNK_WIDTH` and `HELIOS_CHUNK_WIDTH` in
+/// `src/fcmp_pp/curve_trees.h`.
+pub const SELENE_CHUNK_WIDTH: u64 = 38;
+pub const HELIOS_CHUNK_WIDTH: u64 = 18;
+
+/// The node count of each layer of a curve tree holding `leaves` outputs,
+/// from the leaves' parents up to the root. Its length is the tree's layer
+/// count.
+///
+/// `CurveTrees::n_elems_per_layer` in `src/fcmp_pp/curve_trees.cpp`.
+#[must_use]
+pub fn tree_layers(leaves: u64) -> Vec<u64> {
+    let mut layers = Vec::new();
+    if leaves == 0 {
+        return layers;
+    }
+    let (mut children, mut selene) = (leaves, true);
+    loop {
+        let width = if selene {
+            SELENE_CHUNK_WIDTH
+        } else {
+            HELIOS_CHUNK_WIDTH
+        };
+        children = children.div_ceil(width);
+        layers.push(children);
+        selene = !selene;
+        if children <= 1 {
+            return layers;
+        }
+    }
+}
+
 /// `txout_to_carrot_v1`.
 ///
 /// The amount commitment and the encrypted amount are not here. They sit in
@@ -2559,6 +2594,22 @@ mod tests {
         assert_eq!(tree_root_block(120), Some(112));
         assert_eq!(tree_root_block(8), Some(0));
         assert_eq!(tree_root_block(7), None);
+    }
+
+    /// Each boundary where one more output adds a layer: past 38, one Selene
+    /// node is full; past 38 × 18, one Helios node is.
+    #[test]
+    fn a_layer_is_added_each_time_the_root_fills() {
+        assert_eq!(tree_layers(0), Vec::<u64>::new());
+        assert_eq!(tree_layers(1), [1]);
+        assert_eq!(tree_layers(38), [1]);
+        assert_eq!(tree_layers(39), [2, 1]);
+        assert_eq!(tree_layers(684), [18, 1]);
+        assert_eq!(tree_layers(685), [19, 2, 1]);
+        assert_eq!(
+            tree_layers(152_000_000),
+            [4_000_000, 222_223, 5_848, 325, 9, 1]
+        );
     }
 
     /// The count monerod takes is one past the block asked about, and the

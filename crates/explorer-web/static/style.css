@@ -391,7 +391,8 @@ details.hint > p {
    the left, the spend at the right. Marks are translucent, so members of a
    similar age overlap into a darker band -- the density is the chart. */
 .ring-ages { margin: 0 0 0.7rem; padding: 0.6rem 0.75rem 0.45rem; }
-.ring-ages figcaption {
+.ring-ages figcaption,
+.curve-tree figcaption {
   font-size: 0.78rem;
   color: var(--fg-faint);
   text-transform: uppercase;
@@ -417,3 +418,26 @@ details.hint > p {
 .empty.tight { padding: 0.3rem 0 0; }
 .empty.indented { padding-left: 0.6rem; }
 dl.kv.spaced { margin-top: 0.8rem; }
+
+/* The curve tree an FCMP++ spend proved against. Drawn at full size and
+   scrolled on a narrow window, like the ring-age strip. */
+.curve-tree {
+  margin: 0 0 0.85rem;
+  padding: 0.6rem 0.75rem 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+.curve-tree .funnel { display: block; width: 760px; height: auto; overflow: visible; }
+.curve-tree .web { fill: var(--accent); opacity: 0.10; }
+.curve-tree .bar { fill: var(--accent); opacity: 0.55; }
+.curve-tree .bar.root { opacity: 1; }
+.curve-tree .bar.leaf { opacity: 0.32; }
+.curve-tree .cut { stroke: var(--bg-raised); stroke-width: 1.5; }
+.curve-tree .label { fill: var(--fg-muted); font-size: 11px; }
+.curve-tree .curve { fill: var(--fg-faint); }
+.curve-tree .count { fill: var(--fg-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.curve-tree .root-hash {
+  fill: var(--fg-faint);
+  font: 9.5px ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}

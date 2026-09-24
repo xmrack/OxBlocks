@@ -141,6 +141,8 @@ struct TxPage {
     /// The curve tree's size as of the reference block, digits grouped. `None`
     /// wherever the API's `anonymity_set` is `null`.
     anonymity_set: Option<String>,
+    /// That tree, drawn. Present exactly when `anonymity_set` is.
+    tree: Option<TreeFunnel>,
     /// The FCMP++ proof's length in bytes.
     proof_size: Option<u64>,
     /// Any output is a Carrot output, which carries a three-byte view tag and
@@ -339,6 +341,132 @@ fn age_label(blocks: u64) -> String {
         1440..43200 => format!("{} d", minutes / 1440),
         _ => format!("{} mo", minutes / 43200),
     }
+}
+
+/// The curve tree an FCMP++ spend proved against, drawn as a funnel: one bar
+/// per layer, the root at the top and the outputs at the bottom.
+struct TreeFunnel {
+    height: u32,
+    rows: Vec<FunnelRow>,
+    /// The band joining each bar to the one below it, as polygon points.
+    webs: Vec<String>,
+    /// The root the proof was checked against, abbreviated.
+    root: Option<String>,
+    leaves: String,
+    layers: usize,
+}
+
+struct FunnelRow {
+    name: String,
+    curve: Option<&'static str>,
+    count: String,
+    class: &'static str,
+    x: u32,
+    y: u32,
+    width: u32,
+    /// Boundaries between nodes, drawn where a layer is narrow enough to count.
+    cuts: Vec<u32>,
+}
+
+/// Labels take the left of the strip's width and counts the right.
+const FUNNEL_LEFT: u32 = 150;
+const FUNNEL_RIGHT: u32 = 110;
+const FUNNEL_TOP: u32 = 14;
+const FUNNEL_ROW: u32 = 30;
+const FUNNEL_BAR: u32 = 14;
+const FUNNEL_MIN_BAR: u32 = 10;
+const FUNNEL_SPAN: u32 = STRIP_WIDTH - FUNNEL_LEFT - FUNNEL_RIGHT;
+const FUNNEL_CENTRE: u32 = FUNNEL_LEFT + FUNNEL_SPAN / 2;
+
+/// Lays out the tree holding `leaves` outputs. `None` for an empty tree.
+///
+/// The shape follows from the size alone, so nothing here depends on, or
+/// could hint at, which output an input spent.
+fn tree_funnel(leaves: u64, root: Option<&str>) -> Option<TreeFunnel> {
+    let layers = monerod_rpc::types::tree_layers(leaves);
+    let depth = layers.len();
+    if depth == 0 {
+        return None;
+    }
+    let counts = layers.iter().rev().copied().chain([leaves]);
+
+    let rows: Vec<FunnelRow> = counts
+        .zip(0u32..)
+        .map(|(count, i)| {
+            let width = funnel_width(count, leaves);
+            let x = FUNNEL_CENTRE - width / 2;
+            // Layer 1 is the leaves' parents, all Selene; the curves alternate
+            // from there.
+            let layer = depth - i as usize;
+            let curve = (layer > 0).then_some(if layer % 2 == 1 { "Selene" } else { "Helios" });
+            let (name, class) = match i {
+                0 => ("Root".to_owned(), "root"),
+                _ if layer == 0 => ("Outputs".to_owned(), "leaf"),
+                _ => (format!("Layer {layer}"), "node"),
+            };
+            let cuts = match u32::try_from(count) {
+                Ok(n) if n <= width / 4 => (1..n).map(|k| x + width * k / n).collect(),
+                _ => Vec::new(),
+            };
+            FunnelRow {
+                name,
+                curve,
+                count: grouped(count),
+                class,
+                x,
+                y: FUNNEL_TOP + i * FUNNEL_ROW,
+                width,
+                cuts,
+            }
+        })
+        .collect();
+
+    let webs = rows
+        .windows(2)
+        .filter_map(|w| match w {
+            [a, b] => Some(format!(
+                "{},{top} {},{top} {},{} {},{}",
+                a.x,
+                a.x + a.width,
+                b.x + b.width,
+                b.y,
+                b.x,
+                b.y,
+                top = a.y + FUNNEL_BAR,
+            )),
+            _ => None,
+        })
+        .collect();
+
+    Some(TreeFunnel {
+        height: rows.last().map_or(0, |r| r.y) + FUNNEL_BAR + 6,
+        rows,
+        webs,
+        root: root.and_then(|r| r.get(..16)).map(|r| format!("{r}…")),
+        leaves: grouped(leaves),
+        layers: depth,
+    })
+}
+
+/// A bar's width: the log of its node count against the log of the outputs',
+/// so the outputs span the full width and the root takes the minimum.
+fn funnel_width(count: u64, leaves: u64) -> u32 {
+    if leaves <= 1 {
+        return FUNNEL_MIN_BAR;
+    }
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a chart coordinate, not chain arithmetic"
+    )]
+    let share = (count as f64).ln() / (leaves as f64).ln();
+    let room = f64::from(FUNNEL_SPAN - FUNNEL_MIN_BAR);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to the span before the cast"
+    )]
+    let extra = (room * share).clamp(0.0, room).round() as u32;
+    FUNNEL_MIN_BAR + extra
 }
 
 struct OutputView {
@@ -1210,6 +1338,8 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
             fcmp_pp: f.fcmp_pp.is_some(),
             reference_block: f.fcmp_pp.and_then(|x| x.reference_block),
             n_tree_layers: f.fcmp_pp.and_then(|x| x.n_tree_layers),
+            tree: anonymity_set
+                .and_then(|n| tree_funnel(n, root_block.as_ref().map(|(_, root)| root.as_str()))),
             root_block,
             anonymity_set: anonymity_set.map(grouped),
             proof_size: f.fcmp_pp.and_then(|x| x.proof_size),
@@ -2999,6 +3129,7 @@ mod tests {
             n_tree_layers: None,
             root_block: None,
             anonymity_set: None,
+            tree: None,
             proof_size: None,
             carrot: false,
             unlock_time: 0,
@@ -3125,6 +3256,102 @@ mod tests {
         assert!(bare.contains("Every output in the curve tree"));
         assert!(!bare.contains("FCMP++ proof"));
         assert!(!bare.contains("Unified ID"));
+    }
+
+    #[test]
+    fn the_funnel_runs_from_the_root_down_with_the_curves_alternating() {
+        let t = tree_funnel(152_000_000, None).expect("a tree");
+        let rows: Vec<_> = t
+            .rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.curve, r.count.as_str(), r.width))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("Root", Some("Helios"), "1", FUNNEL_MIN_BAR),
+                ("Layer 5", Some("Selene"), "9", 67),
+                ("Layer 4", Some("Helios"), "325", 160),
+                ("Layer 3", Some("Selene"), "5,848", 236),
+                ("Layer 2", Some("Helios"), "222,223", 330),
+                ("Layer 1", Some("Selene"), "4,000,000", 405),
+                ("Outputs", None, "152,000,000", FUNNEL_SPAN),
+            ]
+        );
+        assert_eq!(t.layers, 6);
+        for (i, r) in t.rows.iter().enumerate() {
+            assert_eq!(r.x + r.width / 2, FUNNEL_CENTRE, "row {i} is centred");
+            assert_eq!(r.y, FUNNEL_TOP + FUNNEL_ROW * i as u32);
+        }
+        // Only the nine-node layer is narrow enough to show its nodes.
+        let cut: Vec<_> = t.rows.iter().map(|r| r.cuts.len()).collect();
+        assert_eq!(cut, [0, 8, 0, 0, 0, 0, 0]);
+        assert_eq!(t.rows[1].cuts.first(), Some(&(367 + 67 / 9)));
+    }
+
+    /// A tree small enough for one Selene root, as on a young chain.
+    #[test]
+    fn a_one_layer_tree_shows_every_output() {
+        let root = "2348cda97f56d37466e0216de7454db6478b51d180ef8ca457f901eca2ce30a9";
+        let t = tree_funnel(22, Some(root)).expect("a tree");
+        assert_eq!(t.layers, 1);
+        assert_eq!(t.rows[0].curve, Some("Selene"));
+        let leaves = &t.rows[1];
+        assert_eq!((leaves.x, leaves.width), (150, 500));
+        assert_eq!(leaves.cuts.len(), 21);
+        assert_eq!(leaves.cuts.first(), Some(&(150 + 500 / 22)));
+        assert_eq!(leaves.cuts.last(), Some(&(150 + 500 * 21 / 22)));
+        assert_eq!(t.webs, ["395,28 405,28 650,44 150,44"]);
+        assert_eq!(t.height, 64);
+        assert_eq!(t.root.as_deref(), Some("2348cda97f56d374…"));
+
+        // 200 outputs on 500 pixels would be cut every 2.5: a solid bar.
+        let dense = tree_funnel(200, None).expect("a tree");
+        assert!(dense.rows.last().expect("outputs").cuts.is_empty());
+        assert!(tree_funnel(22, None).expect("a tree").root.is_none());
+        assert!(tree_funnel(0, None).is_none());
+    }
+
+    /// Drawn once for the transaction, above its inputs, from presentation
+    /// attributes only.
+    #[test]
+    fn a_known_tree_size_draws_the_tree() {
+        let mut page = fcmp_tx_page();
+        page.tree = tree_funnel(22, Some(&"ab".repeat(32)));
+        let html = page.render().expect("renders");
+        assert_eq!(html.matches(r#"<figure class="curve-tree">"#).count(), 1);
+        assert!(
+            html.contains(r#"aria-label="Curve tree of 22 outputs in 1 layer, the root"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<rect class="bar root" x="395" y="14" rx="3" width="10" height="14"/>"#
+            )
+        );
+        assert!(
+            html.contains(
+                r#"<rect class="bar leaf" x="150" y="44" rx="3" width="500" height="14"/>"#
+            )
+        );
+        assert!(html.contains(r#"<polygon class="web" points="395,28 405,28 650,44 150,44"/>"#));
+        assert!(html.contains(r#"<line class="cut" x1="172" y1="44" x2="172" y2="58"/>"#));
+        assert!(html.contains(r#"<tspan class="curve"> · Selene</tspan>"#));
+        assert!(html.contains(r#"text-anchor="end">22</text>"#));
+        assert!(html.contains(">abababababababab…</text>"));
+        assert!(
+            html.find("curve-tree") < html.find("input-card"),
+            "above the inputs"
+        );
+        assert!(!html.contains(" style="), "the CSP drops inline styles");
+
+        assert!(
+            !fcmp_tx_page()
+                .render()
+                .expect("renders")
+                .contains("curve-tree")
+        );
+        assert!(!tx_page().render().expect("renders").contains("curve-tree"));
     }
 
     #[test]

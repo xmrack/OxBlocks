@@ -2481,6 +2481,28 @@ fn the_tree_size_is_the_same_whichever_output_probes_it() {
     assert_eq!(lean.get("paths"), None, "nothing unasked for is kept");
 }
 
+/// The capture's spends name block 120, when the tree held 62 outputs, and
+/// monerod reports the layer count those 62 give.
+#[test]
+fn the_layer_count_follows_from_the_tree_size() {
+    use monerod_rpc::types::{TreeSizeQuery, tree_layers};
+
+    let root = binary(
+        "fcmp/get_path_by_unified_id_probe_in_tree.bin",
+        TreeSizeQuery::WANTED,
+    );
+    let leaves = TreeSizeQuery::answer(&root).expect("a tree size");
+    let txs = decoded_txs("fcmp/get_transactions_fcmp.json");
+    assert_eq!(txs.len(), 2);
+    for (_, tx) in &txs {
+        assert_eq!(tx.reference_block(), Some(120));
+        assert_eq!(
+            tx.n_tree_layers().map(usize::from),
+            Some(tree_layers(leaves).len())
+        );
+    }
+}
+
 /// The reader is fed remote input, so every corruption of a real answer must
 /// come back as a value or an error, never a panic or a hang: each
 /// truncation, and each byte replaced by values that hit the type, count and

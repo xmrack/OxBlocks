@@ -124,6 +124,30 @@
 {% if coinbase %}
 <p class="empty">A coinbase transaction has no inputs; it creates new coins.</p>
 {% else %}
+  {% if let Some(t) = tree %}
+  <figure class="curve-tree">
+    <figcaption>Curve tree
+      <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
+      <p>The tree every input on this page proved it spends from, as of the
+      reference block. The outputs are at the bottom. They are grouped 38 to a
+      Selene node, those 18 to a Helios node, and so on, alternating, up to a
+      single root. Each bar is one layer, and its width is logarithmic in its
+      size. Every input spends one of the outputs at the bottom, and nothing
+      here says which.</p></details>
+    </figcaption>
+    <div class="scroll">
+    <svg class="funnel" viewBox="0 0 {{ crate::html::STRIP_WIDTH }} {{ t.height }}"
+         role="img" aria-label="Curve tree of {{ t.leaves }} outputs in {{ t.layers }} layer{% if t.layers != 1 %}s{% endif %}, the root at the top">
+      {% for w in t.webs %}<polygon class="web" points="{{ w }}"/>{% endfor %}
+      {% for r in t.rows %}<rect class="bar {{ r.class }}" x="{{ r.x }}" y="{{ r.y }}" rx="3" width="{{ r.width }}" height="{{ crate::html::FUNNEL_BAR }}"/>{% for c in r.cuts %}<line class="cut" x1="{{ c }}" y1="{{ r.y }}" x2="{{ c }}" y2="{{ r.y + crate::html::FUNNEL_BAR }}"/>{% endfor %}
+      <text class="label" x="0" y="{{ r.y + 11 }}">{{ r.name }}{% if let Some(curve) = r.curve %}<tspan class="curve"> · {{ curve }}</tspan>{% endif %}</text>
+      <text class="count" x="{{ crate::html::STRIP_WIDTH }}" y="{{ r.y + 11 }}" text-anchor="end">{{ r.count }}</text>
+      {% endfor %}
+      {% if let Some(root) = t.root %}<text class="root-hash" x="{{ crate::html::FUNNEL_CENTRE }}" y="{{ crate::html::FUNNEL_TOP - 3 }}" text-anchor="middle">{{ root }}</text>{% endif %}
+    </svg>
+    </div>
+  </figure>
+  {% endif %}
   {% for i in inputs %}
   <details class="input-card"{% if inputs.len() == 1 %} open{% endif %}>
     <summary>
