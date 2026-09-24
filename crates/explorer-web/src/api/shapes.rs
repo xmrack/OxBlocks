@@ -20,7 +20,7 @@
 
 use explorer_core::fmt::timestamp_utc;
 use explorer_core::{Hash32, ResolvedInput, TxFacts};
-use monerod_rpc::types::{PoolTxInfo, TxEntry, TxJson, TxOutTarget};
+use monerod_rpc::types::{PoolTxInfo, TxEntry, TxJson};
 use serde::Serialize;
 
 /// One ring member.
@@ -260,17 +260,12 @@ impl TxDetail {
             .iter()
             .map(|o| ApiOutput {
                 amount: o.amount,
-                public_key: match &o.target {
-                    TxOutTarget::Key(k) => k.clone(),
-                    TxOutTarget::TaggedKey(t) => t.key.clone(),
-                    other => {
-                        // Legacy script outputs exist only in the pre-v1 era
-                        // and carry no one-time key. Render empty rather than
-                        // inventing one.
-                        let _ = other;
-                        String::new()
-                    }
-                },
+                // Legacy script outputs exist only in the pre-v1 era and carry
+                // no one-time key, so they render empty rather than inventing
+                // one. Every other target, Carrot's included, names its key;
+                // matching the variants here by hand is how Carrot outputs
+                // came to be published with an empty key.
+                public_key: o.target.public_key().map(str::to_owned).unwrap_or_default(),
             })
             .collect();
 
@@ -509,6 +504,42 @@ mod tests {
             public_key: "not_a_key".to_owned(),
         };
         assert_eq!(declared_keys(&probe), vec!["amount", "public_key"]);
+    }
+
+    /// An FCMP++ transaction with Carrot outputs, through the same builder
+    /// `/api/transaction` uses. Before the output target learnt Carrot, every
+    /// output here was published with an empty `public_key`.
+    #[test]
+    fn an_fcmp_pp_transaction_publishes_its_keys_and_an_empty_ring() {
+        let entry: TxEntry = serde_json::from_value(serde_json::json!({
+            "tx_hash": "AB".repeat(32), "in_pool": false,
+            "block_height": 3_012_400, "block_timestamp": 1_790_000_000,
+        }))
+        .unwrap();
+        let tx: TxJson = serde_json::from_value(serde_json::json!({
+            "version": 2, "unlock_time": 0,
+            "vin": [{"key": {"amount": 0, "key_offsets": [], "k_image": "cc".repeat(32)}}],
+            "vout": [{"amount": 0, "target": {"carrot_v1": {
+                "key": "dd".repeat(32), "view_tag": "a1b2c3",
+                "encrypted_janus_anchor": "ee".repeat(16)}}}],
+            "extra": [],
+            "rct_signatures": {"type": 7, "txnFee": 91_000_000},
+            "rctsig_prunable": {"reference_block": 3_012_390, "n_tree_layers": 6},
+        }))
+        .unwrap();
+        let rings = explorer_core::unexpanded_inputs(&tx);
+        let detail = TxDetail::build(&entry, &tx, &rings, 3_012_401);
+
+        assert_eq!(detail.rct_type, 7);
+        assert_eq!(detail.mixin, 0);
+        assert_eq!(detail.outputs[0].public_key, "dd".repeat(32));
+        let inputs = detail.inputs.as_ref().expect("a spend lists its inputs");
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(
+            inputs[0].mixins.as_ref().map(Vec::len),
+            Some(0),
+            "no ring is an empty list, not a withheld one"
+        );
     }
 
     /// What the ordering actually rests on today.

@@ -81,6 +81,10 @@ struct BlockPage {
     nonce: u32,
     major_version: u8,
     minor_version: u8,
+    /// The curve tree this block commits to, from hard fork 17. Both `None`
+    /// below the fork, and when the block's own JSON did not decode.
+    tree_root: Option<String>,
+    tree_layers: Option<u8>,
     fee_sort: ColumnSort,
     size_sort: ColumnSort,
     txs: Vec<BlockTxRow>,
@@ -94,6 +98,9 @@ struct BlockTxRow {
     fee: String,
     fee_atomic: u64,
     ring: usize,
+    /// An FCMP++ spend, whose ring column reads "all" rather than a 0 that
+    /// would say it has no anonymity set.
+    full_chain: bool,
     size: u64,
 }
 
@@ -118,6 +125,17 @@ struct TxPage {
     version_no: u64,
     rct_type: u8,
     ring_size: usize,
+    /// The inputs prove membership in every output on the chain, so there is
+    /// no ring to show.
+    fcmp_pp: bool,
+    /// The height whose curve tree the FCMP++ proof was built against, and
+    /// the tree's layer count then. `None` on a ring spend, and on an FCMP++
+    /// spend whose prunable half this node no longer holds.
+    reference_block: Option<u64>,
+    n_tree_layers: Option<u8>,
+    /// Any output is a Carrot output, which carries a three-byte view tag and
+    /// an encrypted Janus anchor.
+    carrot: bool,
     unlock_time: u64,
     payment_id: String,
     payment_id8: String,
@@ -315,6 +333,8 @@ struct OutputView {
     public_key: String,
     amount: Option<String>,
     view_tag: String,
+    /// The encrypted Janus anchor of a Carrot output, or empty.
+    anchor: String,
 }
 
 struct ExtraField {
@@ -341,6 +361,7 @@ struct PoolRow {
     fee: String,
     fee_atomic: u64,
     ring: usize,
+    full_chain: bool,
     size: u64,
 }
 
@@ -902,6 +923,7 @@ pub async fn block(
                 fee: xmr_aligned(f.fee),
                 fee_atomic: f.fee,
                 ring: f.ring_size,
+                full_chain: f.fcmp_pp.is_some(),
                 size: f.size,
             })
         })
@@ -913,6 +935,11 @@ pub async fn block(
     // By height rather than by whatever the request named, so a sorted link
     // from a page reached by hash still lands on this block.
     let page = format!("/block/{}", header.height);
+
+    // The tree fields are in the block's own JSON, not in its header. A
+    // document that does not decode costs these two rows and nothing else:
+    // everything above them came from the header.
+    let body = got.parse_json().ok();
 
     render(
         StatusCode::OK,
@@ -935,6 +962,11 @@ pub async fn block(
             nonce: header.nonce,
             major_version: header.major_version,
             minor_version: header.minor_version,
+            tree_root: body
+                .as_ref()
+                .and_then(|b| b.fcmp_pp_tree_root.as_deref())
+                .map(str::to_lowercase),
+            tree_layers: body.as_ref().and_then(|b| b.fcmp_pp_n_tree_layers),
             fee_sort: column_sort(&page, SortKey::Fee, active),
             size_sort: column_sort(&page, SortKey::Size, active),
             txs,
@@ -1047,33 +1079,51 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
         .vout
         .iter()
         .map(|o| {
-            let (key, view_tag) = match &o.target {
-                TxOutTarget::Key(k) => (k.clone(), String::new()),
+            let (key, view_tag, anchor) = match &o.target {
+                TxOutTarget::Key(k) => (k.clone(), String::new(), String::new()),
                 TxOutTarget::TaggedKey(t) => {
                     has_view_tags = true;
-                    (t.key.clone(), t.view_tag.clone())
+                    (t.key.clone(), t.view_tag.clone(), String::new())
                 }
-                _ => (String::new(), String::new()),
+                TxOutTarget::CarrotV1(c) => {
+                    has_view_tags = true;
+                    (
+                        c.key.clone(),
+                        c.view_tag.clone(),
+                        c.encrypted_janus_anchor.clone(),
+                    )
+                }
+                _ => (String::new(), String::new(), String::new()),
             };
             OutputView {
                 public_key: key,
                 amount: visible_amount(o.amount),
                 view_tag,
+                anchor,
             }
         })
         .collect();
 
     let parsed = &f.extra;
     let mut extra_fields = Vec::new();
+    // Carrot keeps the tags but changes what they hold: the key under 0x01
+    // (and each one under 0x04) is the sender's ephemeral X25519 key, not an
+    // Ed25519 transaction key. Same 32 bytes, different curve, so the label
+    // says which.
+    let (pub_key_name, additional_name) = if f.carrot {
+        ("Ephemeral public key (X25519)", "Additional ephemeral key")
+    } else {
+        ("Transaction public key", "Additional public key")
+    };
     if let Some(k) = parsed.tx_pub_key_explorer_compat() {
         extra_fields.push(ExtraField {
-            name: "Transaction public key".to_owned(),
+            name: pub_key_name.to_owned(),
             value: k.to_hex(),
         });
     }
     for (i, k) in parsed.additional_pub_keys().iter().enumerate() {
         extra_fields.push(ExtraField {
-            name: format!("Additional public key {}", i + 1),
+            name: format!("{additional_name} {}", i + 1),
             value: k.to_hex(),
         });
     }
@@ -1113,6 +1163,10 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
             version_no: f.version,
             rct_type: f.rct_type,
             ring_size: f.ring_size,
+            fcmp_pp: f.fcmp_pp.is_some(),
+            reference_block: f.fcmp_pp.and_then(|x| x.reference_block),
+            n_tree_layers: f.fcmp_pp.and_then(|x| x.n_tree_layers),
+            carrot: f.carrot,
             unlock_time: f.unlock_time,
             payment_id: f.payment_id_hex(),
             payment_id8: f.payment_id8_hex(),
@@ -1180,6 +1234,7 @@ pub async fn mempool(State(state): Shared, Query(q): Query<SortQuery>) -> Page {
                 fee: xmr_aligned(f.fee),
                 fee_atomic: f.fee,
                 ring: f.ring_size,
+                full_chain: f.fcmp_pp.is_some(),
                 size: f.size,
             })
         })
@@ -2554,6 +2609,7 @@ mod tests {
             fee: if coinbase { "0.0" } else { "0.00071136" }.to_owned(),
             fee_atomic: if coinbase { 0 } else { 711_360_000 },
             ring: if coinbase { 0 } else { 16 },
+            full_chain: false,
             size: 2_223,
         }
     }
@@ -2579,6 +2635,8 @@ mod tests {
             nonce: 7,
             major_version: 16,
             minor_version: 16,
+            tree_root: None,
+            tree_layers: None,
             fee_sort: column_sort("/block/3185430", SortKey::Fee, None),
             size_sort: column_sort("/block/3185430", SortKey::Size, None),
             txs,
@@ -2593,6 +2651,7 @@ mod tests {
             fee: "0.0".to_owned(),
             fee_atomic,
             ring: 16,
+            full_chain: false,
             size,
         }
     }
@@ -2884,6 +2943,10 @@ mod tests {
             version_no: 2,
             rct_type: 6,
             ring_size: 16,
+            fcmp_pp: false,
+            reference_block: None,
+            n_tree_layers: None,
+            carrot: false,
             unlock_time: 0,
             payment_id: String::new(),
             payment_id8: String::new(),
@@ -2912,11 +2975,13 @@ mod tests {
                     public_key: "5".repeat(64),
                     amount: visible_amount(0),
                     view_tag: "94".to_owned(),
+                    anchor: String::new(),
                 },
                 OutputView {
                     public_key: "6".repeat(64),
                     amount: visible_amount(3_000_000_000_000),
                     view_tag: "d6".to_owned(),
+                    anchor: String::new(),
                 },
             ],
             has_view_tags: true,
@@ -2924,6 +2989,131 @@ mod tests {
             extra_fields: Vec::new(),
             extra_undecoded: false,
         }
+    }
+
+    /// The same page for an FCMP++ spend with Carrot outputs, as it would be
+    /// built from a type 7 transaction.
+    fn fcmp_tx_page() -> TxPage {
+        let mut page = tx_page();
+        page.rct_type = 7;
+        page.ring_size = 0;
+        page.fcmp_pp = true;
+        page.reference_block = Some(3_012_345);
+        page.n_tree_layers = Some(6);
+        page.carrot = true;
+        for i in &mut page.inputs {
+            i.amount = None;
+            i.ring = Vec::new();
+        }
+        for o in &mut page.outputs {
+            o.amount = None;
+            o.view_tag = "a1b2c3".to_owned();
+            o.anchor = "7".repeat(32);
+        }
+        page
+    }
+
+    /// An FCMP++ input has no ring, and the page must say what it has instead
+    /// rather than print "0 ring members", which reads as no privacy at all.
+    #[test]
+    fn an_fcmp_pp_spend_shows_the_whole_chain_as_its_anonymity_set() {
+        let html = fcmp_tx_page().render().expect("renders");
+        assert!(html.contains("Every output on the chain"), "{html}");
+        assert!(
+            html.contains(r#"as of block <a href="/block/3012345">3012345</a>"#),
+            "the reference block links to its block:
+{html}"
+        );
+        assert!(html.contains("6 tree layers"));
+        assert!(!html.contains("ring members"), "{html}");
+        assert!(
+            !html.contains("Ring member ages"),
+            "no strip without a ring"
+        );
+        assert!(!html.contains("<dt>Ring size</dt>"));
+        assert!(!html.contains("refused this ring lookup"));
+        assert_eq!(
+            html.matches(r#"<span class="tag">full chain</span>"#)
+                .count(),
+            2
+        );
+        assert!(html.contains("RingCT type 7"));
+    }
+
+    /// A pruned node knows the transaction is FCMP++ but not which tree it
+    /// named. The row stays; the claim about the block goes.
+    #[test]
+    fn a_pruned_fcmp_pp_spend_names_no_reference_block() {
+        let mut page = fcmp_tx_page();
+        page.pruned = true;
+        page.reference_block = None;
+        page.n_tree_layers = None;
+        let html = page.render().expect("renders");
+        assert!(html.contains("Every output on the chain"));
+        assert!(!html.contains("as of block"));
+        assert!(html.contains("the FCMP++ proof and the block it"));
+        assert!(!html.contains("Ring members are still resolved"));
+    }
+
+    /// Carrot outputs carry a three-byte view tag and an encrypted anchor, and
+    /// the hint describes the three-byte tag, not the one-byte one.
+    #[test]
+    fn carrot_outputs_show_their_anchor_and_describe_their_view_tag() {
+        let html = fcmp_tx_page().render().expect("renders");
+        assert!(html.contains("<th>Janus anchor</th>"));
+        assert_eq!(html.matches(&"7".repeat(32)).count(), 2);
+        assert!(html.contains("<code>a1b2c3</code>"));
+        assert!(html.contains("Three bytes that make scanning cheaper"));
+        assert!(!html.contains("One byte that makes scanning cheaper"));
+
+        let legacy = tx_page().render().expect("renders");
+        assert!(!legacy.contains("Janus anchor"));
+        assert!(legacy.contains("One byte that makes scanning cheaper"));
+        assert!(legacy.contains("<dt>Ring size</dt>"));
+    }
+
+    /// The tree row appears from the fork on and not before it.
+    #[test]
+    fn a_block_shows_its_curve_tree_only_when_it_has_one() {
+        let before = block_page().render().expect("renders");
+        assert!(!before.contains("Curve tree"));
+
+        let mut page = block_page();
+        page.major_version = 17;
+        page.minor_version = 17;
+        page.tree_root = Some("9".repeat(64));
+        page.tree_layers = Some(5);
+        let after = page.render().expect("renders");
+        assert!(after.contains("<dt>Curve tree</dt>"));
+        assert!(after.contains(&"9".repeat(64)));
+        assert!(after.contains("5 layers"));
+    }
+
+    /// An FCMP++ row's ring column reads "all", never the 0 its ring size is.
+    #[test]
+    fn an_fcmp_pp_row_reads_all_in_the_ring_column() {
+        let mut page = block_page();
+        page.txs.push(BlockTxRow {
+            ring: 0,
+            full_chain: true,
+            ..block_tx(false)
+        });
+        let html = page.render().expect("renders");
+        assert_eq!(
+            html.matches(r#"<span title="FCMP++: every output on the chain">all</span>"#)
+                .count(),
+            1,
+            "{html}"
+        );
+
+        let mut pool = mempool_page(None);
+        pool.txs.push(PoolRow {
+            ring: 0,
+            full_chain: true,
+            ..pool_row(5, 5, 5)
+        });
+        let html = pool.render().expect("renders");
+        assert!(html.contains(">all</span>"));
     }
 
     /// A RingCT amount is hidden, not zero, and the two must not render alike.

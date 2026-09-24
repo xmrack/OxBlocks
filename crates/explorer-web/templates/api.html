@@ -270,7 +270,8 @@
   <p>
     Rings stay <strong>unresolved</strong> here. Each input carries its amount
     and key image, and <code class="lit">mixins</code> is
-    <code class="lit">null</code>. Resolving every ring in the set would cost
+    <code class="lit">null</code>, except on an FCMP++ input, which has no
+    ring and reads <code class="lit">[]</code>. Resolving every ring in the set would cost
     thousands of calls for a caller that wants one transaction. Ask for that
     one through <a href="#transaction">/api/transaction</a>.
   </p>
@@ -470,7 +471,11 @@
   </p>
   <p>
     <code class="lit">mixin</code> is the <strong>ring size</strong>, not the
-    ring size minus one, and it is 0 for a coinbase.
+    ring size minus one, and it is 0 for a coinbase. It is also 0 for an
+    FCMP++ transaction, <code class="lit">rct_type</code> 7, whose inputs
+    prove membership in every output on the chain and so have no ring. Read
+    <code class="lit">rct_type</code> before reading a 0 here as no anonymity
+    set.
   </p>
   <p>
     <code class="lit">xmr_inputs</code> and
@@ -501,7 +506,15 @@
     <code class="lit">null</code> when the ring was not resolved, either
     because the endpoint does not resolve rings or because the daemon refused
     the lookup. An empty array would say the input has no ring members, which
-    is a different statement.
+    is a different statement, and it is exactly the statement an FCMP++ input
+    makes: its <code class="lit">mixins</code> is <code class="lit">[]</code>
+    on every endpoint, because there is no ring to withhold.
+  </p>
+  <p>
+    Each output carries <code class="lit">amount</code> and
+    <code class="lit">public_key</code>. For a Carrot output that is the
+    one-time address. Its view tag and encrypted Janus anchor are in
+    <a href="#rawtransaction">/api/rawtransaction</a>.
   </p>
 </section>
 
