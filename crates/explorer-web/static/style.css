@@ -486,7 +486,7 @@ dl.kv.spaced { margin-top: 0.8rem; }
 .step-card .pic { flex: none; width: 200px; height: 120px; margin-top: 1.4rem; }
 @media (max-width: 720px) {
   .step-card { flex-direction: column-reverse; align-items: stretch; gap: 0; padding: 1rem; }
-  .step-card .pic { margin: 0 auto; }
+  .step-card .pic { margin: 0 auto 0.5rem; }
 }
 
 .facts {

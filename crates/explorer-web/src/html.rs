@@ -3983,8 +3983,8 @@ mod tests {
         let html = odd.render().expect("renders");
         assert!(!html.contains("rows, folded in"));
         assert!(
-            html.contains(r#"<path class="web" d="M95 28H105"#),
-            "the drawing stands in"
+            html.contains(r#"<path class="web" d="M96 38H104"#),
+            "the drawing is there without the tree"
         );
     }
 
