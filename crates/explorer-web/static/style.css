@@ -530,14 +530,7 @@ dl.kv.spaced { margin-top: 0.8rem; }
 .proof-map .seg.on { opacity: 1; }
 .proof-map a:hover .seg { opacity: 0.7; }
 
-/* Step 1's picture is the tree, too wide to sit beside the words, so it goes
-   above them as every picture does on a phone. */
-.step-card { flex-wrap: wrap; }
-.step-card > .curve-tree { flex: 0 0 100%; min-width: 0; border: 0; padding: 0; margin: 0 0 0.9rem; background: none; }
-@media (min-width: 721px) {
-  .step-card { row-gap: 0; }
-  .step-card > .curve-tree { order: -1; }
-}
+.step-card .curve-tree { border: 0; padding: 0; margin: 1rem 0 0; background: none; }
 
 .maths { margin-top: 0.8rem; font-size: 0.9rem; }
 .maths > summary { cursor: pointer; color: var(--accent); font-weight: 600; font-size: 0.85rem; }

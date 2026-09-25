@@ -3956,11 +3956,12 @@ mod tests {
         ), "{html}");
         assert!(html.contains("<dt>Root is on</dt><dd>Helios</dd>"));
         assert!(html.contains(r#"aria-label="Curve tree of 62 outputs in 2 layers"#));
-        // Step 1's tree takes the place of its picture, after the words, which
-        // the stylesheet then draws above them.
+        // Step 1 keeps its picture beside the words, the tree among them.
         let first = &html[html.find(r#"id="s1""#).expect("step 1")..];
-        assert!(first.contains("</details>\n</div>\n<figure class=\"curve-tree\">"));
-        assert!(!first.contains(r#"<svg class="pic""#));
+        let tree = first.find(r#"<figure class="curve-tree">"#).expect("the tree");
+        let pic = first.find(r#"<svg class="pic""#).expect("the picture");
+        assert!(tree < first.find("Show the maths").expect("maths") && tree < pic);
+        assert_eq!(html.matches(r#"<svg class="pic""#).count(), 7);
         assert_eq!(html.matches(r#"<details class="maths">"#).count(), 7);
         assert!(!html.contains(r#"class="maths" open"#));
         assert_eq!(html.matches(r#"aria-current="step""#).count(), 7);
