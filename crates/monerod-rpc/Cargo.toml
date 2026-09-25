@@ -25,7 +25,7 @@ hyper-rustls = { version = "0.27", default-features = false, features = ["http1"
 tokio = { version = "1", default-features = false, features = ["time"] }
 # monero-oxide's decoder for monerod's binary answers, at the revision the
 # rest of the workspace pins.
-monero-epee = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
+monero-epee = { version = "0.2.1", git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
 
 [features]
 default = ["tls"]

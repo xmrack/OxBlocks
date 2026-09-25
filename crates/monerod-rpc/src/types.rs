@@ -1214,15 +1214,23 @@ impl TreePath {
                 Err(PathAnswerError::Malformed("leaves"))
             };
         }
+        // The lengths were checked above, so the chunks leave no remainder.
         let leaves = ids
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .zip(kinds)
-            .zip(keys.chunks_exact(32).zip(commitments.chunks_exact(32)))
+            .zip(
+                keys.as_chunks::<32>()
+                    .0
+                    .iter()
+                    .zip(commitments.as_chunks::<32>().0),
+            )
             .map(|((id, &kind), (key, commitment))| PathLeaf {
-                unified_id: u64::from_le_bytes(id.try_into().unwrap_or_default()),
+                unified_id: u64::from_le_bytes(*id),
                 kind: LeafKind::from_byte(kind),
-                output_key: key.try_into().unwrap_or_default(),
-                commitment: commitment.try_into().unwrap_or_default(),
+                output_key: *key,
+                commitment: *commitment,
             })
             .collect::<Vec<_>>();
         if !leaves.iter().any(|l| l.unified_id == unified_id) {
@@ -1235,13 +1243,11 @@ impl TreePath {
                     Value::Section(c) => c.bytes("elems").unwrap_or_default(),
                     _ => return Err(PathAnswerError::Malformed("layer_chunks")),
                 };
-                if elems.is_empty() || elems.len() % 32 != 0 {
+                let (points, rest) = elems.as_chunks::<32>();
+                if points.is_empty() || !rest.is_empty() {
                     return Err(PathAnswerError::Malformed("layer_chunks"));
                 }
-                Ok(elems
-                    .chunks_exact(32)
-                    .map(|e| e.try_into().unwrap_or_default())
-                    .collect())
+                Ok(points.to_vec())
             })
             .collect::<Result<Vec<_>, _>>()?;
         if layers.is_empty() {
