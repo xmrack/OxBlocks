@@ -93,6 +93,19 @@ impl BaseUrl {
     }
 }
 
+/// `raw` as an error may show it: any credentials in its authority are
+/// replaced, since the refusal of them is carried in the error.
+pub(crate) fn shown(raw: &str) -> String {
+    let (scheme, rest) = raw.split_once("://").map_or(("", raw), |(s, r)| (s, r));
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    match authority.rsplit_once('@') {
+        Some((_, host)) if scheme.is_empty() => format!("<credentials>@{host}{tail}"),
+        Some((_, host)) => format!("{scheme}://<credentials>@{host}{tail}"),
+        None => raw.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -106,6 +119,16 @@ mod tests {
         assert!(BaseUrl::parse("http://user:pass@h:1/").is_err());
         assert!(BaseUrl::parse("http://user@h:1/").is_err());
         assert!(BaseUrl::parse("http://h:1/").is_ok());
+    }
+
+    #[test]
+    fn credentials_are_not_shown_in_errors() {
+        assert_eq!(
+            shown("http://user:pa@ss@h:1/mon"),
+            "http://<credentials>@h:1/mon"
+        );
+        assert_eq!(shown("user@h:1"), "<credentials>@h:1");
+        assert_eq!(shown("http://h:1/a@b"), "http://h:1/a@b");
     }
 
     #[test]

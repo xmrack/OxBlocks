@@ -179,8 +179,9 @@ impl<K: Eq + Hash + Clone, V> Cache<K, V> {
                 .map
                 .get(key)
                 .is_some_and(|e| e.stored_at.elapsed() >= ttl)
+            && let Some(old) = inner.map.remove(key)
         {
-            inner.map.remove(key);
+            inner.bytes = inner.bytes.saturating_sub(old.weight);
         }
 
         inner.clock += 1;
@@ -455,12 +456,14 @@ mod tests {
 
     #[test]
     fn an_expired_entry_is_a_miss() {
-        let c: Cache<u64, u64> = Cache::expiring(4, Duration::from_millis(40));
-        c.insert(1, 10);
+        let c: Cache<u64, Vec<u8>> =
+            Cache::expiring(4, Duration::from_millis(40)).within_bytes(1600, Vec::len);
+        c.insert(1, vec![0; 10]);
         assert!(c.get(&1).is_some());
         std::thread::sleep(Duration::from_millis(60));
         assert!(c.get(&1).is_none(), "the entry outlived its ttl");
         assert_eq!(c.stats().len, 0, "and is dropped, not merely hidden");
+        assert_eq!(c.inner.lock().unwrap().bytes, 0, "with its weight");
     }
 
     #[test]

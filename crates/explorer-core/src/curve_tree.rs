@@ -233,9 +233,11 @@ pub fn place_all(
         .collect()
 }
 
-/// The parents already computed, by the bytes of the group hashed.
+/// The parents already computed, by the layer of the group hashed and its
+/// bytes. The layer is kept apart from the bytes: a group of leaves and a
+/// group of points can have the same bytes, and must not share a parent.
 #[derive(Default)]
-struct Hashes(std::collections::HashMap<Vec<u8>, Option<[u8; 32]>>);
+struct Hashes(std::collections::HashMap<(usize, Vec<u8>), Option<[u8; 32]>>);
 
 impl Hashes {
     fn place(&mut self, unified_id: u64, path: TreePath, n_leaf_tuples: u64) -> PlacedPath {
@@ -249,8 +251,13 @@ impl Hashes {
         }
     }
 
-    fn memo(&mut self, key: Vec<u8>, hash: impl FnOnce() -> Option<[u8; 32]>) -> Option<[u8; 32]> {
-        *self.0.entry(key).or_insert_with(hash)
+    fn memo(
+        &mut self,
+        layer: usize,
+        key: Vec<u8>,
+        hash: impl FnOnce() -> Option<[u8; 32]>,
+    ) -> Option<[u8; 32]> {
+        *self.0.entry((layer, key)).or_insert_with(hash)
     }
 
     fn check(&mut self, path: &TreePath, groups: &[Group], unified_id: u64) -> PathCheck {
@@ -286,7 +293,7 @@ impl Hashes {
                     .chain(l.commitment)
             })
             .collect();
-        let Some(mut parent) = self.memo(key, || hash_leaves(&path.leaves)) else {
+        let Some(mut parent) = self.memo(0, key, || hash_leaves(&path.leaves)) else {
             return PathCheck::Unreadable { layer: 0 };
         };
 
@@ -299,9 +306,8 @@ impl Hashes {
             if layer == path.layers.len() {
                 break;
             }
-            let mut key = vec![u8::try_from(layer).unwrap_or(u8::MAX)];
-            key.extend(members.iter().flatten());
-            match self.memo(key, || hash_layer(layer, members)) {
+            let key = members.iter().flatten().copied().collect();
+            match self.memo(layer, key, || hash_layer(layer, members)) {
                 Some(h) => parent = h,
                 None => return PathCheck::Unreadable { layer },
             }
@@ -576,6 +582,37 @@ mod tests {
         let together = place_all(&ids, tampered, answer.n_leaf_tuples);
         assert_eq!(together[0].as_ref().unwrap().check, PathCheck::Holds);
         assert_ne!(together[3].as_ref().unwrap().check, PathCheck::Holds);
+    }
+
+    /// A group of leaves whose bytes are those of a group of points is still
+    /// hashed as leaves, whatever path of the same answer hashed the points.
+    #[test]
+    fn leaves_and_points_with_the_same_bytes_are_hashed_apart() {
+        let answer = paths("get_path_by_unified_id_old.bin", 814, &[10, 60]);
+        let leaves = answer.paths[0].clone().unwrap().leaves;
+        let first = leaves[0].unified_id;
+        let t = hash_leaves(&leaves).unwrap();
+        let h = hash_layer(1, &[t, t]).unwrap();
+        // A tree of 39 leaves: two groups of leaves, one of two points above.
+        let honest = TreePath {
+            leaf_idx: 0,
+            leaves,
+            layers: vec![vec![t, t], vec![h]],
+        };
+        // One leaf whose key and commitment are the bytes of `[t, t]`.
+        let forged = TreePath {
+            leaf_idx: 38,
+            leaves: vec![PathLeaf {
+                unified_id: 7,
+                kind: LeafKind::Carrot,
+                output_key: t,
+                commitment: t,
+            }],
+            layers: vec![vec![t, h], vec![hash_layer(1, &[t, h]).unwrap()]],
+        };
+        let placed = place_all(&[first, 7], vec![Some(honest), Some(forged)], 39);
+        assert_eq!(placed[0].as_ref().unwrap().check, PathCheck::Holds);
+        assert_ne!(placed[1].as_ref().unwrap().check, PathCheck::Holds);
     }
 
     #[test]

@@ -90,8 +90,8 @@ impl ClientBuilder {
     }
 
     pub fn build(self) -> Result<Client, RpcError> {
-        let base =
-            BaseUrl::parse(&self.base).map_err(|e| RpcError::BadUrl(self.base.clone(), e))?;
+        let base = BaseUrl::parse(&self.base)
+            .map_err(|e| RpcError::BadUrl(crate::url::shown(&self.base), e))?;
 
         let user_agent = self
             .user_agent
@@ -291,15 +291,26 @@ impl Client {
             params: Option<P>,
         }
 
-        /// The envelope of the answer. `result` is kept as text and parsed
-        /// once, into `R`: parsing the whole answer into a
-        /// `serde_json::Value` first holds it in memory many times over.
+        /// The envelope of the answer. `result` and `error` are kept as text
+        /// and parsed once, each into the type that reads it: parsing into a
+        /// `serde_json::Value` holds the answer in memory many times over.
         #[derive(Deserialize)]
         struct Reply<'a> {
-            #[serde(default)]
-            error: Option<serde_json::Value>,
+            #[serde(borrow, default)]
+            error: Option<&'a RawValue>,
             #[serde(borrow, default)]
             result: Option<&'a RawValue>,
+        }
+
+        /// What is read of an `error`: anything else in it is skipped
+        /// without being kept, and an `error` of another shape still fails
+        /// the call, with no code or message.
+        #[derive(Deserialize, Default)]
+        struct Fault {
+            #[serde(default)]
+            code: Option<i64>,
+            #[serde(default)]
+            message: Option<String>,
         }
 
         let bytes = self
@@ -321,19 +332,14 @@ impl Client {
             })?;
 
         if let Some(error) = reply.error {
+            let fault: Fault = serde_json::from_str(error.get()).unwrap_or_default();
             return Err(RpcError::JsonRpc {
                 method,
-                code: error
-                    .get("code")
-                    .and_then(serde_json::Value::as_i64)
-                    .unwrap_or(0),
-                message: error
-                    .get("message")
-                    .and_then(serde_json::Value::as_str)
-                    .map_or_else(
-                        || "<no message>".to_owned(),
-                        |m| crate::error::printable(m, MAX_ERROR_BODY),
-                    ),
+                code: fault.code.unwrap_or(0),
+                message: fault.message.map_or_else(
+                    || "<no message>".to_owned(),
+                    |m| crate::error::printable(&m, MAX_ERROR_BODY),
+                ),
             });
         }
         let result = reply.result.ok_or(RpcError::Missing {
@@ -707,6 +713,41 @@ mod tests {
             .expect("the daemon answered");
         assert_eq!(got.get("height").and_then(|h| h.as_u64()), Some(7));
         assert!(!peer.request().is_empty(), "the client never connected");
+    }
+
+    /// An `error` is read for its code and message only: whatever else it
+    /// holds is skipped, an `error` of another shape still fails the call,
+    /// and a null one is no error.
+    #[tokio::test]
+    async fn an_error_is_read_for_its_code_and_message_only() {
+        let fault = |body: &'static str| async move {
+            let peer = serve_json(body);
+            let client = Client::new(format!("http://127.0.0.1:{}", peer.port)).expect("valid url");
+            client
+                .json_rpc::<(), serde_json::Value>("get_info", None)
+                .await
+        };
+
+        match fault(r#"{"error":{"code":-2,"message":"no\nway","data":[0,0,0,[0,[0]]]}}"#).await {
+            Err(RpcError::JsonRpc { code, message, .. }) => {
+                assert_eq!(code, -2);
+                assert!(
+                    message.starts_with("no") && !message.contains('\n'),
+                    "{message}"
+                );
+            }
+            other => panic!("expected the daemon's error, got {other:?}"),
+        }
+        match fault(r#"{"error":[0,0,0]}"#).await {
+            Err(RpcError::JsonRpc { code, message, .. }) => {
+                assert_eq!((code, message.as_str()), (0, "<no message>"));
+            }
+            other => panic!("expected an error without details, got {other:?}"),
+        }
+        let answered = fault(r#"{"error":null,"result":{"status":"OK"}}"#)
+            .await
+            .expect("a null error is no error");
+        assert_eq!(answered.get("status").and_then(|s| s.as_str()), Some("OK"));
     }
 
     /// The request monerod actually receives: a POST of JSON to the endpoint
