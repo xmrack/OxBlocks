@@ -143,7 +143,7 @@ struct TxPage {
     /// wherever the API's `anonymity_set` is `null`.
     anonymity_set: Option<String>,
     /// That tree, drawn. Present exactly when `anonymity_set` is.
-    tree: Option<TreeFunnel>,
+    tree: Option<[TreeFunnel; 2]>,
     /// The FCMP++ proof's length in bytes.
     proof_size: Option<u64>,
     /// Any output is a Carrot output, which carries a three-byte view tag and
@@ -347,12 +347,16 @@ fn age_label(blocks: u64) -> String {
 /// The curve tree an FCMP++ spend proved against, drawn as a funnel: one bar
 /// per layer, the root at the top and the outputs at the bottom.
 struct TreeFunnel {
+    class: &'static str,
+    width: u32,
     height: u32,
+    centre: u32,
     rows: Vec<FunnelRow>,
     /// The band joining each bar to the one below it, as polygon points.
     webs: Vec<String>,
     /// The root the proof was checked against, abbreviated.
     root: Option<String>,
+    root_y: u32,
     leaves: String,
     layers: usize,
 }
@@ -364,6 +368,7 @@ struct FunnelRow {
     class: &'static str,
     x: u32,
     y: u32,
+    label_y: u32,
     width: u32,
     /// Boundaries between nodes, drawn where a layer is narrow enough to count.
     cuts: Vec<u32>,
@@ -376,26 +381,70 @@ const FUNNEL_TOP: u32 = 14;
 const FUNNEL_ROW: u32 = 30;
 const FUNNEL_BAR: u32 = 14;
 const FUNNEL_MIN_BAR: u32 = 10;
-const FUNNEL_SPAN: u32 = STRIP_WIDTH - FUNNEL_LEFT - FUNNEL_RIGHT;
-const FUNNEL_CENTRE: u32 = FUNNEL_LEFT + FUNNEL_SPAN / 2;
+
+/// Where a funnel's labels, counts and bars go.
+struct FunnelLayout {
+    class: &'static str,
+    width: u32,
+    left: u32,
+    right: u32,
+    top: u32,
+    row: u32,
+    /// Labels sit on the bar's line, or above it.
+    above: bool,
+}
+
+/// Labels beside the bars.
+const WIDE_FUNNEL: FunnelLayout = FunnelLayout {
+    class: "wide",
+    width: STRIP_WIDTH,
+    left: FUNNEL_LEFT,
+    right: FUNNEL_RIGHT,
+    top: FUNNEL_TOP,
+    row: FUNNEL_ROW,
+    above: false,
+};
+
+/// Labels above the bars, for a phone: the whole tree fits its width.
+const NARROW_FUNNEL: FunnelLayout = FunnelLayout {
+    class: "narrow",
+    width: 320,
+    left: 0,
+    right: 0,
+    top: 30,
+    row: 40,
+    above: true,
+};
+
+/// The tree holding `leaves` outputs, laid out wide and narrow. `None` for an
+/// empty tree.
+fn tree_picture(leaves: u64, root: Option<&str>) -> Option<[TreeFunnel; 2]> {
+    Some([
+        tree_funnel(leaves, root, &WIDE_FUNNEL)?,
+        tree_funnel(leaves, root, &NARROW_FUNNEL)?,
+    ])
+}
 
 /// Lays out the tree holding `leaves` outputs. `None` for an empty tree.
 ///
 /// The shape follows from the size alone, so nothing here depends on, or
 /// could hint at, which output an input spent.
-fn tree_funnel(leaves: u64, root: Option<&str>) -> Option<TreeFunnel> {
+fn tree_funnel(leaves: u64, root: Option<&str>, layout: &FunnelLayout) -> Option<TreeFunnel> {
     let layers = monerod_rpc::types::tree_layers(leaves);
     let depth = layers.len();
     if depth == 0 {
         return None;
     }
     let counts = layers.iter().rev().copied().chain([leaves]);
+    let span = layout.width - layout.left - layout.right;
+    let centre = layout.left + span / 2;
 
     let rows: Vec<FunnelRow> = counts
         .zip(0u32..)
         .map(|(count, i)| {
-            let width = funnel_width(count, leaves);
-            let x = FUNNEL_CENTRE - width / 2;
+            let width = funnel_width(count, leaves, span);
+            let x = centre - width / 2;
+            let y = layout.top + i * layout.row;
             // Layer 1 is the leaves' parents, all Selene; the curves alternate
             // from there.
             let layer = depth - i as usize;
@@ -415,7 +464,8 @@ fn tree_funnel(leaves: u64, root: Option<&str>) -> Option<TreeFunnel> {
                 count: grouped(count),
                 class,
                 x,
-                y: FUNNEL_TOP + i * FUNNEL_ROW,
+                y,
+                label_y: if layout.above { y - 5 } else { y + 12 },
                 width,
                 cuts,
             }
@@ -440,7 +490,11 @@ fn tree_funnel(leaves: u64, root: Option<&str>) -> Option<TreeFunnel> {
         .collect();
 
     Some(TreeFunnel {
+        class: layout.class,
+        width: layout.width,
         height: rows.last().map_or(0, |r| r.y) + FUNNEL_BAR + 6,
+        centre,
+        root_y: rows.first().map_or(0, |r| r.label_y.min(r.y - 3)),
         rows,
         webs,
         root: root.and_then(|r| r.get(..16)).map(|r| format!("{r}…")),
@@ -451,7 +505,7 @@ fn tree_funnel(leaves: u64, root: Option<&str>) -> Option<TreeFunnel> {
 
 /// A bar's width: the log of its node count against the log of the outputs',
 /// so the outputs span the full width and the root takes the minimum.
-fn funnel_width(count: u64, leaves: u64) -> u32 {
+fn funnel_width(count: u64, leaves: u64, span: u32) -> u32 {
     if leaves <= 1 {
         return FUNNEL_MIN_BAR;
     }
@@ -460,7 +514,7 @@ fn funnel_width(count: u64, leaves: u64) -> u32 {
         reason = "a chart coordinate, not chain arithmetic"
     )]
     let share = (count as f64).ln() / (leaves as f64).ln();
-    let room = f64::from(FUNNEL_SPAN - FUNNEL_MIN_BAR);
+    let room = f64::from(span - FUNNEL_MIN_BAR);
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -1370,7 +1424,7 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
             reference_block: f.fcmp_pp.and_then(|x| x.reference_block),
             n_tree_layers: f.fcmp_pp.and_then(|x| x.n_tree_layers),
             tree: anonymity_set
-                .and_then(|n| tree_funnel(n, root_block.as_ref().map(|(_, root)| root.as_str()))),
+                .and_then(|n| tree_picture(n, root_block.as_ref().map(|(_, root)| root.as_str()))),
             root_block,
             anonymity_set: anonymity_set.map(grouped),
             proof_size: f.fcmp_pp.and_then(|x| x.proof_size),
@@ -1438,7 +1492,7 @@ struct FcmpPage {
     root_curve: Option<&'static str>,
     /// The proof drawn to scale, one segment per part.
     map: Vec<ProofSegment>,
-    tree: Option<TreeFunnel>,
+    tree: Option<[TreeFunnel; 2]>,
 }
 
 struct ShapeView {
@@ -1636,7 +1690,7 @@ fn fcmp_page(
         .map(|p| proof_map(p.inputs.len(), p.membership_len))
         .unwrap_or_default();
     let tree = anonymity_set
-        .and_then(|n| tree_funnel(n, root_block.as_ref().map(|(_, root)| root.as_str())));
+        .and_then(|n| tree_picture(n, root_block.as_ref().map(|(_, root)| root.as_str())));
 
     let membership = parts.as_ref().zip(proof_len).map(|(p, total)| {
         let share = p.membership_len * 100 / total.max(1);
@@ -1996,6 +2050,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+
+    const FUNNEL_SPAN: u32 = STRIP_WIDTH - FUNNEL_LEFT - FUNNEL_RIGHT;
+    const FUNNEL_CENTRE: u32 = FUNNEL_LEFT + FUNNEL_SPAN / 2;
 
     fn status() -> Option<ChainStatus> {
         Some(ChainStatus {
@@ -3575,7 +3632,7 @@ mod tests {
 
     #[test]
     fn the_funnel_runs_from_the_root_down_with_the_curves_alternating() {
-        let t = tree_funnel(152_000_000, None).expect("a tree");
+        let t = tree_funnel(152_000_000, None, &WIDE_FUNNEL).expect("a tree");
         let rows: Vec<_> = t
             .rows
             .iter()
@@ -3608,7 +3665,7 @@ mod tests {
     #[test]
     fn a_one_layer_tree_shows_every_output() {
         let root = "2348cda97f56d37466e0216de7454db6478b51d180ef8ca457f901eca2ce30a9";
-        let t = tree_funnel(22, Some(root)).expect("a tree");
+        let t = tree_funnel(22, Some(root), &WIDE_FUNNEL).expect("a tree");
         assert_eq!(t.layers, 1);
         assert_eq!(t.rows[0].curve, Some("Selene"));
         let leaves = &t.rows[1];
@@ -3621,10 +3678,44 @@ mod tests {
         assert_eq!(t.root.as_deref(), Some("2348cda97f56d374…"));
 
         // 200 outputs on 500 pixels would be cut every 2.5: a solid bar.
-        let dense = tree_funnel(200, None).expect("a tree");
+        let dense = tree_funnel(200, None, &WIDE_FUNNEL).expect("a tree");
         assert!(dense.rows.last().expect("outputs").cuts.is_empty());
-        assert!(tree_funnel(22, None).expect("a tree").root.is_none());
-        assert!(tree_funnel(0, None).is_none());
+        assert!(
+            tree_funnel(22, None, &WIDE_FUNNEL)
+                .expect("a tree")
+                .root
+                .is_none()
+        );
+        assert!(tree_funnel(0, None, &WIDE_FUNNEL).is_none());
+    }
+
+    /// For a phone the labels go above the bars, so the whole tree fits the
+    /// narrow drawing's width.
+    #[test]
+    fn the_narrow_funnel_puts_each_label_above_its_bar() {
+        let t = tree_funnel(22, Some(&"ab".repeat(32)), &NARROW_FUNNEL).expect("a tree");
+        let rows: Vec<_> = t
+            .rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.x, r.y, r.label_y, r.width))
+            .collect();
+        assert_eq!(
+            rows,
+            [("Root", 155, 30, 25, 10), ("Outputs", 0, 70, 65, 320)]
+        );
+        assert_eq!(
+            (t.class, t.width, t.centre, t.height, t.root_y),
+            ("narrow", 320, 160, 90, 25)
+        );
+        assert_eq!(t.webs, ["155,44 165,44 320,70 0,70"]);
+        assert_eq!(t.rows[1].cuts.first(), Some(&(320 / 22)));
+
+        let wide = tree_funnel(22, None, &WIDE_FUNNEL).expect("a tree");
+        assert_eq!(
+            (wide.class, wide.width, wide.centre, wide.root_y),
+            ("wide", 760, 400, 11)
+        );
+        assert_eq!(wide.rows[0].label_y, 26);
     }
 
     /// Drawn once for the transaction, above its inputs, from presentation
@@ -3632,9 +3723,19 @@ mod tests {
     #[test]
     fn a_known_tree_size_draws_the_tree() {
         let mut page = fcmp_tx_page();
-        page.tree = tree_funnel(22, Some(&"ab".repeat(32)));
+        page.tree = tree_picture(22, Some(&"ab".repeat(32)));
         let html = page.render().expect("renders");
         assert_eq!(html.matches(r#"<figure class="curve-tree">"#).count(), 1);
+        assert_eq!(
+            html.matches(r#"<svg class="funnel wide" viewBox="0 0 760 64""#)
+                .count(),
+            1
+        );
+        assert_eq!(
+            html.matches(r#"<svg class="funnel narrow" viewBox="0 0 320 90""#)
+                .count(),
+            1
+        );
         assert!(
             html.contains(r#"aria-label="Curve tree of 22 outputs in 1 layer, the root"#),
             "{html}"

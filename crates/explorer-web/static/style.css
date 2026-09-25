@@ -419,8 +419,8 @@ details.hint > p {
 .empty.indented { padding-left: 0.6rem; }
 dl.kv.spaced { margin-top: 0.8rem; }
 
-/* The curve tree an FCMP++ spend proved against. Drawn at full size and
-   scrolled on a narrow window, like the ring-age strip. */
+/* The curve tree an FCMP++ spend proved against. Drawn at full size, and
+   redrawn with its labels above the bars when that would not fit. */
 .curve-tree {
   margin: 0 0 0.85rem;
   padding: 0.6rem 0.75rem 0.45rem;
@@ -429,6 +429,11 @@ dl.kv.spaced { margin-top: 0.8rem; }
   background: var(--bg-raised);
 }
 .curve-tree .funnel { display: block; width: 760px; margin: 0 auto; height: auto; overflow: visible; }
+.curve-tree .funnel.narrow { display: none; width: 100%; max-width: 360px; }
+@media (max-width: 840px) {
+  .curve-tree .funnel.wide { display: none; }
+  .curve-tree .funnel.narrow { display: block; }
+}
 .curve-tree .web { fill: var(--accent); opacity: 0.10; }
 .curve-tree .bar { fill: var(--accent); opacity: 0.55; }
 .curve-tree .bar.root { opacity: 1; }

@@ -232,7 +232,7 @@ tree is summed up by one short value at the top, its root.
 {% if let Some(r) = reference_block %}<dt>As of block</dt><dd><a href="/block/{{ r }}">{{ r }}</a></dd>{% endif %}
 {% if let Some((b, root)) = root_block %}<dt>Root</dt><dd><span class="hash">{{ root }}</span>, in block <a href="/block/{{ b }}">{{ b }}</a></dd>{% endif %}
 </dl></div>
-{% if let Some(t) = tree %}<figure class="curve-tree"><div class="scroll">{% include "funnel.html" %}</div></figure>{% endif %}
+{% if let Some(picture) = tree %}<figure class="curve-tree"><div class="scroll">{% for t in picture %}{% include "funnel.html" %}{% endfor %}</div></figure>{% endif %}
 <details class="maths"><summary>Show the maths</summary>
 <p>An output is three points: its key <var>O</var> = <var>x</var>&middot;<var>G</var> + <var>y</var>&middot;<var>T</var>,
 its key image generator <var>I</var> = <var>H<sub>p</sub></var>(<var>O</var>), a
