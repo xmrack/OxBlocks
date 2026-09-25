@@ -91,12 +91,14 @@ pub struct Config {
     #[arg(long, env = "OXBLOCKS_REQUEST_TIMEOUT", default_value_t = 25)]
     pub request_timeout_secs: u64,
 
-    /// Maximum number of requests processed concurrently.
+    /// Maximum number of requests processed concurrently, across every route.
     ///
     /// This is the backpressure valve. Every request costs RPC calls,
     /// so an unbounded server would turn a traffic spike into a self-inflicted
-    /// denial of service against its own daemon. At least 1: with none, every
-    /// request would wait out its timeout.
+    /// denial of service against its own daemon. A request that finds every
+    /// slot taken waits for one within its timeout, and is answered 504 when
+    /// the timeout passes first. At least 1: with none, every request would
+    /// wait out its timeout.
     #[arg(
         long,
         env = "OXBLOCKS_MAX_CONCURRENT",

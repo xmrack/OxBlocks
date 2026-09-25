@@ -143,9 +143,19 @@ const MAX_TXS_PER_CALL: usize = 500;
 /// The number of blocks in a range bounds none of that when blocks are as
 /// large as the chain allows, and concurrent ranges multiply it. So a range
 /// takes its blocks' sizes, as their headers give them, from this budget
-/// before fetching anything, and waits while the budget is spent. A range
-/// larger than the whole budget takes all of it, and runs alone.
+/// before fetching anything, and waits while the budget is spent, for
+/// [`RANGE_WAIT`] at most. A range wider than [`MAX_RANGE_KIB`] is refused.
 pub const RANGE_KIB: u32 = 48 * 1024;
+
+/// The most chain bytes, in KiB, one range may hold: half of [`RANGE_KIB`].
+/// A wider range is refused rather than let through alone, since alone it
+/// could still hold more than the process may.
+pub const MAX_RANGE_KIB: u64 = RANGE_KIB as u64 / 2;
+
+/// How long a range waits for its share of [`RANGE_KIB`] before it gives
+/// up: long enough to wait out a range or two, short enough to leave the
+/// request time to fetch once it has its share.
+pub const RANGE_WAIT: Duration = Duration::from_secs(5);
 
 /// A range of blocks with their transactions, holding its share of
 /// [`RANGE_KIB`] until it is dropped.
@@ -746,6 +756,8 @@ impl RpcChainSource {
     ///
     /// The range waits for its blocks' sizes' worth of [`RANGE_KIB`] before
     /// fetching them, and holds it for as long as the [`BlockRange`] lives.
+    /// It is refused when its blocks hold more than [`MAX_RANGE_KIB`], and
+    /// when it waits longer than [`RANGE_WAIT`].
     pub async fn blocks_in_range(
         &self,
         start: u64,
@@ -760,11 +772,17 @@ impl RpcChainSource {
             .iter()
             .map(|h| h.block_size.div_ceil(1024))
             .fold(0u64, u64::saturating_add);
+        if kib > MAX_RANGE_KIB {
+            return Err(ChainError::RangeTooLarge { start, end, kib });
+        }
         let share = u32::try_from(kib).unwrap_or(u32::MAX).clamp(1, RANGE_KIB);
-        let held = Arc::clone(&self.range_kib)
-            .acquire_many_owned(share)
-            .await
-            .ok();
+        let held = tokio::time::timeout(
+            RANGE_WAIT,
+            Arc::clone(&self.range_kib).acquire_many_owned(share),
+        )
+        .await
+        .map_err(|_| ChainError::Busy("other ranges of blocks"))?
+        .ok();
 
         // A block's body is fetched when it holds transactions, whose hashes
         // only the body lists -- the range cannot be answered without it --
@@ -1887,6 +1905,9 @@ mod tests {
         format!("{:064x}", height + 1)
     }
 
+    /// Blocks from this height on are a MiB each; those below, 100 bytes.
+    const LARGE_FROM: u64 = 1000;
+
     impl Chain {
         fn header(self, height: u64, orphan: bool) -> serde_json::Value {
             let version = if height >= self.fork { 17 } else { 16 };
@@ -1898,7 +1919,8 @@ mod tests {
                 "hash": if orphan { format!("{:064x}", height + 1_000_000) } else { hash_of(height) },
                 "difficulty": 1, "difficulty_top64": 0, "wide_difficulty": "0x1",
                 "cumulative_difficulty": 1, "cumulative_difficulty_top64": 0,
-                "wide_cumulative_difficulty": "0x1", "reward": 1, "block_size": 100,
+                "wide_cumulative_difficulty": "0x1", "reward": 1,
+                "block_size": if height >= LARGE_FROM { 1 << 20 } else { 100 },
                 "num_txes": 0, "pow_hash": "", "miner_tx_hash": "",
             })
         }
@@ -2042,6 +2064,34 @@ mod tests {
         drop(spent);
         let blocks = source.blocks_in_range(0, 9, false).await.unwrap();
         assert_eq!(blocks.len(), 10);
+    }
+
+    /// A range holding more than one request may fetch is refused before
+    /// anything is fetched, and one just under is served.
+    #[tokio::test]
+    async fn a_range_too_large_for_one_request_is_refused() {
+        let chain = Chain {
+            tip: LARGE_FROM + 100,
+            fork: 0,
+        };
+        let daemon = chain.daemon(&[], None);
+        let source = daemon.source();
+        let most = MAX_RANGE_KIB / 1024;
+
+        let err = source
+            .blocks_in_range(LARGE_FROM, LARGE_FROM + most, false)
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(err, ChainError::RangeTooLarge { .. }), "{err}");
+        assert_eq!(daemon.count("get_block"), 0);
+        assert_eq!(source.range_kib.available_permits(), RANGE_KIB as usize);
+
+        let blocks = source
+            .blocks_in_range(LARGE_FROM, LARGE_FROM + most - 1, false)
+            .await
+            .unwrap();
+        assert_eq!(blocks.len() as u64, most);
     }
 
     /// Without the tree the same range fetches no bodies at all.

@@ -51,7 +51,7 @@ Each option also reads an environment variable. The command line wins.
 | `--theme` | `OXBLOCKS_THEME` | `auto` | Colour scheme. Use `auto`, `light` or `dark`. |
 | `--rpc-timeout-secs` | `OXBLOCKS_RPC_TIMEOUT` | `30` | Limit for one RPC call. |
 | `--request-timeout-secs` | `OXBLOCKS_REQUEST_TIMEOUT` | `25` | Limit for one inbound request. |
-| `--max-concurrent` | `OXBLOCKS_MAX_CONCURRENT` | `128` | Requests handled at the same time. |
+| `--max-concurrent` | `OXBLOCKS_MAX_CONCURRENT` | `128` | Requests handled at the same time, across all routes. A request waits for a slot within its timeout. |
 | `--max-inflight-rpc` | `OXBLOCKS_MAX_INFLIGHT_RPC` | `24` | RPC calls open at the same time. |
 | `--max-body-bytes` | `OXBLOCKS_MAX_BODY` | `8192` | Largest accepted request body. |
 | `--postfix-min` | `OXBLOCKS_POSTFIX_MIN` | `2` | Shortest postfix the private lookup accepts. |

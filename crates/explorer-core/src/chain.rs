@@ -91,6 +91,16 @@ pub enum ChainError {
     #[error("the daemon's answer to {what} could not be read: {detail}")]
     BadAnswer { what: &'static str, detail: String },
 
+    /// A range of blocks holds more than one request may fetch. See
+    /// [`crate::rpc_source::MAX_RANGE_KIB`].
+    #[error("blocks {start} to {end} hold {kib} KiB, more than one request may fetch")]
+    RangeTooLarge { start: u64, end: u64, kib: u64 },
+
+    /// The explorer is holding as much as it may, and the request waited
+    /// its turn for too long. Callers should treat this as temporary.
+    #[error("the explorer is busy: {0}")]
+    Busy(&'static str),
+
     #[error(transparent)]
     Rpc(#[from] monerod_rpc::RpcError),
 }
@@ -100,7 +110,7 @@ impl ChainError {
     #[must_use]
     pub fn is_transient(&self) -> bool {
         match self {
-            Self::Unavailable(_) => true,
+            Self::Unavailable(_) | Self::Busy(_) => true,
             Self::Rpc(e) => e.is_transient(),
             _ => false,
         }
@@ -138,6 +148,12 @@ impl ChainError {
             Self::BadAnswer { what, .. } => {
                 format!("the daemon's answer to {what} could not be read")
             }
+            Self::RangeTooLarge { start, end, kib } => format!(
+                "blocks {start} to {end} hold {} MiB, more than one request may fetch; \
+                 ask for fewer blocks",
+                kib.div_ceil(1024)
+            ),
+            Self::Busy(what) => format!("the explorer is busy with {what}; try again shortly"),
             // These carry internals. Say what happened, not where.
             Self::Unavailable(_) | Self::Rpc(monerod_rpc::RpcError::Transport { .. }) => {
                 "the explorer could not reach its daemon".to_owned()

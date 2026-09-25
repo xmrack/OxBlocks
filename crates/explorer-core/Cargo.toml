@@ -13,7 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["sync", "time"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["alloc"] }
 # monero-oxide, for the FCMP++ curve tree's hash, generators and curves, the
 # Ed25519 arithmetic that turns an output into a leaf, and the FCMP++ proof's

@@ -1333,10 +1333,17 @@ pub async fn transactions_recent(State(state): Shared) -> Result<ApiOk<RecentDat
 
     let (from_height, to_height) = recent_window(info.height, state.limits.recent_blocks);
 
-    // The pool first: those are more recent than any mined transaction, and a
-    // caller reaching for this endpoint is reaching for a recent one. Counting
-    // them in `mempool_txs_no` while leaving them out of `txs` would name a
-    // set and then withhold it.
+    // The window is fetched before the pool, so that no copy of the pool is
+    // held while the window waits for its share of what ranges may hold.
+    let window = state
+        .chain
+        .blocks_in_range(from_height, to_height, false)
+        .await;
+
+    // The pool is listed first: those are more recent than any mined
+    // transaction, and a caller reaching for this endpoint is reaching for a
+    // recent one. Counting them in `mempool_txs_no` while leaving them out of
+    // `txs` would name a set and then withhold it.
     let pool = state.chain.mempool().await.ok();
     let mut txs = Vec::new();
     let mut mempool_txs_no = 0;
@@ -1346,12 +1353,9 @@ pub async fn transactions_recent(State(state): Shared) -> Result<ApiOk<RecentDat
         txs.push(TxDetail::build_pool(entry, &tx, &inputs, info.height));
         mempool_txs_no += 1;
     }
+    drop(pool);
 
-    if let Ok(window) = state
-        .chain
-        .blocks_in_range(from_height, to_height, false)
-        .await
-    {
+    if let Ok(window) = window {
         for block in &window {
             push_unexpanded(&mut txs, &block.txs, info.height);
         }
