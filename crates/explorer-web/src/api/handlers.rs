@@ -19,6 +19,8 @@ pub struct AppState {
     pub chain: RpcChainSource,
     /// The bounds on the k-anonymous endpoints, from the command line.
     pub limits: Limits,
+    /// Checked paths through the curve tree. See [`crate::tree_paths::PathCache`].
+    pub paths: crate::tree_paths::PathCache,
 }
 
 pub type Shared = State<Arc<AppState>>;

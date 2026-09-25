@@ -181,6 +181,7 @@ async fn health(
         .chain
         .cache_stats()
         .into_iter()
+        .chain([("tree_paths", state.paths.stats())])
         .map(|(name, s)| {
             (
                 name.to_owned(),
@@ -268,6 +269,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         chain: explorer_core::RpcChainSource::new(node)
             .with_max_inflight_rpc(config.max_inflight_rpc),
         limits,
+        paths: tree_paths::PathCache::default(),
     });
     match state.chain.info().await {
         Ok(info) => {
@@ -332,6 +334,7 @@ mod tests {
                 monerod_rpc::Client::new("http://127.0.0.1:1").expect("valid url"),
             ),
             limits,
+            paths: crate::tree_paths::PathCache::default(),
         })
     }
 

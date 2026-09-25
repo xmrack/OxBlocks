@@ -316,8 +316,10 @@ framework, and `monerod-rpc` cannot use either of the other two crates.
 The process keeps one thing in memory: a bounded cache. It caches an object
 named by hash at once, because a hash names one object forever. It caches an
 object named by height only when that height is more than 60 blocks deep,
-because a reorg gives a height to a different block. Losing the cache costs
-speed, not correctness. `/health` reports the size and the hit counts.
+because a reorg gives a height to a different block. The same holds for an
+output's path through the curve tree: one is kept once it has been checked up
+to the root its block records, and only as of a block that deep. Losing the
+cache costs speed, not correctness. `/health` reports the size and the hit counts.
 
 ## Security design
 

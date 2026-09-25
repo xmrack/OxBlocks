@@ -2,12 +2,12 @@
 //! checked: what the paths page and `/api/transaction/<hash>/paths` show.
 
 use std::ops::Range;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
-use explorer_core::ChainError;
-use explorer_core::curve_tree::{PathCheck, PlacedPath, place_all};
+use explorer_core::curve_tree::{Group, PathCheck, PlacedPath, place_all};
 use explorer_core::fmt::decimal;
-use monerod_rpc::types::{PathQuery, TxEntry, TxJson, last_locked_block};
+use explorer_core::{Cache, ChainError, safe_to_cache_by_height};
+use monerod_rpc::types::{PathLeaf, PathQuery, TxEntry, TxJson, last_locked_block};
 use tokio::sync::Semaphore;
 
 use crate::api::handlers::{AppState, echo};
@@ -22,8 +22,77 @@ pub const MAX_OUTPUTS: usize = PathQuery::MAX_IDS;
 /// bound rather than only the daemon calls' one.
 const CHECKS_AT_ONCE: usize = 4;
 
-static CHECKS: LazyLock<std::sync::Arc<Semaphore>> =
-    LazyLock::new(|| std::sync::Arc::new(Semaphore::new(CHECKS_AT_ONCE)));
+static CHECKS: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(CHECKS_AT_ONCE)));
+
+/// The most paths kept, and the bytes they may hold.
+const PATHS_KEPT: usize = 4096;
+const PATHS_KEPT_BYTES: usize = 16 * 1024 * 1024;
+
+/// Checked paths as of blocks past the reorg window, by that block and the
+/// output's unified id.
+///
+/// The tree as of a block is fixed once the block is, so an output's path as
+/// of it is too. A path is kept only when its hashes hold and end at the root
+/// the chain records, and only as of a block no reorganisation reaches: a
+/// later view of it then needs neither a daemon call nor the hashing. A path
+/// that fails is not kept, so it is asked for again next time.
+pub struct PathCache(Cache<(u64, u64), Checked>);
+
+struct Checked {
+    n_leaf_tuples: u64,
+    placed: PlacedPath,
+}
+
+impl Default for PathCache {
+    fn default() -> Self {
+        Self(Cache::permanent(PATHS_KEPT).within_bytes(PATHS_KEPT_BYTES, checked_bytes))
+    }
+}
+
+impl PathCache {
+    #[must_use]
+    pub fn stats(&self) -> explorer_core::cache::Stats {
+        self.0.stats()
+    }
+
+    fn get(&self, as_of_block: u64, unified_id: u64) -> Option<Arc<Checked>> {
+        self.0.get(&(as_of_block, unified_id))
+    }
+
+    /// Keep `placed`, as of `as_of_block`, if it leads to `root`.
+    fn keep(&self, as_of_block: u64, n_leaf_tuples: u64, placed: &PlacedPath, root: Option<&str>) {
+        if root.is_some_and(|r| leads_to(placed, r)) {
+            self.0.insert(
+                (as_of_block, placed.unified_id),
+                Checked {
+                    n_leaf_tuples,
+                    placed: placed.clone(),
+                },
+            );
+        }
+    }
+}
+
+/// Roughly the bytes a kept path holds.
+fn checked_bytes(c: &Checked) -> usize {
+    let p = &c.placed;
+    p.path.leaves.len() * size_of::<PathLeaf>()
+        + p.path
+            .layers
+            .iter()
+            .map(|l| l.len() * 32 + size_of::<Vec<[u8; 32]>>())
+            .sum::<usize>()
+        + p.groups.len() * size_of::<Group>()
+        + size_of::<Checked>()
+}
+
+/// Whether `p`'s hashes hold and end at `root`, written out in hex.
+fn leads_to(p: &PlacedPath, root: &str) -> bool {
+    p.check == PathCheck::Holds
+        && p.root()
+            .is_some_and(|r| explorer_core::hex::encode(r).eq_ignore_ascii_case(root))
+}
 
 /// The query string of the paths page and its API twin, as given.
 #[derive(serde::Deserialize, Default)]
@@ -121,10 +190,7 @@ impl TxPaths {
         if placed.is_empty() {
             return RootCheck::Unchecked;
         }
-        if placed.iter().all(|p| {
-            p.root()
-                .is_some_and(|r| explorer_core::hex::encode(r).eq_ignore_ascii_case(root))
-        }) {
+        if placed.iter().all(|p| leads_to(p, root)) {
             RootCheck::Matches
         } else {
             RootCheck::Fails
@@ -194,39 +260,54 @@ pub async fn gather(
         }
     };
 
-    let (answer, root_block) = tokio::join!(
-        state.chain.tree_paths(as_of_block, &wanted),
-        state.chain.proof_root(as_of_block),
-    );
-    let answer = answer.map_err(PathsError::Chain)?;
-    let n_leaf_tuples = answer.n_leaf_tuples;
+    // As of a block past the reorg window, a path checked before is kept.
+    let buried = safe_to_cache_by_height(tip.saturating_sub(as_of_block));
+    let known: Vec<Option<Arc<Checked>>> = wanted
+        .iter()
+        .map(|&id| buried.then(|| state.paths.get(as_of_block, id)).flatten())
+        .collect();
+    let missing: Vec<u64> = wanted
+        .iter()
+        .zip(&known)
+        .filter(|(_, k)| k.is_none())
+        .map(|(&id, _)| id)
+        .collect();
 
-    // Checking a path is CPU work, a few milliseconds a group of leaves, so
-    // it is kept off the threads serving other requests. The permit travels
-    // with the work and is given back when the work ends, not when a
-    // timed-out request stops waiting for it.
-    let stopped = |detail: String| {
-        PathsError::Chain(ChainError::BadAnswer {
-            what: PathQuery::ENDPOINT,
-            detail,
-        })
+    let fetch = async {
+        if missing.is_empty() {
+            return Ok(None);
+        }
+        state
+            .chain
+            .tree_paths(as_of_block, &missing)
+            .await
+            .map(Some)
     };
-    let permit = std::sync::Arc::clone(&CHECKS)
-        .acquire_owned()
-        .await
-        .map_err(|e| stopped(format!("no checking slot: {e}")))?;
-    let ids_for_check = wanted.clone();
-    let placed = tokio::task::spawn_blocking(move || {
-        let placed = place_all(&ids_for_check, answer.paths, n_leaf_tuples);
-        drop(permit);
-        placed
-    })
-    .await
-    .map_err(|e| stopped(format!("checking the paths stopped: {e}")))?;
+    let (answer, root_block) = tokio::join!(fetch, state.chain.proof_root(as_of_block));
+    let answer = answer.map_err(PathsError::Chain)?;
+    let n_leaf_tuples = match &answer {
+        Some(a) => a.n_leaf_tuples,
+        None => known.iter().flatten().next().map_or(0, |k| k.n_leaf_tuples),
+    };
+
+    let fresh = match answer {
+        None => Vec::new(),
+        Some(answer) => check(missing, answer.paths, n_leaf_tuples).await?,
+    };
+    if buried {
+        let root = root_block.as_ref().map(|(_, r)| r.as_str());
+        for p in fresh.iter().flatten() {
+            state.paths.keep(as_of_block, n_leaf_tuples, p, root);
+        }
+    }
+    let mut fresh = fresh.into_iter();
+    let placed = known.into_iter().map(|k| match k {
+        Some(k) => Some(k.placed.clone()),
+        None => fresh.next().flatten(),
+    });
 
     let locked = last_locked_block(tx.unlock_time, entry.block_height);
     let outputs = placed
-        .into_iter()
         .zip(wanted)
         .enumerate()
         .map(|(k, (placed, unified_id))| OutputPath {
@@ -245,9 +326,39 @@ pub async fn gather(
     })
 }
 
+/// Place and check `paths`, the paths of `unified_ids`.
+///
+/// Checking a path is CPU work, a few milliseconds a group of leaves, so it
+/// is kept off the threads serving other requests. The permit travels with
+/// the work and is given back when the work ends, not when a timed-out
+/// request stops waiting for it.
+async fn check(
+    unified_ids: Vec<u64>,
+    paths: Vec<Option<monerod_rpc::types::TreePath>>,
+    n_leaf_tuples: u64,
+) -> Result<Vec<Option<PlacedPath>>, PathsError> {
+    let stopped = |detail: String| {
+        PathsError::Chain(ChainError::BadAnswer {
+            what: PathQuery::ENDPOINT,
+            detail,
+        })
+    };
+    let permit = Arc::clone(&CHECKS)
+        .acquire_owned()
+        .await
+        .map_err(|e| stopped(format!("no checking slot: {e}")))?;
+    tokio::task::spawn_blocking(move || {
+        let placed = place_all(&unified_ids, paths, n_leaf_tuples);
+        drop(permit);
+        placed
+    })
+    .await
+    .map_err(|e| stopped(format!("checking the paths stopped: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
     use super::*;
 
@@ -257,6 +368,51 @@ mod tests {
             block: block.map(str::to_owned),
             from: from.map(str::to_owned),
         }
+    }
+
+    /// The captured transaction's paths as of block 814, placed, with the
+    /// root block 806 records.
+    fn captured() -> (u64, Vec<PlacedPath>, &'static str) {
+        const IDS: [u64; 4] = [802, 803, 804, 805];
+        let bin = include_bytes!("../../../fixtures/fcmp/paths/get_path_by_unified_id_later.bin");
+        let answer = PathQuery::as_of_block(814, &IDS)
+            .unwrap()
+            .answer(&monerod_rpc::epee::read_root(bin, PathQuery::WANTED).unwrap())
+            .unwrap();
+        let n = answer.n_leaf_tuples;
+        let placed = place_all(&IDS, answer.paths, n)
+            .into_iter()
+            .flatten()
+            .collect();
+        (
+            n,
+            placed,
+            "e71da88f93a4ded7a2de6217859985fb5349d597e38232572e8d02d8a21e51ce",
+        )
+    }
+
+    #[test]
+    fn only_a_path_that_leads_to_its_blocks_root_is_kept() {
+        let (n, placed, root) = captured();
+        let cache = PathCache::default();
+
+        cache.keep(814, n, &placed[0], Some(root));
+        let kept = cache.get(814, placed[0].unified_id).unwrap();
+        assert_eq!((kept.n_leaf_tuples, &kept.placed), (n, &placed[0]));
+        // Kept as of that block only.
+        assert!(cache.get(815, placed[0].unified_id).is_none());
+
+        // Not without a root to compare with, nor with another root.
+        cache.keep(814, n, &placed[1], None);
+        cache.keep(814, n, &placed[2], Some(&"00".repeat(32)));
+        // Nor when its hashes do not hold.
+        let mut broken = placed[3].clone();
+        broken.check = PathCheck::Broken { layer: 0 };
+        cache.keep(814, n, &broken, Some(root));
+        for p in &placed[1..] {
+            assert!(cache.get(814, p.unified_id).is_none());
+        }
+        assert_eq!(cache.stats().len, 1);
     }
 
     #[test]

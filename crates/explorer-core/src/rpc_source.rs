@@ -373,10 +373,9 @@ impl RpcChainSource {
     /// block `as_of_block`: one per id, in order, `None` for an output not in
     /// the tree as of that block. See [`PathQuery`].
     ///
-    /// Not cached: a path as of the tip changes with every block, and the
-    /// answer is one daemon call that reads a few groups of the tree. Placing
-    /// and checking the paths, which costs CPU rather than a call, is
-    /// [`crate::curve_tree::place`].
+    /// Not cached here: a path as of the tip changes with every block, and
+    /// whether an answer is worth keeping is known only once it is placed
+    /// and checked, which is [`crate::curve_tree::place`].
     pub async fn tree_paths(
         &self,
         as_of_block: u64,
