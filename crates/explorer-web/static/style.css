@@ -442,15 +442,16 @@ dl.kv.spaced { margin-top: 0.8rem; }
 .curve-tree .label { fill: var(--accent); font-size: 13px; }
 .curve-tree .curve { fill: var(--fg-faint); }
 .curve-tree .count { fill: var(--fg-muted); font-size: 13px; font-variant-numeric: tabular-nums; }
-/* The way into the FCMP++ walkthrough, under the tree it explains. */
-.walk-row { margin: 0.2rem 0 0.9rem; }
-.curve-tree .walk-row { margin: 0.7rem 0 0.35rem; text-align: center; }
-.walk {
-  display: inline-block; padding: 0.45rem 0.95rem; border-radius: var(--radius);
-  background: var(--accent); color: var(--accent-fg);
-  font-weight: 600; font-size: 0.9rem; text-decoration: none;
+/* The way into the FCMP++ walkthrough, at the head of the tree it explains:
+   in the caption's line, clear of the hint that opens below it, and on a line
+   of its own where the two would not fit side by side. */
+.walk { font-weight: 600; font-size: 0.85rem; }
+.curve-tree { position: relative; }
+.curve-tree > .walk { position: absolute; top: 0.55rem; right: 0.75rem; }
+@media (max-width: 420px) {
+  .curve-tree > .walk { position: static; display: inline-block; margin: 0 0 0.5rem; }
 }
-.walk:hover { text-decoration: none; filter: brightness(1.08); }
+.walk-row { margin: 0.2rem 0 0.9rem; }
 .curve-tree .root-hash {
   fill: var(--fg-faint);
   font: 9.5px ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;

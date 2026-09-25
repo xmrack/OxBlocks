@@ -135,13 +135,13 @@
       size. Every input spends one of the outputs at the bottom, and nothing
       here says which.</p></details>
     </figcaption>
+    <a class="walk" href="/tx/{{ hash }}/fcmp">How this spend stays private &rarr;</a>
     <div class="scroll">
     {% for t in picture %}{% include "funnel.html" %}{% endfor %}
     </div>
-    <p class="walk-row"><a class="walk" href="/tx/{{ hash }}/fcmp">See how this spend stays private &rarr;</a></p>
   </figure>
   {% else if fcmp_pp %}
-  <p class="walk-row"><a class="walk" href="/tx/{{ hash }}/fcmp">See how this spend stays private &rarr;</a></p>
+  <p class="walk-row"><a class="walk" href="/tx/{{ hash }}/fcmp">How this spend stays private &rarr;</a></p>
   {% endif %}
   {% for i in inputs %}
   <details class="input-card"{% if inputs.len() == 1 %} open{% endif %}>
