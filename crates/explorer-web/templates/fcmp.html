@@ -232,7 +232,6 @@ tree is summed up by one short value at the top, its root.
 {% if let Some(r) = reference_block %}<dt>As of block</dt><dd><a href="/block/{{ r }}">{{ r }}</a></dd>{% endif %}
 {% if let Some((b, root)) = root_block %}<dt>Root</dt><dd><span class="hash">{{ root }}</span>, in block <a href="/block/{{ b }}">{{ b }}</a></dd>{% endif %}
 </dl></div>
-{% if let Some(picture) = tree %}<figure class="curve-tree"><div class="scroll">{% for t in picture %}{% include "funnel.html" %}{% endfor %}</div></figure>{% endif %}
 <details class="maths"><summary>Show the maths</summary>
 <p>An output is three points: its key <var>O</var> = <var>x</var>&middot;<var>G</var> + <var>y</var>&middot;<var>T</var>,
 its key image generator <var>I</var> = <var>H<sub>p</sub></var>(<var>O</var>), a
@@ -249,7 +248,8 @@ scalars and a Helios point's are Selene scalars, so each layer feeds the
 next.</p>
 </details>
 </div>
-{% if tree.is_none() %}<svg class="pic" viewBox="0 0 200 120" aria-hidden="true"><path class="web" d="M95 28H105L125 58H75ZM75 68H125L185 98H15Z"/><rect class="solid" x="95" y="18" width="10" height="10" rx="2"/><rect class="node" x="75" y="58" width="50" height="10" rx="2"/><rect class="node" x="15" y="98" width="170" height="10" rx="2"/></svg>{% endif %}
+{% if let Some(picture) = tree %}<figure class="curve-tree"><div class="scroll">{% for t in picture %}{% include "funnel.html" %}{% endfor %}</div></figure>
+{% else %}<svg class="pic" viewBox="0 0 200 120" aria-hidden="true"><path class="web" d="M95 28H105L125 58H75ZM75 68H125L185 98H15Z"/><rect class="solid" x="95" y="18" width="10" height="10" rx="2"/><rect class="node" x="75" y="58" width="50" height="10" rx="2"/><rect class="node" x="15" y="98" width="170" height="10" rx="2"/></svg>{% endif %}
 </div>
 {% call close(steps, 1) %}{% endcall %}
 </section>
