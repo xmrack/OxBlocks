@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}Curve tree paths of {{ hash }} &mdash; oxblocks{% endblock %}
+{% block content %}
+<p class="crumb"><a href="/tx/{{ hash }}">Transaction</a> <span class="hash">{{ hash }}</span></p>
+<h1>Paths through the curve tree</h1>
+<p class="lede">To spend an output, its owner proves that it is one of the
+tree's leaves by climbing from that leaf to the root. The climb needs the
+output's path: the group of outputs it sits in, and at every layer above, the
+group holding its ancestor. These are the paths of this transaction's
+{% if outputs_total == 1 %}output{% else %}outputs{% endif %} as of block
+{{ as_of }}{% if as_of == tip %}, the tip{% endif %}, each recomputed here from
+its leaves up.</p>
+
+<div class="facts"><div class="facts-h">What a wallet keeps</div>
+<p class="keeps">This is what a wallet needs to spend one of these outputs with
+FCMP++: the output's path as of the block its spending transaction references.
+The proof shows that the output is somewhere in the tree without saying where,
+so spending it gives none of this away. Each block adds outputs at the tree's
+right edge, which changes the last group of every layer, and with it, sooner
+or later, the upper groups of every path. So a wallet does not fetch a path
+once: it keeps its outputs' paths current as it syncs, holding the tree's
+right edge to do so. It builds them from its own sync, because asking a node
+for a path tells that node which outputs are yours. Looking one up here tells
+this explorer's operator which outputs you looked at, as any lookup on any
+explorer does.</p></div>
+
+<div class="facts"><div class="facts-h">The tree</div><dl>
+<dt>As of block</dt><dd><a href="/block/{{ as_of }}">{{ as_of }}</a>{% if as_of == tip %} <span class="tag">tip</span>{% endif %}</dd>
+<dt>Outputs in the tree</dt><dd>{{ leaves }}</dd>
+<dt>Layers</dt><dd>{{ n_layers }}</dd>
+{% if let Some((b, root)) = root_block %}<dt>Root</dt><dd><span class="hash">{{ root }}</span>, in block <a href="/block/{{ b }}">{{ b }}</a>
+{% if root_check == "matches" %} <span class="tag ok">every path leads here</span>{% else if root_check == "fails" %} <span class="tag bad">a path does not lead here</span>{% endif %}</dd>{% endif %}
+</dl>
+{% if root_check == "matches" %}
+<p class="keeps">Every group shown below was hashed, from the leaves up, and each
+hash is the next layer's member the path says it is, up to the root the block
+records. A block carries the root of the tree as it stands eight blocks
+later, so the tree as of block {{ as_of }} has its root in block
+{% if let Some((b, _)) = root_block %}{{ b }}{% endif %}.</p>
+{% else if root_check == "fails" %}
+<div class="notice">A path from the daemon does not hash up to its root. The
+groups are shown as the daemon sent them; the outputs listed as failing are
+the ones whose hashes do not hold.</div>
+{% endif %}
+<form class="as-of" method="get" action="/tx/{{ hash }}/paths">
+{% if let Some(k) = showing %}<input type="hidden" name="output" value="{{ k }}">{% endif %}
+<label>As of block <input name="block" inputmode="numeric" pattern="[0-9]*" placeholder="{{ tip }}"{% if let Some(b) = block %} value="{{ b }}"{% endif %}></label>
+<button type="submit">Show</button>{% if block.is_some() %} <a href="/tx/{{ hash }}/paths{% if let Some(k) = showing %}?output={{ k }}{% endif %}">back to the tip</a>{% endif %}
+</form>
+</div>
+
+{% if !windows.is_empty() %}<nav class="tabs" aria-label="Outputs, fifty at a time">{% for w in windows %}<a href="{{ w.href }}"{% if w.on %} class="on" aria-current="page"{% endif %}>{{ w.label }}</a>{% endfor %}</nav>{% endif %}
+<nav class="tabs" aria-label="Which paths">{% for t in tabs %}<a href="{{ t.href }}"{% if t.on %} class="on" aria-current="page"{% endif %}>{{ t.label }}</a>{% endfor %}</nav>
+
+{% if let Some(picture) = tree %}
+<figure class="curve-tree">
+  <figcaption>{% if showing.is_some() %}This output's path{% else %}The paths together{% endif %}
+    <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
+    <p>The whole tree, one bar per layer, with the outputs at the bottom and
+    the root at the top. Each bar's width is logarithmic in its size. The line
+    climbs from the output through its ancestor in every layer, placed along
+    each bar by its position in that layer. Outputs of one transaction join
+    the tree side by side, so their lines mostly run together.</p></details>
+  </figcaption>
+  <div class="scroll">
+  {% for t in picture %}{% include "funnel.html" %}{% endfor %}
+  </div>
+</figure>
+{% endif %}
+
+<div class="scroll">
+<table class="path-status">
+  <thead><tr><th>Output</th><th class="num">Unified ID</th><th>In the tree</th></tr></thead>
+  <tbody>
+  {% for s in statuses %}
+  <tr>
+    <td>{% if showing.is_some() %}{{ s.label }}{% else %}<a href="{{ s.href }}">{{ s.label }}</a>{% endif %}</td>
+    <td class="num">{{ s.unified_id }}</td>
+    <td>{% if let Some(leaf) = s.leaf %}leaf {{ leaf }}{% if s.check == "holds" %} <span class="tag ok">hashes hold</span>{% else %} <span class="tag bad">{{ s.check }}</span>{% endif %}{% else if let Some(b) = s.joins %}not yet: it joins the tree as of block {{ b }}, once it unlocks{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+{% if let Some(bytes) = stored %}
+<p class="keeps">{% if let Some(apart) = stored_apart %}Kept together, these paths come to {{ bytes }}
+bytes: {{ apart }} bytes path by path, less the groups they share.{% else %}A wallet keeps
+about {{ bytes }} bytes for this path.{% endif %} That is 64 bytes a leaf, the output's key
+and commitment, and 32 bytes for each point above.</p>
+{% endif %}
+
+{% for l in layers %}
+<section class="path-layer">
+<h2>{{ l.name }} <span class="curve">{{ l.curve }}</span></h2>
+{% for g in l.groups %}
+<p class="group-h">{{ g.caption }}</p>
+<div class="chips">{% for c in g.members %}<span class="chip{% if c.on %} on{% endif %}" title="{{ c.full }}">{{ c.short }}</span>{% endfor %}</div>
+{% endfor %}
+</section>
+{% endfor %}
+
+{% if !leaf_groups.is_empty() %}
+<section class="path-layer">
+<h2>Outputs <span class="curve">the leaves</span>
+  <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
+  <p>Each leaf is an output's one-time key and amount commitment, as they
+  are on the chain. The tree turns them into six numbers: the coordinates of
+  the key, of the point its key image is made from, and of the commitment.
+  For an output from before Carrot it first clears any torsion from the key
+  and commitment, and hashes the key to that point the older way; that is
+  the legacy kind. A group of 38 hashes to one node of layer 1.</p></details>
+</h2>
+{% for g in leaf_groups %}
+<p class="group-h">{{ g.caption }}</p>
+<div class="scroll">
+<table class="leaves">
+  <thead><tr><th class="num">Leaf</th><th class="num">Unified ID</th><th>Kind</th><th>Output key</th><th>Commitment</th><th></th></tr></thead>
+  <tbody>
+  {% for r in g.rows %}
+  <tr{% if r.output.is_some() %} class="on"{% endif %}>
+    <td class="num">{{ r.position }}</td>
+    <td class="num">{{ r.unified_id }}</td>
+    <td>{{ r.kind }}</td>
+    <td><span class="hash">{{ r.key }}</span></td>
+    <td><span class="hash">{{ r.commitment }}</span></td>
+    <td>{% if let Some(k) = r.output %}<span class="tag">output {{ k }}</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endfor %}
+</section>
+{% endif %}
+{% endblock %}

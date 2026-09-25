@@ -108,6 +108,7 @@
   <li><a href="#rawblock">/api/rawblock/&lt;id&gt;</a></li>
   <li><a href="#blocks">/api/blocks/&lt;start&gt;/&lt;end&gt;</a></li>
   <li><a href="#transaction">/api/transaction/&lt;hash&gt;</a></li>
+  <li><a href="#paths">/api/transaction/&lt;hash&gt;/paths</a></li>
   <li><a href="#rawtransaction">/api/rawtransaction/&lt;hash&gt;</a></li>
   <li><a href="#private">/api/transaction/private/&lt;postfix&gt;</a></li>
   <li><a href="#transactions">/api/transactions</a></li>
@@ -259,6 +260,43 @@
     <summary>Example response</summary>
     <pre class="blob">{{ example_transaction }}</pre>
   </details>
+</section>
+
+<section class="endpoint" id="paths">
+  <h3><span class="verb">GET</span><code class="lit">/api/transaction/&lt;hash&gt;/paths?block=&amp;from=</code></h3>
+  <p>
+    The paths through the FCMP++ curve tree of a mined transaction's outputs,
+    as of <code class="lit">block</code>, or the tip when it is left out: 50
+    outputs at most, starting at output <code class="lit">from</code>, counted
+    from 0. One daemon call. The explorer recomputes each path's hashes from
+    its leaves up and compares the result with the root in block
+    <code class="lit">block</code> &minus; 8. <code class="lit">root_check</code>
+    is <code class="lit">matches</code> when every path holds and reaches that
+    root, <code class="lit">fails</code> when one does not, and
+    <code class="lit">unchecked</code> when no output is in the tree yet or no
+    block carries the root.
+  </p>
+  <p>
+    Each output carries its <code class="lit">unified_id</code> and its
+    <code class="lit">last_locked_block</code>. The tree holds the output from
+    that block on. An output in the tree also carries its
+    <code class="lit">leaf_idx</code>, its <code class="lit">check</code>
+    (<code class="lit">holds</code>, <code class="lit">broken</code>,
+    <code class="lit">unreadable</code> or <code class="lit">misshapen</code>),
+    and its <code class="lit">groups</code>, from the leaves to the root. Each
+    group gives its <code class="lit">layer</code>, <code class="lit">curve</code>,
+    <code class="lit">layer_size</code>, its first member's place in the layer
+    as <code class="lit">start</code>, and the ancestor's place in the group as
+    <code class="lit">offset</code>. The leaves' group lists its
+    <code class="lit">leaves</code>, each with its unified id, kind, output key
+    and commitment. Every other group lists its <code class="lit">members</code>
+    as compressed points.
+  </p>
+  <p>
+    A transaction in the pool is a 404: its outputs have no place in the tree
+    until it is mined and they unlock. So is a block past the tip.
+  </p>
+  <pre class="blob">curl -s "$OXBLOCKS/api/transaction/&lt;hash&gt;/paths"</pre>
 </section>
 
 <section class="endpoint" id="rawtransaction">

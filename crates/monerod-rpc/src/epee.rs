@@ -1,13 +1,15 @@
 //! monerod's binary format, epee "portable storage", for the `.bin`
 //! endpoints.
 //!
-//! One call needs it: `/get_path_by_unified_id.bin`, the cheapest place the
-//! FCMP++ daemon reports how many outputs its curve tree held as of a block.
-//! (`/getblocks.bin` reports it too, when asked to start a tree sync, beside a
-//! batch of whole blocks.) Every other call this crate makes is JSON, so this
-//! module covers exactly what that one exchange needs: an encoder for a flat
-//! section of unsigned integers, and a reader that pulls a few named scalars
-//! out of the root of the answer and walks past everything else.
+//! One endpoint needs it: `/get_path_by_unified_id.bin`, which answers two
+//! questions. It is the cheapest place the FCMP++ daemon reports how many
+//! outputs its curve tree held as of a block, and it is the only place it
+//! gives out outputs' paths through that tree. (`/getblocks.bin` reports the
+//! size too, when asked to start a tree sync, beside a batch of whole blocks.)
+//! Every other call this crate makes is JSON, so this module covers what those
+//! exchanges need: an encoder for a flat section of unsigned integers, and a
+//! reader that keeps the named entries of the answer's root, whole, and walks
+//! past everything else.
 //!
 //! The layout:
 //!
@@ -23,15 +25,18 @@
 //!
 //! The reader is written for remote input: the daemon may be a public node,
 //! and the path to it may be plain HTTP. It copies nothing out of a value it
-//! skips; the one thing it holds per entry is a borrowed name for each root
-//! key, to catch a repeated one. It does one pass over the bytes, so its time
-//! grows only linearly, and it caps nesting well inside any stack. Callers
-//! also cap the body, e.g. [`crate::types::TreeSizeQuery::MAX_ANSWER_BYTES`].
+//! skips; the one thing it holds per entry is a borrowed name for each key of
+//! a section it keeps, to catch a repeated one. It does one pass over the
+//! bytes, so its time grows only linearly, and it caps nesting well inside any
+//! stack. What it keeps can take more memory than the body -- up to
+//! `size_of::<Value>()` bytes per byte, for an array of one-byte integers --
+//! so callers cap the body, e.g.
+//! [`crate::types::TreeSizeQuery::MAX_ANSWER_BYTES`].
 //!
-//! What it refuses: an empty name, a bool other than 0 or 1, a repeated root
-//! key, any array of arrays, and bytes after the root. Inside a value it
-//! skips it checks framing only -- types, counts and lengths -- since nothing
-//! is kept from it.
+//! What it refuses: an empty name, a bool other than 0 or 1, a repeated key
+//! in the root or in a section it keeps, any array of arrays, and bytes after
+//! the root. Inside a value it skips it checks framing only -- types, counts
+//! and lengths -- since nothing is kept from it.
 
 use std::collections::HashSet;
 
@@ -80,7 +85,7 @@ pub enum EpeeError {
     EmptyName,
     #[error("a bool byte of {0}")]
     BadBool(u8),
-    #[error("the root key {0:?} appears twice")]
+    #[error("the key {0:?} appears twice in one section")]
     DuplicateKey(String),
     #[error("sections nested deeper than {MAX_DEPTH}")]
     TooDeep,
@@ -90,28 +95,29 @@ pub enum EpeeError {
     Unencodable(&'static str),
 }
 
-/// A value read from the root section.
+/// A value kept from the answer.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Scalar {
+pub enum Value {
     Signed(i64),
     Unsigned(u64),
     Double(f64),
     Bool(bool),
     /// epee strings are byte strings, and monerod puts raw binary in them.
     Bytes(Vec<u8>),
-    /// The key is there but holds a section or an array, which this reader
-    /// walks past rather than keeping. Recorded so that "present with the
-    /// wrong type" is not mistaken for "absent".
-    Container,
+    /// A section, with every entry kept.
+    Section(Root),
+    /// An array's elements, each kept.
+    Array(Vec<Value>),
 }
 
-/// The root entries a caller asked for, as found.
+/// A section's entries, as kept: for the answer's root, the ones a caller
+/// asked for; for a section inside a kept value, all of them.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct Root(Vec<(String, Scalar)>);
+pub struct Root(Vec<(String, Value)>);
 
 impl Root {
     #[must_use]
-    pub fn get(&self, name: &str) -> Option<&Scalar> {
+    pub fn get(&self, name: &str) -> Option<&Value> {
         self.0.iter().find(|(k, _)| k == name).map(|(_, v)| v)
     }
 
@@ -119,8 +125,8 @@ impl Root {
     #[must_use]
     pub fn unsigned(&self, name: &str) -> Option<u64> {
         match self.get(name)? {
-            Scalar::Unsigned(v) => Some(*v),
-            Scalar::Signed(v) => u64::try_from(*v).ok(),
+            Value::Unsigned(v) => Some(*v),
+            Value::Signed(v) => u64::try_from(*v).ok(),
             _ => None,
         }
     }
@@ -128,8 +134,30 @@ impl Root {
     /// A string that is valid UTF-8.
     #[must_use]
     pub fn text(&self, name: &str) -> Option<&str> {
+        std::str::from_utf8(self.bytes(name)?).ok()
+    }
+
+    /// A string's raw bytes.
+    #[must_use]
+    pub fn bytes(&self, name: &str) -> Option<&[u8]> {
         match self.get(name)? {
-            Scalar::Bytes(b) => std::str::from_utf8(b).ok(),
+            Value::Bytes(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn section(&self, name: &str) -> Option<&Root> {
+        match self.get(name)? {
+            Value::Section(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn array(&self, name: &str) -> Option<&[Value]> {
+        match self.get(name)? {
+            Value::Array(a) => Some(a),
             _ => None,
         }
     }
@@ -236,7 +264,7 @@ pub fn read_root(bytes: &[u8], wanted: &[&str]) -> Result<Root, EpeeError> {
             .ok()
             .filter(|n| wanted.contains(n));
         match keep {
-            Some(key) => kept.push((key.to_owned(), r.keep(ty)?)),
+            Some(key) => kept.push((key.to_owned(), r.keep(ty, 0)?)),
             None => r.skip(ty, 0)?,
         }
     }
@@ -313,29 +341,70 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// Read one root value into a [`Scalar`], walking past a container.
-    fn keep(&mut self, ty: u8) -> Result<Scalar, EpeeError> {
-        if ty & FLAG_ARRAY != 0 || ty == TYPE_OBJECT || ty == TYPE_ARRAY {
-            self.skip(ty, 0)?;
-            return Ok(Scalar::Container);
+    /// Read one value of type `ty`, inside `depth` enclosing sections, and
+    /// keep it whole.
+    ///
+    /// Recursion is bounded the way [`Self::skip`]'s is.
+    fn keep(&mut self, ty: u8, depth: usize) -> Result<Value, EpeeError> {
+        if ty & FLAG_ARRAY != 0 {
+            let inner = ty & !FLAG_ARRAY;
+            if inner == TYPE_ARRAY {
+                return Err(EpeeError::NestedArray);
+            }
+            let n = self.count(min_len(inner)?)?;
+            let mut out = Vec::with_capacity(n);
+            for _ in 0..n {
+                out.push(self.keep_one(inner, depth)?);
+            }
+            return Ok(Value::Array(out));
         }
+        self.keep_one(ty, depth)
+    }
+
+    fn keep_one(&mut self, ty: u8, depth: usize) -> Result<Value, EpeeError> {
         Ok(match ty {
-            TYPE_INT64 => Scalar::Signed(i64::from_le_bytes(self.array()?)),
-            TYPE_INT32 => Scalar::Signed(i64::from(i32::from_le_bytes(self.array()?))),
-            TYPE_INT16 => Scalar::Signed(i64::from(i16::from_le_bytes(self.array()?))),
-            TYPE_INT8 => Scalar::Signed(i64::from(i8::from_le_bytes(self.array()?))),
-            TYPE_UINT64 => Scalar::Unsigned(u64::from_le_bytes(self.array()?)),
-            TYPE_UINT32 => Scalar::Unsigned(u64::from(u32::from_le_bytes(self.array()?))),
-            TYPE_UINT16 => Scalar::Unsigned(u64::from(u16::from_le_bytes(self.array()?))),
-            TYPE_UINT8 => Scalar::Unsigned(u64::from(self.byte()?)),
-            TYPE_DOUBLE => Scalar::Double(f64::from_le_bytes(self.array()?)),
-            TYPE_BOOL => Scalar::Bool(self.bool()?),
+            TYPE_INT64 => Value::Signed(i64::from_le_bytes(self.array()?)),
+            TYPE_INT32 => Value::Signed(i64::from(i32::from_le_bytes(self.array()?))),
+            TYPE_INT16 => Value::Signed(i64::from(i16::from_le_bytes(self.array()?))),
+            TYPE_INT8 => Value::Signed(i64::from(i8::from_le_bytes(self.array()?))),
+            TYPE_UINT64 => Value::Unsigned(u64::from_le_bytes(self.array()?)),
+            TYPE_UINT32 => Value::Unsigned(u64::from(u32::from_le_bytes(self.array()?))),
+            TYPE_UINT16 => Value::Unsigned(u64::from(u16::from_le_bytes(self.array()?))),
+            TYPE_UINT8 => Value::Unsigned(u64::from(self.byte()?)),
+            TYPE_DOUBLE => Value::Double(f64::from_le_bytes(self.array()?)),
+            TYPE_BOOL => Value::Bool(self.bool()?),
             TYPE_STRING => {
                 let len = self.count(1)?;
-                Scalar::Bytes(self.take(len)?.to_vec())
+                Value::Bytes(self.take(len)?.to_vec())
             }
+            TYPE_OBJECT => Value::Section(self.keep_section(depth + 1)?),
+            // See `skip_one`.
+            TYPE_ARRAY => return Err(EpeeError::NestedArray),
             other => return Err(EpeeError::UnknownType(other)),
         })
+    }
+
+    fn keep_section(&mut self, depth: usize) -> Result<Root, EpeeError> {
+        if depth > MAX_DEPTH {
+            return Err(EpeeError::TooDeep);
+        }
+        let n = self.count(4)?;
+        let mut seen: HashSet<&[u8]> = HashSet::with_capacity(n);
+        let mut kept = Vec::with_capacity(n);
+        for _ in 0..n {
+            let name = self.name()?;
+            if !seen.insert(name) {
+                return Err(EpeeError::DuplicateKey(
+                    String::from_utf8_lossy(name).into_owned(),
+                ));
+            }
+            let ty = self.byte()?;
+            kept.push((
+                String::from_utf8_lossy(name).into_owned(),
+                self.keep(ty, depth)?,
+            ));
+        }
+        Ok(Root(kept))
     }
 
     /// Walk past one value of type `ty` inside `depth` enclosing sections.
@@ -487,19 +556,29 @@ mod tests {
             ("unified_ids", Field::U64s(&[7, 8, 9])),
         ])
         .unwrap();
-        let root = read_root(&bytes, &["as_of_n_blocks", "unified_ids"]).unwrap();
+        let root = read_root(&bytes, &["as_of_n_blocks"]).unwrap();
         assert_eq!(root.unsigned("as_of_n_blocks"), Some(421));
-        assert_eq!(root.get("unified_ids"), Some(&Scalar::Container));
+        assert_eq!(root.get("unified_ids"), None);
 
         let root = read_root(&bytes, &[]).unwrap();
         assert_eq!(root.get("as_of_n_blocks"), None);
     }
 
+    #[test]
+    fn a_wanted_array_is_kept_whole() {
+        let bytes = encode(&[("unified_ids", Field::U64s(&[7, 8, 9]))]).unwrap();
+        let root = read_root(&bytes, &["unified_ids"]).unwrap();
+        assert_eq!(
+            root.array("unified_ids"),
+            Some(&[Value::Unsigned(7), Value::Unsigned(8), Value::Unsigned(9)][..])
+        );
+    }
+
     /// Nested objects, an array of objects, strings holding raw bytes and a
     /// bool: every shape the path response uses, walked past on the way to
-    /// the scalars that are kept.
+    /// the scalars that are kept, or kept whole when asked for.
     #[test]
-    fn nested_sections_and_arrays_of_objects_are_walked_past() {
+    fn nested_sections_and_arrays_of_objects_are_walked_past_or_kept() {
         let mut path = vec![2 << 2];
         path.extend(entry(b"leaf_idx", TYPE_UINT32, &5u32.to_le_bytes()));
         path.extend(entry(b"blob", TYPE_STRING, &[2 << 2, 0xff, 0x00]));
@@ -511,15 +590,33 @@ mod tests {
         body.extend(entry(b"untrusted", TYPE_BOOL, &[0]));
         body.extend(entry(b"n_leaf_tuples", TYPE_UINT64, &62u64.to_le_bytes()));
 
-        let root = read_root(
-            &doc(4, &body),
-            &["status", "untrusted", "n_leaf_tuples", "paths"],
-        )
-        .unwrap();
+        let root = read_root(&doc(4, &body), &["status", "untrusted", "n_leaf_tuples"]).unwrap();
         assert_eq!(root.text("status"), Some("OK"));
-        assert_eq!(root.get("untrusted"), Some(&Scalar::Bool(false)));
+        assert_eq!(root.get("untrusted"), Some(&Value::Bool(false)));
         assert_eq!(root.unsigned("n_leaf_tuples"), Some(62));
-        assert_eq!(root.get("paths"), Some(&Scalar::Container));
+        assert_eq!(root.get("paths"), None);
+
+        let root = read_root(&doc(4, &body), &["paths"]).unwrap();
+        let [Value::Section(path)] = root.array("paths").unwrap() else {
+            panic!("one path")
+        };
+        assert_eq!(path.unsigned("leaf_idx"), Some(5));
+        assert_eq!(path.bytes("blob"), Some(&[0xff, 0x00][..]));
+        assert_eq!(root.get("status"), None);
+    }
+
+    #[test]
+    fn a_repeated_key_inside_a_kept_section_is_refused() {
+        let mut inner = vec![2 << 2];
+        inner.extend(entry(b"a", TYPE_UINT8, &[1]));
+        inner.extend(entry(b"a", TYPE_UINT8, &[2]));
+        let body = doc(1, &entry(b"s", TYPE_OBJECT, &inner));
+        assert_eq!(
+            read_root(&body, &["s"]),
+            Err(EpeeError::DuplicateKey("a".to_owned()))
+        );
+        // Walked past, it is framing only.
+        assert!(read_root(&body, &[]).is_ok());
     }
 
     #[test]
@@ -600,8 +697,13 @@ mod tests {
             b
         }
         assert!(read_root(&nested(MAX_DEPTH), &[]).is_ok());
+        assert!(read_root(&nested(MAX_DEPTH), &["o"]).is_ok());
         assert_eq!(
             read_root(&nested(MAX_DEPTH + 1), &[]),
+            Err(EpeeError::TooDeep)
+        );
+        assert_eq!(
+            read_root(&nested(MAX_DEPTH + 1), &["o"]),
             Err(EpeeError::TooDeep)
         );
         assert_eq!(read_root(&nested(100_000), &[]), Err(EpeeError::TooDeep));
@@ -626,9 +728,6 @@ mod tests {
         put_varint(&mut bytes, 5_000_000).unwrap();
         bytes.resize(bytes.len() + 5_000_000, 0);
         let long = doc(1, &entry(b"x", TYPE_UINT8 | FLAG_ARRAY, &bytes));
-        assert_eq!(
-            read_root(&long, &["x"]).unwrap().get("x"),
-            Some(&Scalar::Container)
-        );
+        assert_eq!(read_root(&long, &[]).unwrap().get("x"), None);
     }
 }

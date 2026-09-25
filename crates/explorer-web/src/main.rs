@@ -3,6 +3,7 @@
 mod api;
 mod config;
 mod html;
+mod tree_paths;
 
 use std::sync::Arc;
 
@@ -63,6 +64,10 @@ fn router(config: &Config, state: Arc<AppState>) -> Router {
         .route("/api/version", get(handlers::version))
         .route("/api/block/{id}", get(handlers::block))
         .route("/api/transaction/{hash}", get(handlers::transaction))
+        .route(
+            "/api/transaction/{hash}/paths",
+            get(handlers::transaction_paths),
+        )
         .route("/api/rawblock/{id}", get(handlers::raw_block))
         .route("/api/rawtransaction/{hash}", get(handlers::raw_transaction))
         .route("/api/feeestimate", get(handlers::fee_estimate))
@@ -87,6 +92,7 @@ fn router(config: &Config, state: Arc<AppState>) -> Router {
         .route("/block/{id}", get(html::block))
         .route("/tx/{hash}", get(html::transaction))
         .route("/tx/{hash}/fcmp", get(html::fcmp_proof))
+        .route("/tx/{hash}/paths", get(html::tree_paths))
         .route("/mempool", get(html::mempool))
         .route("/altblocks", get(html::alt_blocks))
         .route("/search", get(html::search))

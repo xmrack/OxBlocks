@@ -145,6 +145,9 @@ const REPLAYED: &[&str] = &[
     "fcmp/get_transactions_fcmp_pruned.json",
     "fcmp/get_transactions_coinbase.json",
     "fcmp/get_transactions_pool.json",
+    "fcmp/paths/get_block_root_tip.json",
+    "fcmp/paths/get_block_root_later.json",
+    "fcmp/paths/get_transactions.json",
 ];
 
 fn replay_by_name(rel: &str) {
@@ -156,7 +159,9 @@ fn replay_by_name(rel: &str) {
         | "testnet/get_block_coinbase_only.json"
         | "mainnet/get_block_ringct.json"
         | "fcmp/get_block_fcmp.json"
-        | "fcmp/get_block_coinbase_only.json" => {
+        | "fcmp/get_block_coinbase_only.json"
+        | "fcmp/paths/get_block_root_tip.json"
+        | "fcmp/paths/get_block_root_later.json" => {
             let block: GetBlock = replay(&result_of(rel), rel);
             // The block's own JSON is a second wire format, and the one that
             // carries the curve tree.
@@ -201,7 +206,8 @@ fn replay_by_name(rel: &str) {
         | "fcmp/get_transactions_fcmp.json"
         | "fcmp/get_transactions_fcmp_pruned.json"
         | "fcmp/get_transactions_coinbase.json"
-        | "fcmp/get_transactions_pool.json" => {
+        | "fcmp/get_transactions_pool.json"
+        | "fcmp/paths/get_transactions.json" => {
             let resp: GetTransactionsResponse = replay(&raw(rel), rel);
             // The nested documents are a second wire format; replay them too.
             for entry in &resp.txs {
@@ -240,7 +246,7 @@ fn every_known_fixture_round_trips_without_losing_a_field() {
 #[test]
 fn every_fixture_on_disk_is_at_least_valid_json() {
     let mut on_disk = std::collections::BTreeSet::new();
-    for net in ["testnet", "mainnet", "fcmp"] {
+    for net in ["testnet", "mainnet", "fcmp", "fcmp/paths"] {
         let dir = fixtures_root().join(net);
         let entries = std::fs::read_dir(&dir)
             .unwrap_or_else(|e| panic!("cannot list {}: {e}", dir.display()));
@@ -2456,19 +2462,19 @@ fn binary(rel: &str, wanted: &[&str]) -> monerod_rpc::epee::Root {
 /// are in the tree: 62 outputs.
 #[test]
 fn the_tree_size_is_the_same_whichever_output_probes_it() {
-    use monerod_rpc::epee::Scalar;
+    use monerod_rpc::epee::Value;
     use monerod_rpc::types::TreeSizeQuery;
 
     let wanted = ["status", "n_leaf_tuples", "paths", "credits", "top_hash"];
     let own = binary("fcmp/get_path_by_unified_id_probe_own_output.bin", &wanted);
     // Probed with an early coinbase, the answer carries a whole path through
-    // the tree, nested sections and all, which the reader walks past.
+    // the tree, nested sections and all, kept here because it was asked for.
     let in_tree = binary("fcmp/get_path_by_unified_id_probe_in_tree.bin", &wanted);
 
     for root in [&own, &in_tree] {
         assert_eq!(root.text("status"), Some("OK"));
         assert_eq!(TreeSizeQuery::answer(root), Some(62));
-        assert_eq!(root.get("paths"), Some(&Scalar::Container));
+        assert!(matches!(root.get("paths"), Some(Value::Array(_))));
         assert_eq!(root.unsigned("credits"), Some(0));
     }
 
@@ -2479,6 +2485,74 @@ fn the_tree_size_is_the_same_whichever_output_probes_it() {
     );
     assert_eq!(TreeSizeQuery::answer(&lean), Some(62));
     assert_eq!(lean.get("paths"), None, "nothing unasked for is kept");
+}
+
+/// Paths for the four outputs of one transaction, captured by
+/// `tools/capture-path-fixtures.py` on a chain whose tree holds more than
+/// 38 * 18 leaves, and so has three layers.
+fn paths(rel: &str, as_of_block: u64, ids: &[u64]) -> monerod_rpc::types::TreePaths {
+    use monerod_rpc::types::PathQuery;
+    let query = PathQuery::as_of_block(as_of_block, ids).expect("a query");
+    query
+        .answer(&binary(rel, PathQuery::WANTED))
+        .unwrap_or_else(|e| panic!("{rel}: {e}"))
+}
+
+const PATH_TX_IDS: [u64; 4] = [802, 803, 804, 805];
+
+#[test]
+fn a_transactions_outputs_have_paths_once_they_unlock() {
+    use monerod_rpc::types::LeafKind;
+
+    // Mined, but ten blocks from unlocking: in no tree yet.
+    let locked = paths(
+        "fcmp/paths/get_path_by_unified_id_locked.bin",
+        801,
+        &PATH_TX_IDS,
+    );
+    assert_eq!(locked.n_leaf_tuples, 743);
+    assert_eq!(locked.paths, vec![None; 4]);
+
+    let tip = paths(
+        "fcmp/paths/get_path_by_unified_id_tip.bin",
+        811,
+        &PATH_TX_IDS,
+    );
+    let found: Vec<_> = tip
+        .paths
+        .iter()
+        .map(|p| p.as_ref().expect("in the tree"))
+        .collect();
+    // Unlocked together, the four joined the tree side by side.
+    let first = found[0].leaf_idx;
+    for (k, (path, id)) in found.iter().zip(PATH_TX_IDS).enumerate() {
+        assert_eq!(path.leaf_idx, first + k as u64);
+        let leaf = &path.leaves[(path.leaf_idx % 38) as usize];
+        assert_eq!(leaf.unified_id, id);
+        assert_eq!(leaf.kind, LeafKind::Carrot);
+        assert_eq!(path.layers.len(), 3, "three layers");
+        assert_eq!(path.layers.last().map(Vec::len), Some(1), "the root alone");
+    }
+    assert!(tip.n_leaf_tuples > 38 * 18);
+}
+
+#[test]
+fn a_path_holds_whole_groups_and_ends_at_one_root() {
+    let old = paths("fcmp/paths/get_path_by_unified_id_old.bin", 814, &[10, 60]);
+    let [Some(a), Some(b)] = &old.paths[..] else {
+        panic!("both in the tree")
+    };
+    assert_eq!((a.leaf_idx, b.leaf_idx), (10, 60));
+    // Deep in the tree, both leaf groups are full, and they are different
+    // groups under one parent.
+    assert_eq!((a.leaves.len(), b.leaves.len()), (38, 38));
+    assert_eq!(a.leaves[0].unified_id, 0);
+    assert_eq!(b.leaves[0].unified_id, 38);
+    assert_eq!(a.layers, b.layers);
+    let sizes: Vec<usize> = a.layers.iter().map(Vec::len).collect();
+    // 760 leaves: 20 parents, in groups of 18; 2 above them; then the root.
+    assert_eq!(old.n_leaf_tuples, 760);
+    assert_eq!(sizes, [18, 2, 1]);
 }
 
 /// The proof layout here agrees with monero-oxide's for every input and layer

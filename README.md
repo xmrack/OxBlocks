@@ -114,6 +114,7 @@ Put a TLS reverse proxy in front of the explorer. oxblocks serves plain HTTP.
 | `/` and `/page/<n>` | Recent blocks. |
 | `/block/<height or hash>` | One block and the transactions in it. |
 | `/tx/<hash>` | One transaction, with inputs, outputs and ring member ages. |
+| `/tx/<hash>/paths` | Where the transaction's outputs sit in the FCMP++ curve tree, one output or all of them. |
 | `/mempool` | Transactions that wait to be mined. Click a column heading to sort. |
 | `/altblocks` | Alternative chains that the daemon knows about. |
 | `/search?q=` | Find a block or a transaction. |
@@ -161,6 +162,7 @@ everything and deletes the characters it does not recognise before it parses.
 | --- | --- |
 | `/api/block/<height or hash>` | One block with its transactions. |
 | `/api/transaction/<hash>` | One transaction, with rings expanded. |
+| `/api/transaction/<hash>/paths?block=&from=` | The curve-tree paths of up to 50 of the transaction's outputs, checked. |
 | `/api/rawblock/<height or hash>` | The block as the daemon holds it. |
 | `/api/rawtransaction/<hash>` | The transaction as the daemon holds it. |
 | `/api/transactions?page=&limit=` | Transactions by block, newest first. `limit` is at most 50. |
@@ -262,6 +264,33 @@ The tree size comes from `/get_path_by_unified_id.bin`, monerod's binary RPC,
 which oxblocks decodes itself. `fixtures/fcmp/` holds responses recorded from a
 regtest daemon on the stressnet branch, and `tools/capture-fcmp-fixtures.py`
 records them again.
+
+### Curve tree paths
+
+`/tx/<hash>/paths` shows each mined output's path through the curve tree, as of
+the tip or of a block given as `?block=`. A path is what a wallet holds to
+spend the output: the group of up to 38 outputs it sits in, then at each layer
+above, the group of up to 18 or 38 nodes holding its ancestor, up to the root.
+The page shows one output's path, or all of a transaction's paths together
+with the groups they share, draws them over the tree, and says what a wallet
+would store for them.
+
+The same endpoint gives the paths. oxblocks asks for up to 50 outputs a call,
+the most a restricted node answers. It then recomputes every hash from the
+leaves up: it derives each leaf from the output's key and commitment, hashes
+each group on its curve, and checks that each hash is the member of the layer
+above that the path names. The last hash must be the root recorded by the
+block eight below the one asked about. The curve arithmetic is monero-oxide's,
+at the revision monerod's stressnet branch links. oxblocks derives the few
+hundred generators the hash uses rather than loading the proof's full tables.
+The hashing runs off the request threads, and a group shared by several
+outputs is hashed once.
+
+An output joins the tree when it unlocks, ten blocks after it is mined by
+default, so a transaction's outputs have no path before then. The page says
+which block they join as of. `tools/capture-path-fixtures.py` records the
+paths and roots in `fixtures/fcmp/paths/`, which the tests hash up to the
+roots monerod recorded.
 
 ## Architecture
 

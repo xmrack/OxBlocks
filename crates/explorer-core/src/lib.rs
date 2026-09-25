@@ -6,6 +6,7 @@
 pub mod amount;
 pub mod cache;
 pub mod chain;
+pub mod curve_tree;
 pub mod fmt;
 pub mod hash;
 pub mod hex;

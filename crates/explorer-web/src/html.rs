@@ -21,6 +21,9 @@ use monerod_rpc::types::{TxEntry, TxJson};
 use crate::api::handlers::{AppState, Shared, echo};
 use crate::config::Theme;
 
+mod paths;
+pub use paths::tree_paths;
+
 /// The chain summary strip shown on every page.
 pub struct ChainStatus {
     pub height: u64,
@@ -363,6 +366,15 @@ struct TreeFunnel {
     count_anchor: &'static str,
     leaves: String,
     layers: usize,
+    /// Paths drawn over the tree, one line each from an output up to the
+    /// root. None on a spend's tree: nothing there says which output it spent.
+    marks: Vec<FunnelMark>,
+}
+
+/// One path over a funnel: a line through a point on each bar.
+struct FunnelMark {
+    points: String,
+    dots: Vec<(u32, u32)>,
 }
 
 struct FunnelRow {
@@ -518,7 +530,41 @@ fn tree_funnel(leaves: u64, root: Option<&str>, layout: &FunnelLayout) -> Option
         root: root.and_then(|r| r.get(..16)).map(|r| format!("{r}…")),
         leaves: grouped(leaves),
         layers: depth,
+        marks: Vec::new(),
     })
+}
+
+/// Draw `paths` over `funnel`, each given as its groups from the leaves up
+/// (see [`explorer_core::curve_tree::path_groups`]). Each passes through its
+/// ancestor's place along every bar: the member's index across the layer,
+/// scaled to the bar's width.
+fn mark_paths(funnel: &mut TreeFunnel, paths: &[&[explorer_core::curve_tree::Group]]) {
+    let depth = funnel.layers;
+    let marks = paths
+        .iter()
+        .filter(|groups| groups.len() == depth + 1)
+        .map(|groups| {
+            let dots: Vec<(u32, u32)> = groups
+                .iter()
+                .filter_map(|g| {
+                    let row = funnel.rows.get(depth.checked_sub(g.layer)?)?;
+                    let across = (2 * u128::from(g.member) + 1) * u128::from(row.width)
+                        / (2 * u128::from(g.layer_size.max(1)));
+                    let x = row.x + u32::try_from(across).ok()?.min(row.width);
+                    Some((x, row.y + FUNNEL_BAR / 2))
+                })
+                .collect();
+            FunnelMark {
+                points: dots
+                    .iter()
+                    .map(|(x, y)| format!("{x},{y}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                dots,
+            }
+        })
+        .collect();
+    funnel.marks = marks;
 }
 
 /// A bar's width: the log of its node count against the log of the outputs',
@@ -3638,8 +3684,17 @@ mod tests {
         assert!(!html.contains("Every output in the curve tree"));
         assert!(html.contains("<dt>FCMP++ proof</dt><dd>6528 bytes"));
         assert!(html.contains(r#"<th class="num">Unified ID</th>"#));
-        assert!(html.contains(r#"<td class="num">900</td>"#));
-        assert!(html.contains(r#"<td class="num">901</td>"#));
+        // Each unified id links to its output's path, and the section to all
+        // of them.
+        let paths = format!("/tx/{}/paths", page.hash);
+        assert!(html.contains(&format!(r#"<a href="{paths}?output=1" title="This output's path through the curve tree">900</a>"#)));
+        assert!(html.contains(&format!(r#"<a href="{paths}?output=2" title="This output's path through the curve tree">901</a>"#)));
+        assert!(html.contains(&format!(r#"<a class="walk" href="{paths}">"#)));
+        // A transaction in the pool has no place in the tree to link to.
+        page.in_pool = true;
+        let pooled = page.render().expect("renders");
+        assert!(pooled.contains(r#"<td class="num">900</td>"#));
+        assert!(!pooled.contains("/paths"));
 
         // Without them, none of it appears.
         let bare = fcmp_tx_page().render().expect("renders");

@@ -87,6 +87,10 @@ pub enum ChainError {
     #[error("{0} requires an unrestricted monerod")]
     NeedsUnrestricted(&'static str),
 
+    /// The daemon answered, but not with the shape the call expects.
+    #[error("the daemon's answer to {what} could not be read: {detail}")]
+    BadAnswer { what: &'static str, detail: String },
+
     #[error(transparent)]
     Rpc(#[from] monerod_rpc::RpcError),
 }
@@ -130,6 +134,9 @@ impl ChainError {
             Self::BlockNotFound(id) => format!("no block {id}"),
             Self::NeedsUnrestricted(what) => {
                 format!("{what} requires an unrestricted monerod")
+            }
+            Self::BadAnswer { what, .. } => {
+                format!("the daemon's answer to {what} could not be read")
             }
             // These carry internals. Say what happened, not where.
             Self::Unavailable(_) | Self::Rpc(_) => {

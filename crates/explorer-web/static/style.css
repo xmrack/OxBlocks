@@ -555,3 +555,53 @@ dl.kv.spaced { margin-top: 0.8rem; }
 .maths var { font-style: italic; font-family: Georgia, "Times New Roman", serif; }
 .maths .eq var { font-family: inherit; }
 .map-note { margin: 0.1rem 0 0; font-size: 0.78rem; color: var(--fg-faint); }
+
+/* ---------- curve tree paths ---------- */
+
+.tag.ok { color: var(--coinbase); border-color: currentColor; }
+.tag.bad { color: var(--fg); background: var(--warn-bg); border-color: var(--warn-line); }
+.keeps { font-size: 0.89rem; max-width: 78ch; margin: 0.35rem 0 0; }
+.facts + .facts { margin-top: 0.7rem; }
+.facts .keeps { margin: 0; }
+.facts dl + .keeps { margin-top: 0.6rem; }
+
+form.as-of { display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center; margin-top: 0.7rem; font-size: 0.88rem; }
+form.as-of label { display: flex; gap: 0.45rem; align-items: center; color: var(--fg-muted); }
+form.as-of input {
+  width: 8.5rem; padding: 0.3rem 0.5rem;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg); color: var(--fg); font: inherit;
+}
+form.as-of input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+form.as-of button {
+  padding: 0.3rem 0.8rem; border: 1px solid var(--accent); border-radius: var(--radius);
+  background: var(--accent); color: var(--accent-fg); font: inherit; cursor: pointer;
+}
+
+.tabs { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 1.1rem 0 0.8rem; }
+.tabs + .tabs { margin-top: 0; }
+.tabs a {
+  padding: 0.24rem 0.65rem; border: 1px solid var(--line); border-radius: var(--radius);
+  font-size: 0.85rem; color: var(--fg-muted); text-decoration: none; background: var(--bg-raised);
+}
+.tabs a:hover { color: var(--fg); }
+.tabs a.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+
+/* A path over the funnel: a line through its ancestor on every bar, in the
+   text colour so it reads against the accent bars. */
+.curve-tree .path { fill: none; stroke: var(--fg); stroke-width: 1.5; stroke-linejoin: round; opacity: 0.8; }
+.curve-tree .path-dot { fill: var(--fg); }
+
+table.path-status { margin-bottom: 0.6rem; }
+.path-layer h2 .curve { color: var(--fg-faint); font-weight: 400; font-size: 0.75em; margin-left: 0.3rem; }
+.group-h { font-size: 0.84rem; color: var(--fg-muted); margin: 0.5rem 0 0.35rem; }
+.chips { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.chip {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.76rem; padding: 0.08rem 0.4rem;
+  border: 1px solid var(--line); border-radius: 3px;
+  color: var(--fg-muted); background: var(--bg-raised);
+}
+.chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+table.leaves tr.on td { background: var(--bg-sunken); }
+table.leaves tr.on td:first-child { box-shadow: inset 3px 0 0 var(--accent); }

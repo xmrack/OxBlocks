@@ -1066,6 +1066,240 @@ impl TreeSizeQuery {
     }
 }
 
+/// Outputs' paths through the curve tree, from the same endpoint as
+/// [`TreeSizeQuery`], as of one block.
+///
+/// A path is what a wallet needs to prove it spends one of the tree's leaves
+/// without saying which: the group of up to [`SELENE_CHUNK_WIDTH`] leaves
+/// holding the output, then at each layer above the whole group holding that
+/// layer's ancestor of the output, up to the root. Each parent is a hash of
+/// its whole group, so every member of the group is needed to recompute it,
+/// not one sibling as in a binary tree.
+///
+/// A path belongs to one state of the tree. Outputs join the tree at its
+/// right edge, which changes the last group of every layer, so a path taken
+/// as of another block can differ from this one in those groups.
+///
+/// monerod answers every id it is asked about, in order: with an empty path
+/// for an output not yet in the tree as of the block asked about, because it
+/// has not unlocked, and with an error for an id it does not know.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathQuery {
+    as_of_n_blocks: u64,
+    unified_ids: Vec<u64>,
+}
+
+impl PathQuery {
+    pub const ENDPOINT: &'static str = TreeSizeQuery::ENDPOINT;
+
+    /// The most ids one call asks about: `MAX_RESTRICTED_PATHS_COUNT` in
+    /// `src/rpc/core_rpc_server.cpp`, which a public node enforces.
+    pub const MAX_IDS: usize = 50;
+
+    /// The largest answer accepted: [`Self::MAX_IDS`] paths through a tree of
+    /// monerod's most layers, 12, with every group full, is about 700 KB.
+    pub const MAX_ANSWER_BYTES: u64 = 1024 * 1024;
+
+    pub const WANTED: &'static [&'static str] = &["n_leaf_tuples", "paths"];
+
+    /// The paths of `unified_ids` as of block `as_of_block`.
+    ///
+    /// `None` for no ids, for more than [`Self::MAX_IDS`], and for a block of
+    /// `u64::MAX`, which has no count.
+    #[must_use]
+    pub fn as_of_block(as_of_block: u64, unified_ids: &[u64]) -> Option<Self> {
+        if unified_ids.is_empty() || unified_ids.len() > Self::MAX_IDS {
+            return None;
+        }
+        Some(Self {
+            as_of_n_blocks: as_of_block.checked_add(1)?,
+            unified_ids: unified_ids.to_vec(),
+        })
+    }
+
+    #[must_use]
+    pub fn fields(&self) -> [(&'static str, crate::epee::Field<'_>); 2] {
+        [
+            (
+                "as_of_n_blocks",
+                crate::epee::Field::U64(self.as_of_n_blocks),
+            ),
+            ("unified_ids", crate::epee::Field::U64s(&self.unified_ids)),
+        ]
+    }
+
+    /// The paths from the daemon's answer, one per id asked about, in order.
+    pub fn answer(&self, root: &crate::epee::Root) -> Result<TreePaths, PathAnswerError> {
+        let n_leaf_tuples = root
+            .unsigned("n_leaf_tuples")
+            .ok_or(PathAnswerError::Missing("n_leaf_tuples"))?;
+        let entries = root
+            .array("paths")
+            .ok_or(PathAnswerError::Missing("paths"))?;
+        if entries.len() != self.unified_ids.len() {
+            return Err(PathAnswerError::Count {
+                asked: self.unified_ids.len(),
+                answered: entries.len(),
+            });
+        }
+        let paths = entries
+            .iter()
+            .zip(&self.unified_ids)
+            .map(|(entry, &id)| TreePath::read(entry, id))
+            .collect::<Result<_, _>>()?;
+        Ok(TreePaths {
+            n_leaf_tuples,
+            paths,
+        })
+    }
+}
+
+/// Why an answer to a [`PathQuery`] cannot be read.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PathAnswerError {
+    #[error("the answer has no {0}")]
+    Missing(&'static str),
+    #[error("{answered} paths answer {asked} ids")]
+    Count { asked: usize, answered: usize },
+    #[error("a path's {0} is malformed")]
+    Malformed(&'static str),
+}
+
+/// The answer to a [`PathQuery`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreePaths {
+    /// Leaves in the tree as of the block asked about.
+    pub n_leaf_tuples: u64,
+    /// One per id asked about, in order: `None` for an output not in the tree
+    /// as of that block.
+    pub paths: Vec<Option<TreePath>>,
+}
+
+/// One output's path. See [`PathQuery`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreePath {
+    /// The output's position among the tree's leaves.
+    pub leaf_idx: u64,
+    /// The group of leaves holding the output, in the tree's order.
+    pub leaves: Vec<PathLeaf>,
+    /// From the leaves' parents up: at each layer the group holding the
+    /// output's ancestor, as compressed points. The last is the root alone.
+    /// The layers alternate curves, Selene first.
+    pub layers: Vec<Vec<[u8; 32]>>,
+}
+
+/// A leaf of the tree as a path carries it: the output as it is on chain,
+/// before the tree derives its leaf values from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathLeaf {
+    pub unified_id: u64,
+    pub kind: LeafKind,
+    /// The output's one-time key `O`, as on chain.
+    pub output_key: [u8; 32],
+    /// The output's amount commitment `C`, as on chain.
+    pub commitment: [u8; 32],
+}
+
+/// How the tree derives a leaf from an output: `OutputPairType` in
+/// `src/fcmp_pp/fcmp_pp_types.h`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeafKind {
+    /// An output from before Carrot. Its key and commitment may carry torsion,
+    /// which the tree clears, and its key image generator is the older,
+    /// biased hash of its key.
+    Legacy,
+    /// A Carrot output, checked for torsion when it was mined, whose key image
+    /// generator is the unbiased hash of its key.
+    Carrot,
+    /// A type this build does not know.
+    Other(u8),
+}
+
+impl LeafKind {
+    const fn from_byte(b: u8) -> Self {
+        match b {
+            0 => Self::Legacy,
+            1 => Self::Carrot,
+            other => Self::Other(other),
+        }
+    }
+}
+
+impl TreePath {
+    /// One entry of the answer's `paths`, for the output `unified_id`.
+    fn read(entry: &crate::epee::Value, unified_id: u64) -> Result<Option<Self>, PathAnswerError> {
+        use crate::epee::Value;
+        let Value::Section(entry) = entry else {
+            return Err(PathAnswerError::Malformed("entry"));
+        };
+        let path = entry
+            .section("path")
+            .ok_or(PathAnswerError::Malformed("entry"))?;
+        let leaves = path
+            .section("leaves")
+            .ok_or(PathAnswerError::Malformed("leaves"))?;
+        // epee leaves an empty blob or list out, so an output with no path
+        // arrives as a path with empty leaves and no layers.
+        let blob = |name| leaves.bytes(name).unwrap_or_default();
+        let ids = blob("unified_ids");
+        let kinds = blob("output_types");
+        let keys = blob("output_pubkeys");
+        let commitments = blob("commitments");
+        let n = kinds.len();
+        if ids.len() != n * 8 || keys.len() != n * 32 || commitments.len() != n * 32 {
+            return Err(PathAnswerError::Malformed("leaves"));
+        }
+        let chunks = path.array("layer_chunks").unwrap_or_default();
+        if n == 0 {
+            return if chunks.is_empty() {
+                Ok(None)
+            } else {
+                Err(PathAnswerError::Malformed("leaves"))
+            };
+        }
+        let leaves = ids
+            .chunks_exact(8)
+            .zip(kinds)
+            .zip(keys.chunks_exact(32).zip(commitments.chunks_exact(32)))
+            .map(|((id, &kind), (key, commitment))| PathLeaf {
+                unified_id: u64::from_le_bytes(id.try_into().unwrap_or_default()),
+                kind: LeafKind::from_byte(kind),
+                output_key: key.try_into().unwrap_or_default(),
+                commitment: commitment.try_into().unwrap_or_default(),
+            })
+            .collect::<Vec<_>>();
+        if !leaves.iter().any(|l| l.unified_id == unified_id) {
+            return Err(PathAnswerError::Malformed("leaves"));
+        }
+        let layers = chunks
+            .iter()
+            .map(|chunk| {
+                let elems = match chunk {
+                    Value::Section(c) => c.bytes("elems").unwrap_or_default(),
+                    _ => return Err(PathAnswerError::Malformed("layer_chunks")),
+                };
+                if elems.is_empty() || elems.len() % 32 != 0 {
+                    return Err(PathAnswerError::Malformed("layer_chunks"));
+                }
+                Ok(elems
+                    .chunks_exact(32)
+                    .map(|e| e.try_into().unwrap_or_default())
+                    .collect())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if layers.is_empty() {
+            return Err(PathAnswerError::Malformed("layer_chunks"));
+        }
+        Ok(Some(Self {
+            leaf_idx: entry
+                .unsigned("leaf_idx")
+                .ok_or(PathAnswerError::Malformed("entry"))?,
+            leaves,
+            layers,
+        }))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // /is_key_image_spent
 // ---------------------------------------------------------------------------
@@ -1707,6 +1941,43 @@ pub const HF_VERSION_FCMP_PLUS_PLUS: u8 = 17;
 /// (`src/cryptonote_core/blockchain.cpp`) and
 /// `CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE` in `src/cryptonote_config.h`.
 pub const TREE_ROOT_LAG: u64 = 8;
+
+/// The last block at which an output with `unlock_time`, mined in block
+/// `height`, is still locked. It joins the curve tree with that block: the
+/// tree as of that block and every later one holds it.
+///
+/// Never sooner than the default spendable age of 10 blocks allows. An
+/// `unlock_time` below 500,000,000 is a height, and above it a Unix time,
+/// converted at two minutes a block from hard fork 15's time and height, as
+/// monerod converts it.
+///
+/// `get_last_locked_block_index` in
+/// `src/cryptonote_basic/cryptonote_format_utils.cpp`.
+#[must_use]
+pub const fn last_locked_block(unlock_time: u64, height: u64) -> u64 {
+    const SPENDABLE_AGE: u64 = 10;
+    const MAX_BLOCK_NUMBER: u64 = 500_000_000;
+    const HF_V15_TIME: u64 = 1_656_629_118;
+    const HF_V15_HEIGHT: u64 = 2_689_608;
+    const TARGET: u64 = 120;
+
+    let default = height.saturating_add(SPENDABLE_AGE - 1);
+    let named = if unlock_time == 0 {
+        default
+    } else if unlock_time < MAX_BLOCK_NUMBER {
+        unlock_time - 1
+    } else if HF_V15_TIME > unlock_time {
+        let blocks_since = (HF_V15_TIME - unlock_time) / TARGET;
+        if HF_V15_HEIGHT > blocks_since {
+            HF_V15_HEIGHT - blocks_since
+        } else {
+            default
+        }
+    } else {
+        HF_V15_HEIGHT.saturating_add((unlock_time - HF_V15_TIME) / TARGET)
+    };
+    if named > default { named } else { default }
+}
 
 /// The height of the block that would carry the root an FCMP++ proof naming
 /// `reference_block` was checked against: `reference_block - 8`, or `None`
@@ -2797,6 +3068,43 @@ mod tests {
         };
         assert_eq!(answer(9_876), Some(9_876));
         assert_eq!(answer(0), None, "0 answers a different question");
+    }
+
+    #[test]
+    fn an_output_joins_the_tree_when_it_unlocks() {
+        // The default: ten blocks, the block it was mined in counting as one.
+        assert_eq!(last_locked_block(0, 801), 810);
+        // A coinbase's lock is a height 60 blocks on.
+        assert_eq!(last_locked_block(861, 801), 860);
+        // A lock shorter than the default does not shorten it.
+        assert_eq!(last_locked_block(803, 801), 810);
+        // A time a day after hard fork 15, at two minutes a block.
+        assert_eq!(
+            last_locked_block(1_656_629_118 + 86_400, 2_000_000),
+            2_689_608 + 720
+        );
+        // A time before it, counted back from the fork's height.
+        assert_eq!(
+            last_locked_block(1_656_629_118 - 86_400, 2_000_000),
+            2_689_608 - 720
+        );
+    }
+
+    #[test]
+    fn a_path_query_asks_about_one_to_fifty_ids_and_wants_one_path_each() {
+        assert!(PathQuery::as_of_block(9, &[]).is_none());
+        assert!(PathQuery::as_of_block(9, &[1; 51]).is_none());
+        assert!(PathQuery::as_of_block(u64::MAX, &[1]).is_none());
+        let q = PathQuery::as_of_block(9, &[1; 50]).unwrap();
+        assert_eq!(
+            q.fields()[0],
+            ("as_of_n_blocks", crate::epee::Field::U64(10))
+        );
+
+        let q = PathQuery::as_of_block(9, &[1, 2]).unwrap();
+        let bytes = crate::epee::encode(&[("n_leaf_tuples", crate::epee::Field::U64(5))]).unwrap();
+        let root = crate::epee::read_root(&bytes, PathQuery::WANTED).unwrap();
+        assert_eq!(q.answer(&root), Err(PathAnswerError::Missing("paths")));
     }
 
     /// Unified ids are positional, so a list that does not match the output

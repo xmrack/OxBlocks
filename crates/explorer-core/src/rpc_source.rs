@@ -8,7 +8,8 @@ use monerod_rpc::types::{
     FeeEstimate, GetAlternateChains, GetBlock, GetBlockHeader, GetBlockHeadersRange,
     GetBlockHeadersRangeRequest, GetBlockRequest, GetFeeEstimateRequest, GetInfo, GetOutsRequest,
     GetTransactionPool, GetTransactionPoolStats, GetTransactionsRequest, GetTxidsLooseRequest,
-    GetTxidsLooseResponse, OutKey, OutKeyRequest, TreeSizeQuery, TxEntry, TxInToKey, TxJson,
+    GetTxidsLooseResponse, OutKey, OutKeyRequest, PathQuery, TreePaths, TreeSizeQuery, TxEntry,
+    TxInToKey, TxJson,
 };
 use monerod_rpc::{Client, RpcError};
 
@@ -323,6 +324,40 @@ impl RpcChainSource {
             self.tree_sizes.insert(reference, size);
         }
         Some(size)
+    }
+
+    /// The paths through the curve tree of the outputs `unified_ids`, as of
+    /// block `as_of_block`: one per id, in order, `None` for an output not in
+    /// the tree as of that block. See [`PathQuery`].
+    ///
+    /// Not cached: a path as of the tip changes with every block, and the
+    /// answer is one daemon call that reads a few groups of the tree. Placing
+    /// and checking the paths, which costs CPU rather than a call, is
+    /// [`crate::curve_tree::place`].
+    pub async fn tree_paths(
+        &self,
+        as_of_block: u64,
+        unified_ids: &[u64],
+    ) -> Result<TreePaths, ChainError> {
+        let bad = |detail: String| ChainError::BadAnswer {
+            what: PathQuery::ENDPOINT,
+            detail,
+        };
+        let query = PathQuery::as_of_block(as_of_block, unified_ids).ok_or_else(|| {
+            bad(format!(
+                "{} ids as of block {as_of_block} cannot be asked about in one call",
+                unified_ids.len()
+            ))
+        })?;
+        let root = self
+            .binary(
+                PathQuery::ENDPOINT,
+                &query.fields(),
+                PathQuery::WANTED,
+                PathQuery::MAX_ANSWER_BYTES,
+            )
+            .await?;
+        query.answer(&root).map_err(|e| bad(e.to_string()))
     }
 
     pub async fn info(&self) -> Result<Arc<GetInfo>, ChainError> {

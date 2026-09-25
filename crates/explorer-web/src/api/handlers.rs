@@ -148,6 +148,194 @@ pub async fn transaction(
 }
 
 // ---------------------------------------------------------------------------
+// /api/transaction/<hash>/paths
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+pub struct PathsParams {
+    block: Option<u64>,
+    from: Option<usize>,
+}
+
+#[derive(Serialize)]
+pub struct PathsData {
+    tx_hash: String,
+    as_of_block: u64,
+    n_leaf_tuples: u64,
+    n_layers: usize,
+    /// The block carrying the root of the tree as of `as_of_block`, and that
+    /// root, where the block carries one.
+    root_block: Option<u64>,
+    root: Option<String>,
+    /// `matches` when every path's hashes hold and end at `root`, `fails`
+    /// when one does not, `unchecked` when there is no root or no path.
+    root_check: &'static str,
+    outputs: Vec<OutputPathData>,
+}
+
+#[derive(Serialize)]
+pub struct OutputPathData {
+    index: usize,
+    unified_id: u64,
+    /// The last block the output is locked at; the tree holds it as of that
+    /// block on.
+    last_locked_block: u64,
+    /// Absent for an output not in the tree as of `as_of_block`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    leaf_idx: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    check: Option<&'static str>,
+    /// The leaves' group first, the root last.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    groups: Vec<GroupData>,
+}
+
+#[derive(Serialize)]
+pub struct GroupData {
+    layer: usize,
+    curve: explorer_core::curve_tree::Curve,
+    layer_size: u64,
+    start: u64,
+    /// The output's ancestor's place in the group, or the output's own for
+    /// the leaves.
+    offset: u64,
+    /// Compressed points; absent for the leaves, which are in `leaves`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    members: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    leaves: Vec<LeafData>,
+}
+
+#[derive(Serialize)]
+pub struct LeafData {
+    unified_id: u64,
+    kind: &'static str,
+    output_key: String,
+    commitment: String,
+}
+
+/// Paths through the curve tree of a transaction's outputs, up to
+/// [`crate::tree_paths::MAX_OUTPUTS`] of them from `from`, as of `block` or
+/// the tip.
+pub async fn transaction_paths(
+    State(state): Shared,
+    Path(raw): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<PathsParams>,
+) -> Result<ApiOk<PathsData>, ApiError> {
+    use crate::tree_paths::{MAX_OUTPUTS, PathsError, RootCheck, gather};
+    use explorer_core::curve_tree::{Curve, PathCheck};
+    use monerod_rpc::types::LeafKind;
+
+    let hash: Hash32 = raw
+        .parse()
+        .map_err(|_| ApiError::bad_request(format!("Cant parse tx hash: {}", echo(&raw))))?;
+    let fetched = state
+        .chain
+        .transactions(std::slice::from_ref(&hash))
+        .await
+        .map_err(|e| on_chain_error(&e, &format!("Cant get tx: {hash}")))?;
+    let Some(entry) = fetched.txs.first() else {
+        return Err(ApiError::not_found(format!("Cant find tx: {hash}")));
+    };
+    let tx = entry
+        .parse_json()
+        .map_err(|e| ApiError::daemon(format!("Cant parse tx {hash}: {e}")))?;
+
+    let from = q.from.unwrap_or(0);
+    let paths = gather(
+        &state,
+        entry,
+        &tx,
+        q.block,
+        from..from.saturating_add(MAX_OUTPUTS),
+    )
+    .await
+    .map_err(|e| match e {
+        PathsError::InPool => {
+            ApiError::not_found(format!("Tx {hash} is in the pool, so not in the tree"))
+        }
+        PathsError::NoIds => ApiError::unsupported("The daemon has no curve tree".to_owned()),
+        PathsError::Ahead { asked, tip } => {
+            ApiError::not_found(format!("Block {asked} is past the tip, {tip}"))
+        }
+        PathsError::Chain(e) => on_chain_error(&e, &format!("Cant get paths of tx: {hash}")),
+    })?;
+
+    let outputs = paths
+        .outputs
+        .iter()
+        .map(|o| {
+            let placed = o.placed.as_ref();
+            OutputPathData {
+                index: o.index,
+                unified_id: o.unified_id,
+                last_locked_block: o.last_locked_block,
+                leaf_idx: placed.map(|p| p.path.leaf_idx),
+                check: placed.map(|p| match p.check {
+                    PathCheck::Holds => "holds",
+                    PathCheck::Broken { .. } => "broken",
+                    PathCheck::Unreadable { .. } => "unreadable",
+                    PathCheck::Misshapen => "misshapen",
+                }),
+                groups: placed
+                    .map(|p| {
+                        p.groups
+                            .iter()
+                            .map(|g| GroupData {
+                                layer: g.layer,
+                                curve: Curve::of_layer(g.layer),
+                                layer_size: g.layer_size,
+                                start: g.start,
+                                offset: g.offset(),
+                                members: p
+                                    .members(g.layer)
+                                    .unwrap_or_default()
+                                    .iter()
+                                    .map(explorer_core::hex::encode)
+                                    .collect(),
+                                leaves: if g.layer == 0 {
+                                    p.path
+                                        .leaves
+                                        .iter()
+                                        .map(|l| LeafData {
+                                            unified_id: l.unified_id,
+                                            kind: match l.kind {
+                                                LeafKind::Legacy => "legacy",
+                                                LeafKind::Carrot => "carrot",
+                                                LeafKind::Other(_) => "unknown",
+                                            },
+                                            output_key: explorer_core::hex::encode(l.output_key),
+                                            commitment: explorer_core::hex::encode(l.commitment),
+                                        })
+                                        .collect()
+                                } else {
+                                    Vec::new()
+                                },
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            }
+        })
+        .collect();
+
+    Ok(ApiOk(PathsData {
+        tx_hash: hash.to_string(),
+        as_of_block: paths.as_of_block,
+        n_leaf_tuples: paths.n_leaf_tuples,
+        n_layers: monerod_rpc::types::tree_layers(paths.n_leaf_tuples).len(),
+        root_block: paths.root_block.as_ref().map(|(b, _)| *b),
+        root: paths.root_block.as_ref().map(|(_, r)| r.clone()),
+        root_check: match paths.root_check() {
+            RootCheck::Matches => "matches",
+            RootCheck::Fails => "fails",
+            RootCheck::Unchecked => "unchecked",
+        },
+        outputs,
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // /api/block/<height|hash>
 // ---------------------------------------------------------------------------
 

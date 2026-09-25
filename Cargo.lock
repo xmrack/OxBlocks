@@ -540,8 +540,15 @@ dependencies = [
 name = "explorer-core"
 version = "0.1.0"
 dependencies = [
+ "curve25519-dalek",
+ "dalek-ff-group 0.5.0",
+ "ec-divisors",
  "futures-util",
+ "helioselene",
+ "monero-ed25519",
+ "monero-primitives",
  "monerod-rpc",
+ "multiexp",
  "serde",
  "serde_json",
  "thiserror",
