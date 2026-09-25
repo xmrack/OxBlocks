@@ -27,10 +27,12 @@
 <section class="step" id="s2">
 {% call open(steps, 2) %}{% endcall %}
 <p class="sub">An input never points at the output it spends.</p>
-<p>Instead of naming its output, each input publishes a disguised copy of it:
-the same three points with fresh random masks added, so they match no leaf
-anyone can see. The masks only come off inside the membership proof, where
-nobody can watch. The disguised amount doubles as the input's
+<p>Instead of naming its output, each input publishes a disguised copy of it.
+An output is three points: its key, the point its key image is made from, and
+its amount commitment. Each gets a fresh random mask, so the copies match no
+leaf anyone can see, and a fourth point, R, commits to one of those masks for
+the checks that follow. The masks only come off inside the membership proof,
+where nobody can watch. The disguised amount doubles as the input's
 pseudo-output.</p>
 {% call bar(map, 2) %}{% endcall %}
 <div class="facts"><div class="facts-h">In this transaction</div><dl>
@@ -50,9 +52,10 @@ pseudo-output.</p>
 <var>R</var> = <var>r<sub>i</sub></var>&middot;<var>V</var> + <var>r<sub>r<sub>i</sub></sub></var>&middot;<var>T</var><br>
 <var>C&#x303;</var> = <var>C</var> + <var>r<sub>c</sub></var>&middot;<var>G</var></p>
 <p>The four <var>r</var> are fresh random scalars. <var>T</var>, <var>U</var> and
-<var>V</var> are fixed generators with no known relation to <var>G</var> or to
-each other. <var>R</var> commits to <var>r<sub>i</sub></var>, which the next step
-needs. <var>C&#x303;</var> is stored as the pseudo-output, so the proof carries
+<var>V</var> are fixed generators, hashed onto the curve, with no known relation
+to <var>G</var> or to each other. <var>R</var> commits to <var>r<sub>i</sub></var>,
+and both the next step's signature and the membership proof check it against
+the mask on <var>&Itilde;</var>. <var>C&#x303;</var> is stored as the pseudo-output, so the proof carries
 only <var>&Otilde;</var>, <var>&Itilde;</var> and <var>R</var>: 3 &times; 32
 bytes.</p>
 </details>
@@ -82,16 +85,21 @@ and its key image is</p>
 <p>so the mask on <var>&Itilde;</var> cancels. The proof is six points,
 <var>P</var>, <var>A</var>, <var>B</var>, <var>R<sub>O</sub></var>,
 <var>R<sub>P</sub></var> and <var>R<sub>L</sub></var>, and six scalars:
-12 &times; 32 bytes. One challenge <var>e</var>, a hash of the transaction's
-signable hash, the input's tuple, <var>L</var> and those points, ties four
-checks together. Two of them are</p>
+12 &times; 32 bytes. <var>P</var> commits to <var>x</var>, <var>r<sub>i</sub></var>
+and their product <var>z</var> = <var>x</var><var>r<sub>i</sub></var>. One
+challenge <var>e</var> ties four checks together. It is a hash of the
+transaction's signable hash, which covers its prefix and amounts, then
+<var>&Otilde;</var>, <var>&Itilde;</var>, <var>C&#x303;</var>, <var>R</var>,
+<var>L</var> and the six points. Two of the checks are</p>
 <p class="eq"><var>R<sub>O</sub></var> + <var>e</var>&middot;<var>&Otilde;</var> = <var>s<sub>&alpha;</sub></var>&middot;<var>G</var> + <var>s<sub>y</sub></var>&middot;<var>T</var><br>
 <var>R<sub>L</sub></var> + <var>e</var>&middot;<var>L</var> = <var>s<sub>&alpha;</sub></var>&middot;<var>&Itilde;</var> &minus; <var>s<sub>z</sub></var>&middot;<var>U</var></p>
 <p>The first shows the prover can open <var>&Otilde;</var>. The second shows
 <var>L</var> was made with the same <var>x</var>, since <var>s<sub>&alpha;</sub></var>
-appears in both. The other two prove that <var>z</var> = <var>x</var><var>r<sub>i</sub></var>,
-the product of the spend key and <var>&Itilde;</var>'s mask, using <var>R</var>
-from the previous step.</p>
+appears in both. The other two show that <var>P</var>'s third value really is
+the product of the first two, and that its first two are the <var>x</var> in
+<var>&Otilde;</var> and the <var>r<sub>i</sub></var> in <var>R</var>. So
+<var>z</var> = <var>x</var><var>r<sub>i</sub></var>, which is what takes the
+mask off <var>&Itilde;</var> in <var>L</var>.</p>
 </details>
 </div>
 <svg class="pic" viewBox="0 0 200 120" aria-hidden="true"><rect class="card" x="30" y="30" width="80" height="60" rx="6"/><path class="pen" d="M44 70q12-22 22-4t22-8"/><path class="line" d="M118 60H140"/><path class="head" d="M140 54l10 6-10 6z"/><rect class="solid" x="156" y="50" width="22" height="20" rx="3"/><text class="small" x="167" y="88" text-anchor="middle">key image</text></svg>
@@ -104,10 +112,11 @@ from the previous step.</p>
 <p class="sub">One proof covers every input.</p>
 <p>The largest part. It shows that each disguised output, with its masks taken
 off, is a leaf of the tree, and climbs from that leaf to the root, without
-saying which leaf or which branch. Each layer of the tree is a list of points on
-one curve whose coordinates are numbers on the other, so the climb is split
-between two proofs, one on Selene and one on Helios, each taking every other
-layer.</p>
+saying which leaf or which branch: every point on the way up is masked inside
+the proof, so the climb cannot be matched against the tree. The layers
+alternate between two curves, Selene and Helios, paired so that a point on
+either can be fed to the other as numbers. So the climb is split between two
+proofs, one on each curve, each taking every other layer.</p>
 {% call bar(map, 4) %}{% endcall %}
 <div class="facts"><div class="facts-h">In this transaction</div><dl>
 {% if let Some((bytes, share)) = membership %}<dt>Size</dt><dd>{{ bytes }} bytes, {{ share }}% of the proof</dd>{% endif %}
@@ -125,8 +134,10 @@ proof {{ s.helios_rows }} rows in {{ s.helios_rounds }} rounds.{% endif %}</p>
 <p>Taking each mask off is an elliptic-curve multiplication, which the circuit
 checks with a divisor rather than working through it step by step. Ed25519's
 coordinates are Selene scalars, so the first step of the climb, from the
-outputs, is proved on Selene. The proof's size follows from the input count and
-the layer count alone.</p>
+outputs, is proved on Selene. Each proof takes the mask off the other curve's
+point from the layer below and checks that its <var>x</var>-coordinate is among
+its parent's children. The proof's size follows from the input count and the
+layer count alone.</p>
 </details>
 </div>
 <svg class="pic" viewBox="0 0 200 120" aria-hidden="true"><path class="edge" d="M100 18L55 58M100 18L145 58M55 58L20 100M55 58L36 100M55 58L52 100M55 58L68 100M55 58L84 100M145 58L116 100M145 58L132 100M145 58L148 100M145 58L164 100M145 58L180 100"/><circle class="solid" cx="100" cy="18" r="5"/><circle class="node" cx="55" cy="58" r="5"/><circle class="node" cx="145" cy="58" r="5"/><circle class="node" cx="20" cy="100" r="3.5"/><circle class="node" cx="36" cy="100" r="3.5"/><circle class="node" cx="52" cy="100" r="3.5"/><circle class="node" cx="68" cy="100" r="3.5"/><circle class="node" cx="84" cy="100" r="3.5"/><circle class="node" cx="116" cy="100" r="3.5"/><circle class="node" cx="132" cy="100" r="3.5"/><circle class="node" cx="148" cy="100" r="3.5"/><circle class="node" cx="164" cy="100" r="3.5"/><circle class="node" cx="180" cy="100" r="3.5"/><text class="q" x="178" y="84">?</text></svg>
@@ -137,11 +148,11 @@ the layer count alone.</p>
 <section class="step" id="s5">
 {% call open(steps, 5) %}{% endcall %}
 <p class="sub">The last {{ root_pok_len }} bytes.</p>
-<p>Every layer of the membership proof's climb is blinded, the root included,
-so no step of it can be matched against the tree. Its last {{ root_pok_len }}
-bytes prove that the blinded root differs from the real one only by that
-blind. The verifier supplies the real
-root{% if let Some((b, _)) = root_block %}, the one block {{ b }} published{% endif %},
+<p>The root is public, but the membership proof's copy of it carries a random
+mask, like everything the proof commits to. Its last {{ root_pok_len }} bytes
+show that this copy is the real root plus that mask and nothing else. The
+verifier supplies the real
+root{% if let Some((b, _)) = root_block %}, the one block {{ b }} carries{% endif %},
 so a proof built on an invented tree fails.</p>
 {% call bar(map, 5) %}{% endcall %}
 <div class="facts"><div class="facts-h">In this transaction</div><dl>
@@ -152,7 +163,9 @@ so a proof built on an invented tree fails.</p>
 <details class="maths"><summary>Show the maths</summary>
 <p class="eq"><var>root&prime;</var> = <var>root</var> + <var>b</var>&middot;<var>H</var><br>
 <var>R</var> + <var>c</var>&middot;(<var>root&prime;</var> &minus; <var>root</var>) = <var>s</var>&middot;<var>H</var></p>
-<p><var>R</var> and <var>s</var> are the {{ root_pok_len }} bytes, <var>c</var>
+<p><var>root&prime;</var> is the proof's copy: <var>H<sub>init</sub></var> plus its
+commitment to the root's children, which carries a mask <var>b</var>.
+<var>R</var> and <var>s</var> are the {{ root_pok_len }} bytes, <var>c</var>
 is a challenge from the proof's transcript, and <var>H</var> is the blinding
 generator of the root's curve{% if let Some(c) = root_curve %}, {{ c }} here{% endif %}:
 the root is on Selene when the tree has an odd number of layers and on Helios
@@ -195,10 +208,11 @@ The range proof shows each output amount lies in [0, 2<sup>64</sup>).</p>
 <section class="step" id="s7">
 {% call open(steps, 7) %}{% endcall %}
 <p class="sub">Everything checks out, and one thing stays hidden.</p>
-<p>That {% if let Some(n) = anonymity_set %}one of {{ n }} outputs{% else %}an output in the tree{% endif %}
-was spent, by someone entitled to spend it, and only once. Not which one.</p>
+<p>{% if inputs.len() == 1 %}That {% if let Some(n) = anonymity_set %}one of {{ n }} outputs{% else %}an output in the tree{% endif %}
+was spent, by someone entitled to spend it, and only once. Not which one.{% else %}That each of its {{ inputs.len() }} inputs spent a different one of {% if let Some(n) = anonymity_set %}{{ n }} outputs{% else %}the outputs in the tree{% endif %},
+by someone entitled to spend it, and only once. Not which ones.{% endif %}</p>
 <div class="facts"><div class="facts-h">In this transaction</div><dl>
-<dt>Could be spending</dt><dd>{% if let Some(n) = anonymity_set %}any of {{ n }} outputs{% else %}any output in the tree{% endif %}</dd>
+<dt>{% if inputs.len() == 1 %}Could be spending{% else %}Each input could be spending{% endif %}</dt><dd>{% if let Some(n) = anonymity_set %}any of {{ n }} outputs{% else %}any output in the tree{% endif %}</dd>
 <dt>Spent before?</dt><dd>No. The {% if in_pool %}pool{% else %}chain{% endif %} accepted its key images as new.</dd>
 <dt>Amounts</dt><dd>They balance, and only the fee is shown.</dd>
 </dl></div>
@@ -206,7 +220,8 @@ was spent, by someone entitled to spend it, and only once. Not which one.</p>
 <p>A verifier checks, for this transaction:</p>
 <ol>
 <li>each input's signature, against the transaction's signable hash;</li>
-<li>that each key image is a valid point and has not been seen before;</li>
+<li>that each key image is a point of the prime-order group other than the
+identity, and has not been seen before;</li>
 <li>the membership proof, against the root{% if let Some((b, _)) = root_block %} in block {{ b }}{% endif %};</li>
 <li>that the amounts balance, and the range proof.</li>
 </ol>
@@ -222,10 +237,10 @@ about it.</p>
 <section class="step first" id="s1">
 {% call open(steps, 1) %}{% endcall %}
 <p class="sub">Every spendable output sits in one tree.</p>
-<p>Every output on the chain joins a single tree once it unlocks, and the whole
-tree is summed up by one short value at the top, its root.
+<p>Every output on the chain joins a single tree once it can be spent, and the
+whole tree is summed up by one short value at the top, its root.
 {% if let Some(n) = anonymity_set %}{% if let Some(r) = reference_block %}As of block {{ r }}, the one this proof was built against, the tree held {{ n }} outputs.{% endif %}{% else if in_pool %}The tree's size is known once this transaction is mined.{% endif %}
-{% if let Some((b, _)) = root_block %}Block {{ b }} records the root the proof was checked against.{% endif %}</p>
+{% if let Some((b, _)) = root_block %}Block {{ b }} already carries that tree's root: each block carries the root of the tree as it will stand eight blocks on, since every output spendable by then is already on the chain.{% endif %}</p>
 <div class="facts"><div class="facts-h">In this transaction</div><dl>
 {% if let Some(n) = anonymity_set %}<dt>Outputs in the tree</dt><dd>{{ n }}</dd>{% endif %}
 {% if let Some(n) = n_tree_layers %}<dt>Tree layers</dt><dd>{{ n }}</dd>{% endif %}
@@ -238,7 +253,7 @@ tree is summed up by one short value at the top, its root.
 its key image generator <var>I</var> = <var>H<sub>p</sub></var>(<var>O</var>), a
 hash of <var>O</var> onto the curve, and its amount commitment
 <var>C</var>. A leaf is the <var>x</var> and <var>y</var> coordinates of all
-three: six numbers, which are exactly Selene scalars. A node commits to its
+three, in Weierstrass form: six numbers, which are exactly Selene scalars. A node commits to its
 children as</p>
 <p class="eq"><var>H<sub>init</sub></var> + &Sigma;<sub><var>i</var></sub> <var>s<sub>i</sub></var>&middot;<var>G<sub>i</sub></var></p>
 <p>At the bottom the <var>s<sub>i</sub></var> are the leaves' six scalars each,

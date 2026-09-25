@@ -3835,7 +3835,20 @@ mod tests {
             assert!(html.contains(
                 "As of block 120, the one this proof was built against, the tree held 62 outputs."
             ));
-            assert!(html.contains("Block 112 records the root the proof was checked against."));
+            assert!(html.contains("Block 112 already carries that tree's root:"));
+            // Step 7 counts the inputs: each spent its own output.
+            assert!(n > 1, "the captured transactions spend two outputs each");
+            assert!(html.contains(&format!(
+                "That each of its {n} inputs spent a different one of 62 outputs,\nby someone entitled to spend it, and only once. Not which ones."
+            )));
+            assert!(html.contains("<dt>Each input could be spending</dt>"));
+            let mut single = fcmp_page(None, &entry, &tx, Some(62), Some((112, "9".repeat(64))));
+            single.inputs.truncate(1);
+            let single = single.render().expect("renders");
+            assert!(single.contains(
+                "That one of 62 outputs\nwas spent, by someone entitled to spend it, and only once. Not which one."
+            ));
+            assert!(single.contains("<dt>Could be spending</dt>"));
             assert!(html.contains("<dd>1 Bulletproofs+ proof over the outputs</dd>"));
             let first = page
                 .inputs
@@ -3958,7 +3971,9 @@ mod tests {
         assert!(html.contains(r#"aria-label="Curve tree of 62 outputs in 2 layers"#));
         // Step 1 keeps its picture beside the words, the tree among them.
         let first = &html[html.find(r#"id="s1""#).expect("step 1")..];
-        let tree = first.find(r#"<figure class="curve-tree">"#).expect("the tree");
+        let tree = first
+            .find(r#"<figure class="curve-tree">"#)
+            .expect("the tree");
         let pic = first.find(r#"<svg class="pic""#).expect("the picture");
         assert!(tree < first.find("Show the maths").expect("maths") && tree < pic);
         assert_eq!(html.matches(r#"<svg class="pic""#).count(), 7);
