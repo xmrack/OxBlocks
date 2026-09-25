@@ -2018,6 +2018,65 @@ impl RctSigPrunable {
         let hex = self.fcmp_pp.as_deref()?;
         hex.len().is_multiple_of(2).then_some(hex.len() / 2)
     }
+
+    /// The FCMP++ proof split into its parts, for a transaction with
+    /// `inputs` inputs. `None` where there is no proof, or it is too short to
+    /// hold them.
+    ///
+    /// Each input's tuple and spend-authorization proof in input order, then
+    /// the membership proof for all of them, ending in the root blind's proof
+    /// of knowledge: `FcmpPlusPlus::write` in monero-oxide's `ringct/fcmp++`,
+    /// and `Fcmp::write` in its `crypto/fcmps`.
+    #[must_use]
+    pub fn fcmp_pp_parts(&self, inputs: usize) -> Option<FcmpPpParts<'_>> {
+        let hex = self.fcmp_pp.as_deref()?;
+        let per_input = 2 * (FCMP_PP_TUPLE_LEN + FCMP_PP_SAL_LEN);
+        let own = per_input.checked_mul(inputs)?;
+        let membership = hex.len().checked_sub(own)?;
+        if !membership.is_multiple_of(2) || membership / 2 <= FCMP_PP_ROOT_POK_LEN {
+            return None;
+        }
+        let word = |at: usize| hex.get(at..at + 64);
+        let parts = (0..inputs)
+            .map(|i| {
+                let at = i * per_input;
+                Some(FcmpPpInput {
+                    o_tilde: word(at)?,
+                    i_tilde: word(at + 64)?,
+                    r: word(at + 128)?,
+                })
+            })
+            .collect::<Option<_>>()?;
+        Some(FcmpPpParts {
+            inputs: parts,
+            membership_len: membership / 2,
+        })
+    }
+}
+
+/// Bytes of an FCMP++ input tuple as serialized: O~, I~ and R. Its fourth
+/// member, C~, is the input's pseudo-out and is not repeated in the proof.
+pub const FCMP_PP_TUPLE_LEN: usize = 3 * 32;
+/// Bytes of one input's spend-authorization and linkability proof.
+pub const FCMP_PP_SAL_LEN: usize = 12 * 32;
+/// Bytes of the proof of knowledge of the root's blind, which ends the
+/// membership proof.
+pub const FCMP_PP_ROOT_POK_LEN: usize = 64;
+
+/// See [`RctSigPrunable::fcmp_pp_parts`].
+#[derive(Debug, PartialEq, Eq)]
+pub struct FcmpPpParts<'a> {
+    pub inputs: Vec<FcmpPpInput<'a>>,
+    /// Bytes of the membership proof, [`FCMP_PP_ROOT_POK_LEN`] included.
+    pub membership_len: usize,
+}
+
+/// One input's re-randomized output, as hex.
+#[derive(Debug, PartialEq, Eq)]
+pub struct FcmpPpInput<'a> {
+    pub o_tilde: &'a str,
+    pub i_tilde: &'a str,
+    pub r: &'a str,
 }
 
 /// A Borromean range proof. Both members are blob-serialized, so they are two
@@ -2594,6 +2653,48 @@ mod tests {
         assert_eq!(tree_root_block(120), Some(112));
         assert_eq!(tree_root_block(8), Some(0));
         assert_eq!(tree_root_block(7), None);
+    }
+
+    /// Every 32-byte word of the synthetic proof names its own place, so an
+    /// off-by-one in any offset reads back the wrong word.
+    #[test]
+    fn an_fcmp_pp_proof_splits_into_each_inputs_tuple_and_one_membership_proof() {
+        let word = |tag: &str| format!("{tag:0>64}");
+        let mut hex = String::new();
+        for i in 0..2 {
+            for part in ["o", "i", "r"] {
+                hex += &word(&format!("{part}{i}"));
+            }
+            for k in 0..12 {
+                hex += &word(&format!("s{i}{k:02}"));
+            }
+        }
+        for k in 0..5 {
+            hex += &word(&format!("m{k}"));
+        }
+        let prunable = RctSigPrunable {
+            fcmp_pp: Some(hex.clone()),
+            ..RctSigPrunable::default()
+        };
+
+        let parts = prunable.fcmp_pp_parts(2).expect("splits");
+        assert_eq!(parts.membership_len, 5 * 32);
+        assert_eq!(parts.inputs.len(), 2);
+        for (i, input) in parts.inputs.iter().enumerate() {
+            assert_eq!(input.o_tilde, word(&format!("o{i}")));
+            assert_eq!(input.i_tilde, word(&format!("i{i}")));
+            assert_eq!(input.r, word(&format!("r{i}")));
+        }
+
+        // A third input leaves no room for the membership proof, and a proof
+        // that is all root anchor has no membership proof before it.
+        assert_eq!(prunable.fcmp_pp_parts(3), None);
+        let bare = RctSigPrunable {
+            fcmp_pp: Some(hex.get(..hex.len() - 3 * 64).expect("shorter").to_owned()),
+            ..RctSigPrunable::default()
+        };
+        assert_eq!(bare.fcmp_pp_parts(2), None);
+        assert_eq!(RctSigPrunable::default().fcmp_pp_parts(1), None);
     }
 
     /// Each boundary where one more output adds a layer: past 38, one Selene

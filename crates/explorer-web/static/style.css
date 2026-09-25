@@ -441,3 +441,80 @@ dl.kv.spaced { margin-top: 0.8rem; }
   fill: var(--fg-faint);
   font: 9.5px ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
+
+/* ---------- FCMP++ walkthrough ---------- */
+
+/* One step at a time, switched by anchor. Step 1 is last in the markup so a
+   targeted step can hide it with `~`, which keeps it the default without
+   `:has()`. */
+.walkthrough .step { display: none; scroll-margin-top: 1rem; }
+.walkthrough .step:target, .walkthrough .step.first { display: block; }
+.walkthrough .step:target ~ .step.first { display: none; }
+
+.crumb { color: var(--fg-muted); font-size: 0.85rem; margin: 0 0 0.2rem; }
+.crumb .hash { font-size: 0.8rem; }
+.lede { color: var(--fg-muted); max-width: 62ch; margin: -0.6rem 0 1.4rem; }
+
+.rail { display: flex; align-items: center; margin-bottom: 1rem; }
+.rail .pip {
+  width: 30px; height: 30px; flex: none; border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 0.85rem; font-weight: 600; text-decoration: none;
+  color: var(--fg-muted); background: var(--bg-raised); border: 1.5px solid var(--line);
+}
+.rail .pip.done { border-color: var(--accent); color: var(--accent); }
+.rail .pip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.rail .link { flex: 1; height: 2px; background: var(--line); }
+
+.step-card {
+  display: flex; gap: 2rem; align-items: flex-start;
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 1.2rem 1.4rem;
+}
+.step-card .copy { flex: 1; min-width: 0; }
+.step-card h2 { margin: 0.15rem 0 0.1rem; }
+.step-card .kicker {
+  font-size: 0.75rem; font-weight: 600; color: var(--accent);
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.step-card .sub { color: var(--fg-muted); font-style: italic; margin: 0 0 0.6rem; }
+.step-card .pic { flex: none; width: 200px; height: 120px; margin-top: 1.4rem; }
+@media (max-width: 720px) {
+  .step-card { flex-direction: column-reverse; gap: 0; }
+  .step-card .pic { margin: 0 auto; }
+}
+
+.facts {
+  background: var(--bg-sunken); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 0.6rem 0.8rem; margin-top: 0.9rem;
+}
+.facts-h {
+  font-size: 0.72rem; color: var(--fg-faint);
+  text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.3rem;
+}
+.facts dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 0; font-size: 0.88rem; }
+.facts dt { color: var(--fg-muted); }
+.facts dd { margin: 0; min-width: 0; }
+
+.step-nav { display: flex; margin: 1rem 0 1.5rem; }
+.step-nav .btn {
+  padding: 0.45rem 0.95rem; border-radius: var(--radius);
+  font-weight: 600; font-size: 0.9rem; text-decoration: none;
+}
+.step-nav .btn.ghost { color: var(--fg-muted); border: 1px solid var(--line); }
+.step-nav .btn.next { margin-left: auto; background: var(--accent); color: var(--accent-fg); }
+
+.pic .solid { fill: var(--accent); }
+.pic .node { fill: var(--accent); opacity: 0.5; }
+.pic .web { fill: var(--accent); opacity: 0.12; }
+.pic .ghost { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 4 3; }
+.pic .on-solid { fill: var(--accent-fg); font-weight: 700; font-size: 16px; }
+.pic .on-ghost { fill: var(--accent); font-weight: 700; font-size: 16px; }
+.pic .line { fill: none; stroke: var(--fg-faint); stroke-width: 2; }
+.pic .head { fill: var(--fg-faint); }
+.pic .edge { fill: none; stroke: var(--accent); stroke-width: 1; opacity: 0.35; }
+.pic .chain { fill: none; stroke: var(--accent); stroke-width: 3; stroke-dasharray: 10 5; }
+.pic .card { fill: var(--bg-raised); stroke: var(--line); stroke-width: 1.5; }
+.pic .pen { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; }
+.pic .small { fill: var(--fg-muted); font-size: 11px; }
+.pic .q { fill: var(--accent); font-size: 28px; font-weight: 700; }

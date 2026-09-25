@@ -62,7 +62,7 @@
     and those have no place on the chain until it is mined.</p></details>
   </dd>
   {% if let Some(bytes) = proof_size %}
-  <dt>FCMP++ proof</dt><dd>{{ bytes }} bytes
+  <dt>FCMP++ proof</dt><dd>{{ bytes }} bytes <a class="tag" href="/tx/{{ hash }}/fcmp">how it works</a>
     <details class="hint"><summary aria-label="What is this?"><svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="7"/><circle class="dot" cx="8" cy="4.4" r="1.05"/><path class="stem" d="M8 7.1v5"/></svg></summary>
     <p>The size of the proof that every input spends an output in the tree
     and is authorised to. It is fixed by how many inputs the transaction has

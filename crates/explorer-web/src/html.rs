@@ -16,6 +16,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use explorer_core::fmt::{age, decimal, now, timestamp_utc};
 use explorer_core::{Amount, BlockId, BlockTree, ChainError, Hash32, TxFacts};
+use monerod_rpc::types::{TxEntry, TxJson};
 
 use crate::api::handlers::{AppState, Shared, echo};
 use crate::config::Theme;
@@ -1150,50 +1151,66 @@ fn chain_error_page(chain: Option<ChainStatus>, e: &ChainError, title: &str) -> 
     }
 }
 
-pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page {
-    let chain = status_of(&state).await;
-
+/// The transaction a page is about, decoded, or the error page to show
+/// instead. `chain` is moved into that page.
+async fn fetch_tx(
+    state: &AppState,
+    chain: &mut Option<ChainStatus>,
+    raw: &str,
+) -> Result<(TxEntry, TxJson), Page> {
     let Ok(hash) = raw.parse::<Hash32>() else {
-        return error_page(
-            chain,
+        return Err(error_page(
+            chain.take(),
             StatusCode::NOT_FOUND,
             "No such transaction",
-            &format!("{} is not a transaction hash.", echo(&raw)),
-        );
+            &format!("{} is not a transaction hash.", echo(raw)),
+        ));
     };
 
     let fetched = match state.chain.transactions(std::slice::from_ref(&hash)).await {
         Ok(f) => f,
-        Err(e) => return chain_error_page(chain, &e, &format!("No transaction {hash}")),
+        Err(e) => {
+            return Err(chain_error_page(
+                chain.take(),
+                &e,
+                &format!("No transaction {hash}"),
+            ));
+        }
     };
 
-    let Some(entry) = fetched.txs.first() else {
-        return error_page(
-            chain,
+    let Some(entry) = fetched.txs.into_iter().next() else {
+        return Err(error_page(
+            chain.take(),
             StatusCode::NOT_FOUND,
             "No such transaction",
             &format!("The daemon does not have transaction {hash}."),
-        );
+        ));
     };
 
     let Ok(tx) = entry.parse_json() else {
-        return error_page(
-            chain,
+        return Err(error_page(
+            chain.take(),
             StatusCode::BAD_GATEWAY,
             "Could not decode this transaction",
             "The daemon returned a transaction this explorer could not read.",
-        );
+        ));
     };
+    Ok((entry, tx))
+}
 
-    let f = TxFacts::from_entry(entry, &tx);
-    let rings = state.chain.resolve_rings(&tx).await;
-    // The tree size and the block carrying the proof's root are independent,
-    // so they are asked for together. See `RpcChainSource::proof_root` for why
-    // the root block is fetched rather than computed.
-    let reference = f.fcmp_pp.and_then(|x| x.reference_block);
-    let (anonymity_set, root_block) = tokio::join!(
+/// The size of the curve tree an FCMP++ spend proved against, and the block
+/// carrying the root it was checked against with that root. Independent, so
+/// asked for together. See `RpcChainSource::proof_root` for why the root block
+/// is fetched rather than computed.
+async fn tree_facts(
+    state: &AppState,
+    tx: &TxJson,
+    entry: &TxEntry,
+    reference: Option<u64>,
+) -> (Option<u64>, Option<(u64, String)>) {
+    tokio::join!(
         state.chain.anonymity_set(
-            &tx,
+            tx,
             entry,
             entry.block_height.saturating_add(entry.confirmations),
         ),
@@ -1203,7 +1220,21 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
                 None => None,
             }
         },
-    );
+    )
+}
+
+pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page {
+    let mut chain = status_of(&state).await;
+    let (entry, tx) = match fetch_tx(&state, &mut chain, &raw).await {
+        Ok(found) => found,
+        Err(page) => return page,
+    };
+    let entry = &entry;
+
+    let f = TxFacts::from_entry(entry, &tx);
+    let rings = state.chain.resolve_rings(&tx).await;
+    let reference = f.fcmp_pp.and_then(|x| x.reference_block);
+    let (anonymity_set, root_block) = tree_facts(&state, &tx, entry, reference).await;
 
     // A transaction in the pool is in no block, so the time it carries is the
     // time it arrived: `block_timestamp` is 0 there and renders as 1970. The
@@ -1356,6 +1387,160 @@ pub async fn transaction(State(state): Shared, Path(raw): Path<String>) -> Page 
             extra_undecoded: !parsed.is_complete(),
         },
     )
+}
+
+/// The walkthrough's steps, in order.
+const FCMP_STEPS: [&str; 7] = [
+    "The tree",
+    "Disguise the output",
+    "Prove the right to spend",
+    "Prove it is in the tree",
+    "Tie it to the chain",
+    "Balance the amounts",
+    "What anyone can tell",
+];
+
+/// A walk through an FCMP++ transaction's proof, one step at a time.
+///
+/// Steps switch by anchor and `:target`, as the Content-Security-Policy
+/// allows no script.
+#[derive(Template)]
+#[template(path = "fcmp.html")]
+struct FcmpPage {
+    version: &'static str,
+    query: Option<String>,
+    chain: Option<ChainStatus>,
+    hash: String,
+    steps: Vec<StepLink>,
+    in_pool: bool,
+    /// Bytes, grouped. `None` where this node no longer holds the proof.
+    proof_size: Option<String>,
+    anonymity_set: Option<String>,
+    reference_block: Option<u64>,
+    n_tree_layers: Option<u8>,
+    /// The block carrying the root the proof was checked against, and that
+    /// root.
+    root_block: Option<(u64, String)>,
+    inputs: Vec<FcmpInputView>,
+    /// The membership proof's bytes, grouped, and its share of the proof in
+    /// whole percent.
+    membership: Option<(String, u64)>,
+    tuple_len: usize,
+    sal_len: usize,
+    root_pok_len: usize,
+    fee: String,
+    outputs: usize,
+    range_proofs: usize,
+}
+
+struct StepLink {
+    n: usize,
+    title: &'static str,
+}
+
+struct FcmpInputView {
+    key_image: String,
+    pseudo_out: Option<String>,
+    /// `None` where the proof is not held.
+    disguise: Option<Disguise>,
+}
+
+/// An input's re-randomized output: O~, I~ and R.
+struct Disguise {
+    o_tilde: String,
+    i_tilde: String,
+    r: String,
+}
+
+pub async fn fcmp_proof(State(state): Shared, Path(raw): Path<String>) -> Page {
+    let mut chain = status_of(&state).await;
+    let (entry, tx) = match fetch_tx(&state, &mut chain, &raw).await {
+        Ok(found) => found,
+        Err(page) => return page,
+    };
+    if !tx.is_fcmp_pp() {
+        return error_page(
+            chain,
+            StatusCode::NOT_FOUND,
+            "Not an FCMP++ transaction",
+            &format!(
+                "Transaction {} has no FCMP++ proof to walk through.",
+                entry.tx_hash.to_lowercase()
+            ),
+        );
+    }
+    let (anonymity_set, root_block) = tree_facts(&state, &tx, &entry, tx.reference_block()).await;
+    render(
+        StatusCode::OK,
+        &fcmp_page(chain, &entry, &tx, anonymity_set, root_block),
+    )
+}
+
+fn fcmp_page(
+    chain: Option<ChainStatus>,
+    entry: &TxEntry,
+    tx: &TxJson,
+    anonymity_set: Option<u64>,
+    root_block: Option<(u64, String)>,
+) -> FcmpPage {
+    use monerod_rpc::types::{FCMP_PP_ROOT_POK_LEN, FCMP_PP_SAL_LEN, FCMP_PP_TUPLE_LEN};
+
+    let f = TxFacts::from_entry(entry, tx);
+    let prunable = tx.rctsig_prunable.as_ref();
+    let proof_len = prunable.and_then(|p| p.fcmp_pp_len());
+    let parts = prunable.and_then(|p| p.fcmp_pp_parts(tx.vin.len()));
+    let pseudo_outs = tx.pseudo_outs();
+    let disguises = parts
+        .as_ref()
+        .map(|p| p.inputs.as_slice())
+        .unwrap_or_default();
+
+    let inputs = tx
+        .vin
+        .iter()
+        .filter_map(|v| v.as_key())
+        .enumerate()
+        .map(|(i, k)| FcmpInputView {
+            key_image: k.k_image.clone(),
+            pseudo_out: pseudo_outs.get(i).cloned(),
+            disguise: disguises.get(i).map(|d| Disguise {
+                o_tilde: d.o_tilde.to_owned(),
+                i_tilde: d.i_tilde.to_owned(),
+                r: d.r.to_owned(),
+            }),
+        })
+        .collect();
+
+    let membership = parts.as_ref().zip(proof_len).map(|(p, total)| {
+        let share = p.membership_len * 100 / total.max(1);
+        (grouped(p.membership_len as u64), share as u64)
+    });
+
+    FcmpPage {
+        version: VERSION,
+        query: None,
+        chain,
+        hash: entry.tx_hash.to_lowercase(),
+        steps: FCMP_STEPS
+            .iter()
+            .enumerate()
+            .map(|(i, &title)| StepLink { n: i + 1, title })
+            .collect(),
+        in_pool: entry.in_pool,
+        proof_size: proof_len.map(|n| grouped(n as u64)),
+        anonymity_set: anonymity_set.map(grouped),
+        reference_block: tx.reference_block(),
+        n_tree_layers: tx.n_tree_layers(),
+        root_block,
+        inputs,
+        membership,
+        tuple_len: FCMP_PP_TUPLE_LEN,
+        sal_len: FCMP_PP_SAL_LEN,
+        root_pok_len: FCMP_PP_ROOT_POK_LEN,
+        fee: xmr(f.fee),
+        outputs: tx.vout.len(),
+        range_proofs: prunable.and_then(|p| p.bpp.as_ref()).map_or(0, Vec::len),
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -3353,6 +3538,160 @@ mod tests {
                 .contains("curve-tree")
         );
         assert!(!tx_page().render().expect("renders").contains("curve-tree"));
+    }
+
+    fn fcmp_fixture(file: &str) -> Vec<(TxEntry, TxJson)> {
+        let json = match file {
+            "full" => include_str!("../../../fixtures/fcmp/get_transactions_fcmp.json"),
+            _ => include_str!("../../../fixtures/fcmp/get_transactions_fcmp_pruned.json"),
+        };
+        let resp: monerod_rpc::types::GetTransactionsResponse =
+            serde_json::from_str(json).expect("a fixture");
+        assert!(!resp.txs.is_empty());
+        resp.txs
+            .into_iter()
+            .map(|e| {
+                let tx = e.parse_json().expect("decodes");
+                (e, tx)
+            })
+            .collect()
+    }
+
+    /// Each input's own bytes are read from its place in the proof, and the
+    /// shared membership proof is what is left.
+    #[test]
+    fn the_walkthrough_shows_each_inputs_own_part_of_the_proof() {
+        for (entry, tx) in fcmp_fixture("full") {
+            let proof = tx
+                .rctsig_prunable
+                .as_ref()
+                .and_then(|p| p.fcmp_pp.clone())
+                .expect("a proof");
+            let n = tx.vin.len();
+            let page = fcmp_page(None, &entry, &tx, Some(62), Some((112, "9".repeat(64))));
+
+            assert_eq!(page.inputs.len(), n);
+            for (i, input) in page.inputs.iter().enumerate() {
+                let at = i * 960;
+                let d = input.disguise.as_ref().expect("the proof is held");
+                assert_eq!(d.o_tilde, proof[at..at + 64]);
+                assert_eq!(d.i_tilde, proof[at + 64..at + 128]);
+                assert_eq!(d.r, proof[at + 128..at + 192]);
+                assert_eq!(
+                    input.key_image,
+                    tx.vin[i].as_key().expect("a key input").k_image
+                );
+                assert_eq!(
+                    input.pseudo_out.as_deref(),
+                    Some(tx.pseudo_outs()[i].as_str())
+                );
+            }
+            let total = proof.len() / 2;
+            let membership = total - n * 480;
+            assert_eq!(
+                page.membership,
+                Some((
+                    grouped(membership as u64),
+                    (membership * 100 / total) as u64
+                ))
+            );
+            assert_eq!(page.proof_size, Some(grouped(total as u64)));
+            assert_eq!(page.reference_block, Some(120));
+            assert_eq!(page.range_proofs, 1);
+
+            let html = page.render().expect("renders");
+            assert!(html.contains(
+                "As of block 120, the one this proof was built against, the tree held 62 outputs."
+            ));
+            assert!(html.contains("Block 112 records the root the proof was checked against."));
+            assert!(html.contains("<dd>1 Bulletproofs+ proof over the outputs</dd>"));
+            let first = page
+                .inputs
+                .first()
+                .and_then(|i| i.disguise.as_ref())
+                .expect("one");
+            assert!(html.contains(&format!(r#"<dd class="hash">{}</dd>"#, first.o_tilde)));
+            assert!(html.contains(
+                r##"<a class="btn next" href="#s2">Next: Disguise the output &rarr;</a>"##
+            ));
+            assert_eq!(
+                html.matches("&larr; Back").count(),
+                6,
+                "every step but the first"
+            );
+            let last = html.find(r#"id="s7""#).expect("step 7");
+            assert_eq!(html.matches("Start again").count(), 1);
+            let again = html.find("Start again");
+            assert!(
+                again > Some(last) && again < html.find(r#"id="s1""#),
+                "on step 7"
+            );
+            assert!(html.contains(&format!("Its {}-byte FCMP++ proof", grouped(total as u64))));
+            for input in &page.inputs {
+                assert!(html.contains(&format!(
+                    r#"<dd class="hash mark">{}</dd>"#,
+                    input.key_image
+                )));
+            }
+            assert!(
+                html.rfind(r#"id="s1""#) > html.rfind(r#"id="s7""#),
+                "step 1 comes last, for the stylesheet's `~`"
+            );
+            assert!(!html.contains(" style="), "the CSP drops inline styles");
+        }
+    }
+
+    #[test]
+    fn the_walkthrough_counts_this_transactions_amounts() {
+        let (entry, tx) = fcmp_fixture("full").remove(1);
+        let html = fcmp_page(None, &entry, &tx, None, None)
+            .render()
+            .expect("renders");
+        assert!(html.contains("<dd>2 disguised amounts</dd>"));
+        assert!(html.contains("<dd>4 hidden amounts</dd>"));
+        assert!(
+            html.contains("<dd>0.0113292 XMR, the only amount in the clear</dd>"),
+            "{html}"
+        );
+        assert!(html.contains("all 2 inputs at once"));
+    }
+
+    /// A pruned node has none of the proof, and says so rather than showing
+    /// empty rows.
+    #[test]
+    fn a_pruned_proof_is_explained_without_its_bytes() {
+        for (entry, tx) in fcmp_fixture("pruned") {
+            let page = fcmp_page(None, &entry, &tx, None, None);
+            assert!(
+                page.inputs
+                    .iter()
+                    .all(|i| i.disguise.is_none() && i.pseudo_out.is_none())
+            );
+            assert_eq!(page.proof_size, None);
+            assert_eq!(page.membership, None);
+            let html = page.render().expect("renders");
+            assert!(html.contains("no longer holds this transaction's proof"));
+            assert!(!html.contains("&Otilde;</dt>"));
+            assert!(html.contains("Its FCMP++ proof is what makes that possible."));
+            assert!(
+                !html.contains("known once this transaction is mined"),
+                "it was"
+            );
+        }
+    }
+
+    /// A pool transaction's tree size cannot be asked for yet.
+    #[test]
+    fn a_pool_spend_says_its_tree_size_waits_for_a_block() {
+        let (mut entry, tx) = fcmp_fixture("full").remove(0);
+        entry.in_pool = true;
+        let html = fcmp_page(None, &entry, &tx, None, None)
+            .render()
+            .expect("renders");
+        assert!(html.contains("The tree's size is known once this transaction is mined."));
+        assert!(html.contains("The pool accepted its key images as new."));
+        assert!(html.contains("any output in the tree"));
+        assert!(!html.contains("outputs in the tree</dt>"));
     }
 
     #[test]

@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}FCMP++ proof of {{ hash }} &mdash; oxblocks{% endblock %}
+{% macro open(steps, n) %}
+<nav class="rail" aria-label="Steps">{% for s in steps %}<a class="pip{% if s.n == n %} on{% else if s.n < n %} done{% endif %}" href="#s{{ s.n }}" title="{{ s.title }}">{{ s.n }}</a>{% if !loop.last %}<span class="link"></span>{% endif %}{% endfor %}</nav>
+<div class="step-card"><div class="copy"><div class="kicker">Step {{ n }} of {{ steps.len() }}</div>{% for s in steps %}{% if s.n == n %}<h2>{{ s.title }}</h2>{% endif %}{% endfor %}
+{% endmacro %}
+{% macro close(steps, n) %}
+<div class="step-nav">{% for s in steps %}{% if s.n + 1 == n %}<a class="btn ghost" href="#s{{ s.n }}">&larr; Back</a>{% endif %}{% if s.n == n + 1 %}<a class="btn next" href="#s{{ s.n }}">Next: {{ s.title }} &rarr;</a>{% endif %}{% endfor %}{% if n == steps.len() %}<a class="btn next" href="#s1">Start again</a>{% endif %}</div>
+{% endmacro %}
+{% block content %}
+<p class="crumb"><a href="/tx/{{ hash }}">Transaction</a> <span class="hash">{{ hash }}</span></p>
+<h1>How this spend stays private</h1>
+<p class="lede">This transaction spends {{ inputs.len() }} output{% if inputs.len() != 1 %}s{% endif %} without saying which.
+{% if let Some(bytes) = proof_size %}Its {{ bytes }}-byte FCMP++ proof{% else %}Its FCMP++ proof{% endif %} is what makes that possible. Here is what each part does.</p>
+{% if proof_size.is_none() %}
+<p class="empty tight">This node no longer holds this transaction's proof, so its bytes are not shown here. What each part does is the same.</p>
+{% endif %}
+
+{# Step 1 comes last: with no anchor in the URL it is the one shown, and a
+   later step that is targeted hides it with `~`, which needs it after them. #}
+<div class="walkthrough">
+
+<section class="step" id="s2">
+{% call open(steps, 2) %}{% endcall %}
+<p class="sub">An input never points at the output it spends.</p>
+<p>Instead of naming its output, each input publishes a disguised copy of it:
+the same output with fresh random masks added, so it matches no leaf anyone can
+see. The amount is disguised the same way, and that disguised amount is the
+input's pseudo-output.</p>
+<div class="facts"><div class="facts-h">In this transaction</div><dl>
+{% for i in inputs %}
+{% if let Some(d) = i.disguise %}
+<dt>Input {{ loop.index }} &middot; &Otilde;</dt><dd class="hash">{{ d.o_tilde }}</dd>
+<dt>Input {{ loop.index }} &middot; &Itilde;</dt><dd class="hash">{{ d.i_tilde }}</dd>
+<dt>Input {{ loop.index }} &middot; R</dt><dd class="hash">{{ d.r }}</dd>
+{% endif %}
+{% if let Some(p) = i.pseudo_out %}<dt>Input {{ loop.index }} &middot; amount</dt><dd><span class="hash">{{ p }}</span> <span class="tag">pseudo-output</span></dd>{% endif %}
+{% endfor %}
+<dt>Size</dt><dd>{{ tuple_len }} bytes per input</dd>
+</dl></div>
+</div>
+<svg class="pic" viewBox="0 0 200 120" aria-hidden="true"><circle class="solid" cx="45" cy="60" r="22"/><text class="on-solid" x="45" y="65" text-anchor="middle">O</text><path class="line" d="M75 60H120"/><path class="head" d="M120 54l10 6-10 6z"/><text class="small" x="102" y="48" text-anchor="middle">+ mask</text><circle class="ghost" cx="160" cy="60" r="22"/><text class="on-ghost" x="160" y="65" text-anchor="middle">&Otilde;</text></svg>
+</div>
+{% call close(steps, 2) %}{% endcall %}
+</section>
+
+<section class="step" id="s3">
+{% call open(steps, 3) %}{% endcall %}
+<p class="sub">A short signature for each input.</p>
+<p>Each input carries a small proof that whoever built it knows the secret keys
+behind the disguised output. The same proof yields the input's key image, which
+comes out the same however the output is disguised, so an output spent twice is
+caught.</p>
+<div class="facts"><div class="facts-h">In this transaction</div><dl>
+{% for i in inputs %}<dt>Input {{ loop.index }} &middot; key image</dt><dd class="hash mark">{{ i.key_image }}</dd>{% endfor %}
+<dt>Size</dt><dd>{{ sal_len }} bytes per input</dd>
+</dl></div>
+</div>
+<svg class="pic" viewBox="0 0 200 120" aria-hidden="true"><rect class="card" x="30" y="30" width="80" height="60" rx="6"/><path class="pen" d="M44 70q12-22 22-4t22-8"/><path class="line" d="M118 60H140"/><path class="head" d="M140 54l10 6-10 6z"/><rect class="solid" x="156" y="50" width="22" height="20" rx="3"/><text class="small" x="167" y="88" text-anchor="middle">key image</text></svg>
+</div>
+{% call close(steps, 3) %}{% endcall %}
+</section>
+
+<section class="step" id="s4">
+{% call open(steps, 4) %}{% endcall %}
+<p class="sub">One proof covers every input.</p>
+<p>The largest part. It shows that each disguised output is a masked copy of
+some leaf in the tree, without saying which. It climbs from the leaves to the
+root, switching between two curves, Selene and Helios, chosen to fit together so
+each layer can be checked inside the next.</p>
+<div class="facts"><div class="facts-h">In this transaction</div><dl>
+{% if let Some((bytes, share)) = membership %}<dt>Size</dt><dd>{{ bytes }} bytes, {{ share }}% of the proof</dd>{% endif %}
+<dt>Covers</dt><dd>{% if inputs.len() == 1 %}the one input{% else %}all {{ inputs.len() }} inputs at once{% endif %}</dd>
+{% if let Some(n) = n_tree_layers %}<dt>Tree layers</dt><dd>{{ n }}</dd>{% endif %}
+</dl></div>
+</div>
+<svg class="pic" viewBox="0 0 200 120" aria-hidden="true"><path class="edge" d="M100 18L55 58M100 18L145 58M55 58L20 100M55 58L36 100M55 58L52 100M55 58L68 100M55 58L84 100M145 58L116 100M145 58L132 100M145 58L148 100M145 58L164 100M145 58L180 100"/><circle class="solid" cx="100" cy="18" r="5"/><circle class="node" cx="55" cy="58" r="5"/><circle class="node" cx="145" cy="58" r="5"/><circle class="node" cx="20" cy="100" r="3.5"/><circle class="node" cx="36" cy="100" r="3.5"/><circle class="node" cx="52" cy="100" r="3.5"/><circle class="node" cx="68" cy="100" r="3.5"/><circle class="node" cx="84" cy="100" r="3.5"/><circle class="node" cx="116" cy="100" r="3.5"/><circle class="node" cx="132" cy="100" r="3.5"/><circle class="node" cx="148" cy="100" r="3.5"/><circle class="node" cx="164" cy="100" r="3.5"/><circle class="node" cx="180" cy="100" r="3.5"/><text class="q" x="178" y="84">?</text></svg>
+</div>
+{% call close(steps, 4) %}{% endcall %}
+</section>
+
+<section class="step" id="s5">
+{% call open(steps, 5) %}{% endcall %}
+<p class="sub">The last {{ root_pok_len }} bytes.</p>
+<p>The membership proof works with a masked copy of the root as well. Its last
+{{ root_pok_len }} bytes prove that mask was added to the real root{% if let Some((b, _)) = root_block %}, the one block {{ b }} published{% endif %}, so
+the proof cannot have been made against an invented tree.</p>
+<div class="facts"><div class="facts-h">In this transaction</div><dl>
+<dt>Size</dt><dd>{{ root_pok_len }} bytes</dd>
+{% if let Some((b, root)) = root_block %}<dt>Root</dt><dd><span class="hash">{{ root }}</span>, in block <a href="/block/{{ b }}">{{ b }}</a></dd>{% endif %}
+</dl></div>
+</div>
+<svg class="pic" viewBox="0 0 200 120" aria-hidden="true"><circle class="solid" cx="50" cy="60" r="9"/><path class="chain" d="M64 60H120"/><rect class="card" x="124" y="36" width="56" height="48" rx="5"/><text class="small" x="152" y="64" text-anchor="middle">block</text></svg>
+</div>
+{% call close(steps, 5) %}{% endcall %}
+</section>
+
+<section class="step" id="s6">
+{% call open(steps, 6) %}{% endcall %}
+<p class="sub">Unchanged from RingCT.</p>
+<p>The disguised input amounts must add up to the outputs plus the fee, and a
+range proof shows that no amount is negative. Neither reveals a single
+amount.</p>
+<div class="facts"><div class="facts-h">In this transaction</div><dl>
+<dt>Inputs</dt><dd>{{ inputs.len() }} disguised amount{% if inputs.len() != 1 %}s{% endif %}</dd>
+<dt>Outputs</dt><dd>{{ outputs }} hidden amount{% if outputs != 1 %}s{% endif %}</dd>
+<dt>Fee</dt><dd>{{ fee }} XMR, the only amount in the clear</dd>
+{% if range_proofs > 0 %}<dt>Range proof</dt><dd>{{ range_proofs }} Bulletproofs+ proof{% if range_proofs != 1 %}s{% endif %} over the outputs</dd>{% endif %}
+</dl></div>
+</div>
+<svg class="pic" viewBox="0 0 200 120" aria-hidden="true"><path class="line" d="M40 50H160M100 50V100M76 100H124"/><rect class="node" x="28" y="56" width="36" height="20" rx="3"/><text class="small" x="46" y="92" text-anchor="middle">in</text><rect class="node" x="130" y="56" width="26" height="20" rx="3"/><rect class="solid" x="158" y="56" width="10" height="20" rx="2"/><text class="small" x="149" y="92" text-anchor="middle">out + fee</text></svg>
+</div>
+{% call close(steps, 6) %}{% endcall %}
+</section>
+
+<section class="step" id="s7">
+{% call open(steps, 7) %}{% endcall %}
+<p class="sub">Everything checks out, and one thing stays hidden.</p>
+<p>That {% if let Some(n) = anonymity_set %}one of {{ n }} outputs{% else %}an output in the tree{% endif %}
+was spent, by someone entitled to spend it, and only once. Not which one.</p>
+<div class="facts"><div class="facts-h">In this transaction</div><dl>
+<dt>Could be spending</dt><dd>{% if let Some(n) = anonymity_set %}any of {{ n }} outputs{% else %}any output in the tree{% endif %}</dd>
+<dt>Spent before?</dt><dd>No. The {% if in_pool %}pool{% else %}chain{% endif %} accepted its key images as new.</dd>
+<dt>Amounts</dt><dd>They balance, and only the fee is shown.</dd>
+</dl></div>
+</div>
+<svg class="pic" viewBox="0 0 200 120" aria-hidden="true">{% for y in 0..5 %}{% for x in 0..11 %}<circle class="node" cx="{{ 22 + x * 16 }}" cy="{{ 24 + y * 18 }}" r="5"/>{% endfor %}{% endfor %}</svg>
+</div>
+{% call close(steps, 7) %}{% endcall %}
+</section>
+
+<section class="step first" id="s1">
+{% call open(steps, 1) %}{% endcall %}
+<p class="sub">Every spendable output sits in one tree.</p>
+<p>Every output on the chain that can be spent is a leaf in a single tree, and
+the whole tree is summed up by one short value at the top, its root.
+{% if let Some(n) = anonymity_set %}{% if let Some(r) = reference_block %}As of block {{ r }}, the one this proof was built against, the tree held {{ n }} outputs.{% endif %}{% else if in_pool %}The tree's size is known once this transaction is mined.{% endif %}
+{% if let Some((b, _)) = root_block %}Block {{ b }} records the root the proof was checked against.{% endif %}</p>
+<div class="facts"><div class="facts-h">In this transaction</div><dl>
+{% if let Some(n) = anonymity_set %}<dt>Outputs in the tree</dt><dd>{{ n }}</dd>{% endif %}
+{% if let Some(n) = n_tree_layers %}<dt>Tree layers</dt><dd>{{ n }}</dd>{% endif %}
+{% if let Some(r) = reference_block %}<dt>As of block</dt><dd><a href="/block/{{ r }}">{{ r }}</a></dd>{% endif %}
+{% if let Some((b, root)) = root_block %}<dt>Root</dt><dd><span class="hash">{{ root }}</span>, in block <a href="/block/{{ b }}">{{ b }}</a></dd>{% endif %}
+</dl></div>
+</div>
+<svg class="pic" viewBox="0 0 200 120" aria-hidden="true"><path class="web" d="M95 28H105L125 58H75ZM75 68H125L185 98H15Z"/><rect class="solid" x="95" y="18" width="10" height="10" rx="2"/><rect class="node" x="75" y="58" width="50" height="10" rx="2"/><rect class="node" x="15" y="98" width="170" height="10" rx="2"/></svg>
+</div>
+{% call close(steps, 1) %}{% endcall %}
+</section>
+
+</div>
+{% endblock %}

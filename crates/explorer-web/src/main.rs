@@ -86,6 +86,7 @@ fn router(config: &Config, state: Arc<AppState>) -> Router {
         .route("/page/{page}", get(html::page_at))
         .route("/block/{id}", get(html::block))
         .route("/tx/{hash}", get(html::transaction))
+        .route("/tx/{hash}/fcmp", get(html::fcmp_proof))
         .route("/mempool", get(html::mempool))
         .route("/altblocks", get(html::alt_blocks))
         .route("/search", get(html::search))
