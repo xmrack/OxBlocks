@@ -4,7 +4,9 @@
 use std::ops::Range;
 use std::sync::{Arc, LazyLock};
 
-use explorer_core::curve_tree::{Group, Output, PathCheck, PlacedPath, place_all};
+use explorer_core::curve_tree::{
+    Group, Output, PathCheck, PlacedPath, place_all, visible_commitment,
+};
 use explorer_core::fmt::decimal;
 use explorer_core::{Cache, ChainError, safe_to_cache_by_height};
 use monerod_rpc::types::{PathLeaf, PathQuery, TxEntry, TxJson, last_locked_block};
@@ -334,8 +336,10 @@ fn outputs(tx: &TxJson, start: usize, unified_ids: &[u64]) -> Vec<Output> {
         explorer_core::hex::decode_to_slice(hex, &mut out).ok()?;
         Some(out)
     }
-    // One commitment an output, or none recorded: a coinbase's, and a
-    // pre-RingCT output's, is not on the chain.
+    // A RingCT output's commitment is on the chain, one an output. A
+    // coinbase's and a pre-RingCT output's amount is in the clear, and the
+    // tree commits to it with a mask of 1.
+    let visible = tx.is_coinbase() || tx.is_v1();
     let commitments = tx
         .rct_signatures
         .as_ref()
@@ -353,7 +357,11 @@ fn outputs(tx: &TxJson, start: usize, unified_ids: &[u64]) -> Vec<Output> {
                     .get(i)
                     .and_then(|o| o.target.public_key())
                     .and_then(bytes),
-                commitment: commitments.and_then(|c| c.get(i)).and_then(|c| bytes(c)),
+                commitment: if visible {
+                    tx.vout.get(i).map(|o| visible_commitment(o.amount))
+                } else {
+                    commitments.and_then(|c| c.get(i)).and_then(|c| bytes(c))
+                },
             }
         })
         .collect()

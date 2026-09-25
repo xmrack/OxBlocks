@@ -188,10 +188,23 @@ pub struct Output {
     /// The one-time key. `None` when the transaction's is not 32 bytes of
     /// hex, which no leaf matches.
     pub key: Option<[u8; 32]>,
-    /// The amount commitment, where the transaction records one. A
-    /// coinbase's, and a pre-RingCT output's, is not recorded, so only the
-    /// key is compared for those.
+    /// The amount commitment: the one the transaction records, or for an
+    /// output whose amount is in the clear, [`visible_commitment`]. `None`
+    /// only when the transaction's are unreadable, and then only the key is
+    /// compared.
     pub commitment: Option<[u8; 32]>,
+}
+
+/// The commitment the tree holds for an output whose amount is in the
+/// clear, a coinbase's or a pre-RingCT one's: the amount committed to with a
+/// mask of 1, `G + amount * H`, as monerod's `zeroCommitVartime` makes it.
+#[must_use]
+pub fn visible_commitment(amount: u64) -> [u8; 32] {
+    let one = monero_ed25519::Scalar::from(curve25519_dalek::Scalar::ONE);
+    monero_ed25519::Commitment::new(one, amount)
+        .commit()
+        .compress()
+        .to_bytes()
 }
 
 impl Output {
@@ -755,6 +768,16 @@ mod tests {
             place(&other_commitment, path, n).check,
             PathCheck::NotTheOutput
         );
+    }
+
+    /// An amount of nothing commits to the base point alone.
+    #[test]
+    fn a_visible_amount_commits_with_a_mask_of_one() {
+        assert_eq!(
+            visible_commitment(0),
+            curve25519_dalek::constants::ED25519_BASEPOINT_COMPRESSED.to_bytes()
+        );
+        assert_ne!(visible_commitment(1), visible_commitment(2));
     }
 
     #[test]

@@ -20,9 +20,10 @@ right edge, which changes the last group of every layer, and with it, sooner
 or later, the upper groups of every path. So a wallet does not fetch a path
 once: it keeps its outputs' paths current as it syncs, holding the tree's
 right edge to do so. It builds them from its own sync, because asking a node
-for a path tells that node which outputs are yours. Looking one up here tells
-this explorer's operator which outputs you looked at, as any lookup on any
-explorer does.</p></div>
+for a path tells that node which outputs are yours; monerod's wallet asks
+only for the outputs of transactions it is told to scan out of order. Looking
+one up here tells this explorer's operator which outputs you looked at, as
+any lookup on any explorer does.</p></div>
 
 <div class="facts"><div class="facts-h">The tree</div><dl>
 <dt>As of block</dt><dd><a href="/block/{{ as_of }}">{{ as_of }}</a>{% if as_of == tip %} <span class="tag">tip</span>{% endif %}</dd>
