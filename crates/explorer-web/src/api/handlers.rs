@@ -276,6 +276,7 @@ pub async fn transaction_paths(
                     PathCheck::Broken { .. } => "broken",
                     PathCheck::Unreadable { .. } => "unreadable",
                     PathCheck::Misshapen => "misshapen",
+                    PathCheck::NotTheOutput => "not_the_output",
                 }),
                 groups: placed
                     .map(|p| {

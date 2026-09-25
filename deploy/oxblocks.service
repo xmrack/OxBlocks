@@ -75,18 +75,17 @@ IPAddressAllow=localhost
 # The caches are bounded, so a figure that keeps rising with an idle explorer
 # means a leak: fail loudly rather than take the host down.
 #
-# Size this against --max-concurrent, because the two are not independent. The
-# fan-out endpoints -- /api/blocks, /api/transactions, /api/transactions/recent
-# -- fetch every transaction in their window before summarising any of it.
-# Measured against a mainnet daemon: one /api/blocks request spanning the full
-# 100 blocks holds about 40 MiB while it runs, and four at once held 172 MiB.
-# At the default --max-concurrent 128 that is several gigabytes, so 512 MiB
-# here means such a burst is killed rather than served.
-#
-# On mainnet, either raise this to roughly 40 MiB per concurrent request you
-# intend to serve, or lower --max-concurrent to match the ceiling you set. On a
-# quiet chain the same request costs a fraction of that and the default is
-# ample. Rate limiting at the reverse proxy is the other half of this.
+# The fan-out endpoints -- /api/blocks, /api/transactions,
+# /api/transactions/recent -- fetch every transaction in their window before
+# summarising any of it. Measured against a mainnet daemon: one /api/blocks
+# request spanning the full 100 blocks holds about 40 MiB while it runs. All
+# such ranges together hold at most 48 MiB of chain data (RANGE_KIB in
+# explorer-core), which is roughly 160 MiB held as hex and JSON; a range that
+# would take more waits for one before it to finish, and is shed by the
+# request timeout if it waits too long. With the caches' 200 MiB that fits
+# the 512 MiB here. The mempool is fetched whole and is not under that
+# budget, so rate limiting at the reverse proxy is still the other half of
+# this.
 #
 # --max-inflight-rpc is the separate ceiling on calls reaching monerod. Lower it
 # if the daemon is shared with a wallet or another consumer; it bounds load on

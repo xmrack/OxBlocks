@@ -268,6 +268,7 @@ fn page(
                 Some(PathCheck::Broken { .. }) => "broken",
                 Some(PathCheck::Unreadable { .. }) => "unreadable",
                 Some(PathCheck::Misshapen) => "misshapen",
+                Some(PathCheck::NotTheOutput) => "not this output's leaf",
             },
         })
         .collect();
@@ -496,7 +497,11 @@ mod tests {
             .answer(&monerod_rpc::epee::read_root(bin, PathQuery::WANTED).unwrap())
             .unwrap();
         let n = answer.n_leaf_tuples;
-        let placed = explorer_core::curve_tree::place_all(&IDS, answer.paths, n);
+        let placed = explorer_core::curve_tree::place_all(
+            &crate::tree_paths::tests::captured_outputs(),
+            answer.paths,
+            n,
+        );
         TxPaths {
             as_of_block: as_of,
             tip: 814,

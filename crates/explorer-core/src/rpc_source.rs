@@ -81,6 +81,9 @@ pub struct RpcChainSource {
     /// waits, and the inbound request timeout eventually sheds it -- queueing
     /// in front of the daemon rather than stampeding it.
     rpc_permits: Arc<Semaphore>,
+    /// The chain bytes that ranges of blocks may hold at once, in KiB. See
+    /// [`RANGE_KIB`].
+    range_kib: Arc<Semaphore>,
     /// Outbound calls made since start.
     ///
     /// The number that matters for load on the operator's node, and not the
@@ -131,6 +134,40 @@ fn classify_block_error(code: i64, id: BlockId, detail: String) -> ChainError {
 /// large calls rather than one enormous one; they are issued together, so the
 /// split costs no extra round trip.
 const MAX_TXS_PER_CALL: usize = 500;
+
+/// The chain bytes, in KiB, that every range of blocks held at once may add
+/// up to: 48 MiB.
+///
+/// A range holds each of its transactions as hex and as JSON, several times
+/// its size on the chain, from the fetch until the caller lets the range go.
+/// The number of blocks in a range bounds none of that when blocks are as
+/// large as the chain allows, and concurrent ranges multiply it. So a range
+/// takes its blocks' sizes, as their headers give them, from this budget
+/// before fetching anything, and waits while the budget is spent. A range
+/// larger than the whole budget takes all of it, and runs alone.
+pub const RANGE_KIB: u32 = 48 * 1024;
+
+/// A range of blocks with their transactions, holding its share of
+/// [`RANGE_KIB`] until it is dropped.
+pub struct BlockRange {
+    blocks: Vec<BlockWithTxs>,
+    _held: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl std::ops::Deref for BlockRange {
+    type Target = [BlockWithTxs];
+    fn deref(&self) -> &[BlockWithTxs] {
+        &self.blocks
+    }
+}
+
+impl<'a> IntoIterator for &'a BlockRange {
+    type Item = &'a BlockWithTxs;
+    type IntoIter = std::slice::Iter<'a, BlockWithTxs>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.blocks.iter()
+    }
+}
 
 /// One block's header and every transaction in it, coinbase first.
 pub struct BlockWithTxs {
@@ -245,6 +282,7 @@ impl RpcChainSource {
             info: Cache::expiring(1, Duration::from_secs(5)),
             tree_sizes: Cache::permanent(4096),
             rpc_permits: Arc::new(Semaphore::new(DEFAULT_MAX_INFLIGHT_RPC)),
+            range_kib: Arc::new(Semaphore::new(RANGE_KIB as usize)),
             rpc_calls: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -705,13 +743,28 @@ impl RpcChainSource {
     /// The headers are not cached, so a range that was served before now costs
     /// one call rather than none. That is the trade for the cold path costing
     /// two instead of two hundred.
+    ///
+    /// The range waits for its blocks' sizes' worth of [`RANGE_KIB`] before
+    /// fetching them, and holds it for as long as the [`BlockRange`] lives.
     pub async fn blocks_in_range(
         &self,
         start: u64,
         end: u64,
         with_tree: bool,
-    ) -> Result<Vec<BlockWithTxs>, ChainError> {
+    ) -> Result<BlockRange, ChainError> {
         let headers = self.headers_range(start, end).await?.headers;
+
+        // The range's share of what ranges may hold at once, taken before any
+        // body or transaction is fetched. See [`RANGE_KIB`].
+        let kib = headers
+            .iter()
+            .map(|h| h.block_size.div_ceil(1024))
+            .fold(0u64, u64::saturating_add);
+        let share = u32::try_from(kib).unwrap_or(u32::MAX).clamp(1, RANGE_KIB);
+        let held = Arc::clone(&self.range_kib)
+            .acquire_many_owned(share)
+            .await
+            .ok();
 
         // A block's body is fetched when it holds transactions, whose hashes
         // only the body lists -- the range cannot be answered without it --
@@ -780,7 +833,7 @@ impl RpcChainSource {
             .filter_map(|e| e.tx_hash.parse::<Hash32>().ok().map(|h| (h, e)))
             .collect();
 
-        Ok(headers
+        let blocks = headers
             .into_iter()
             .zip(wanted)
             .map(|(header, hashes)| BlockWithTxs {
@@ -792,7 +845,11 @@ impl RpcChainSource {
                 header,
                 txs: hashes.iter().filter_map(|h| fetched.remove(h)).collect(),
             })
-            .collect())
+            .collect();
+        Ok(BlockRange {
+            blocks,
+            _held: held,
+        })
     }
 
     /// The tip block's header.
@@ -1953,6 +2010,38 @@ mod tests {
         assert!(source.blocks_by_hash.get(&asked).is_none());
         let sent: Hash32 = format!("{:064x}", 3 + 1_000_000).parse().unwrap();
         assert!(source.blocks_by_hash.get(&sent).is_none());
+    }
+
+    /// A range holds its blocks' sizes of the budget ranges share for as
+    /// long as it lives, and waits while the budget is spent.
+    #[tokio::test]
+    async fn a_range_holds_its_share_of_the_budget_and_waits_for_it() {
+        let chain = Chain { tip: 9, fork: 0 };
+        let daemon = chain.daemon(&[], None);
+        let source = daemon.source();
+        let all = RANGE_KIB as usize;
+
+        // Ten blocks of 100 bytes: a KiB each.
+        let blocks = source.blocks_in_range(0, 9, false).await.unwrap();
+        assert_eq!(blocks.len(), 10);
+        assert_eq!(source.range_kib.available_permits(), all - 10);
+        drop(blocks);
+        assert_eq!(source.range_kib.available_permits(), all);
+
+        // With the budget spent, a range waits rather than fetching.
+        let spent = Arc::clone(&source.range_kib)
+            .acquire_many_owned(RANGE_KIB)
+            .await
+            .unwrap();
+        let waiting = tokio::time::timeout(
+            Duration::from_millis(200),
+            source.blocks_in_range(0, 9, false),
+        )
+        .await;
+        assert!(waiting.is_err(), "the range ran with the budget spent");
+        drop(spent);
+        let blocks = source.blocks_in_range(0, 9, false).await.unwrap();
+        assert_eq!(blocks.len(), 10);
     }
 
     /// Without the tree the same range fetches no bodies at all.

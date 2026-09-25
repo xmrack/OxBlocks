@@ -276,7 +276,9 @@ with the groups they share, draws them over the tree, and says what a wallet
 would store for them.
 
 The same endpoint gives the paths. oxblocks asks for up to 50 outputs a call,
-the most a restricted node answers. It then recomputes every hash from the
+the most a restricted node answers. It first checks that the leaf each path
+climbs from is the output: its key, and its commitment where the transaction
+records one, are the transaction's. It then recomputes every hash from the
 leaves up: it derives each leaf from the output's key and commitment, hashes
 each group on its curve, and checks that each hash is the member of the layer
 above that the path names. The last hash must be the root recorded by the

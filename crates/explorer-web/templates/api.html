@@ -284,7 +284,9 @@
     that block on. An output in the tree also carries its
     <code class="lit">leaf_idx</code>, its <code class="lit">check</code>
     (<code class="lit">holds</code>, <code class="lit">broken</code>,
-    <code class="lit">unreadable</code> or <code class="lit">misshapen</code>),
+    <code class="lit">unreadable</code>, <code class="lit">misshapen</code> or
+    <code class="lit">not_the_output</code>, for a path whose leaf is not the
+    output's key and commitment as its transaction records them),
     and its <code class="lit">groups</code>, from the leaves to the root. Each
     group gives its <code class="lit">layer</code>, <code class="lit">curve</code>,
     <code class="lit">layer_size</code>, its first member's place in the layer

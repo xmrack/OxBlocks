@@ -4,7 +4,7 @@
 use std::ops::Range;
 use std::sync::{Arc, LazyLock};
 
-use explorer_core::curve_tree::{Group, PathCheck, PlacedPath, place_all};
+use explorer_core::curve_tree::{Group, Output, PathCheck, PlacedPath, place_all};
 use explorer_core::fmt::decimal;
 use explorer_core::{Cache, ChainError, safe_to_cache_by_height};
 use monerod_rpc::types::{PathLeaf, PathQuery, TxEntry, TxJson, last_locked_block};
@@ -56,8 +56,12 @@ impl PathCache {
         self.0.stats()
     }
 
-    fn get(&self, as_of_block: u64, unified_id: u64) -> Option<Arc<Checked>> {
-        self.0.get(&(as_of_block, unified_id))
+    /// `output`'s path as of `as_of_block`, if one was kept and it climbs
+    /// from `output` as its transaction records it now.
+    fn get(&self, as_of_block: u64, output: &Output) -> Option<Arc<Checked>> {
+        self.0
+            .get(&(as_of_block, output.unified_id))
+            .filter(|c| c.placed.leaf().is_some_and(|l| output.is(l)))
     }
 
     /// Keep `placed`, as of `as_of_block`, if it leads to `root`.
@@ -251,7 +255,7 @@ pub async fn gather(
         .min(ids.len())
         .min(start.saturating_add(MAX_OUTPUTS));
     let wanted = match ids.get(start..end) {
-        Some(w) if !w.is_empty() => w.to_vec(),
+        Some(w) if !w.is_empty() => outputs(tx, start, w),
         _ => {
             return Err(PathsError::NoSuchOutputs {
                 from: start,
@@ -264,24 +268,21 @@ pub async fn gather(
     let buried = safe_to_cache_by_height(tip.saturating_sub(as_of_block));
     let known: Vec<Option<Arc<Checked>>> = wanted
         .iter()
-        .map(|&id| buried.then(|| state.paths.get(as_of_block, id)).flatten())
+        .map(|o| buried.then(|| state.paths.get(as_of_block, o)).flatten())
         .collect();
-    let missing: Vec<u64> = wanted
+    let missing: Vec<Output> = wanted
         .iter()
         .zip(&known)
         .filter(|(_, k)| k.is_none())
-        .map(|(&id, _)| id)
+        .map(|(o, _)| *o)
         .collect();
 
     let fetch = async {
         if missing.is_empty() {
             return Ok(None);
         }
-        state
-            .chain
-            .tree_paths(as_of_block, &missing)
-            .await
-            .map(Some)
+        let ids: Vec<u64> = missing.iter().map(|o| o.unified_id).collect();
+        state.chain.tree_paths(as_of_block, &ids).await.map(Some)
     };
     let (answer, root_block) = tokio::join!(fetch, state.chain.proof_root(as_of_block));
     let answer = answer.map_err(PathsError::Chain)?;
@@ -310,9 +311,9 @@ pub async fn gather(
     let outputs = placed
         .zip(wanted)
         .enumerate()
-        .map(|(k, (placed, unified_id))| OutputPath {
+        .map(|(k, (placed, output))| OutputPath {
             index: start + k,
-            unified_id,
+            unified_id: output.unified_id,
             last_locked_block: locked,
             placed,
         })
@@ -326,14 +327,46 @@ pub async fn gather(
     })
 }
 
-/// Place and check `paths`, the paths of `unified_ids`.
+/// The outputs `start..` of `tx`, with `unified_ids`, as `tx` records them.
+fn outputs(tx: &TxJson, start: usize, unified_ids: &[u64]) -> Vec<Output> {
+    fn bytes(hex: &str) -> Option<[u8; 32]> {
+        let mut out = [0u8; 32];
+        explorer_core::hex::decode_to_slice(hex, &mut out).ok()?;
+        Some(out)
+    }
+    // One commitment an output, or none recorded: a coinbase's, and a
+    // pre-RingCT output's, is not on the chain.
+    let commitments = tx
+        .rct_signatures
+        .as_ref()
+        .and_then(|r| r.out_pk.as_deref())
+        .filter(|pk| pk.len() == tx.vout.len());
+    unified_ids
+        .iter()
+        .enumerate()
+        .map(|(k, &unified_id)| {
+            let i = start.saturating_add(k);
+            Output {
+                unified_id,
+                key: tx
+                    .vout
+                    .get(i)
+                    .and_then(|o| o.target.public_key())
+                    .and_then(bytes),
+                commitment: commitments.and_then(|c| c.get(i)).and_then(|c| bytes(c)),
+            }
+        })
+        .collect()
+}
+
+/// Place and check `paths`, the paths of `outputs`.
 ///
 /// Checking a path is CPU work, a few milliseconds a group of leaves, so it
 /// is kept off the threads serving other requests. The permit travels with
 /// the work and is given back when the work ends, not when a timed-out
 /// request stops waiting for it.
 async fn check(
-    unified_ids: Vec<u64>,
+    outputs: Vec<Output>,
     paths: Vec<Option<monerod_rpc::types::TreePath>>,
     n_leaf_tuples: u64,
 ) -> Result<Vec<Option<PlacedPath>>, PathsError> {
@@ -348,7 +381,7 @@ async fn check(
         .await
         .map_err(|e| stopped(format!("no checking slot: {e}")))?;
     tokio::task::spawn_blocking(move || {
-        let placed = place_all(&unified_ids, paths, n_leaf_tuples);
+        let placed = place_all(&outputs, paths, n_leaf_tuples);
         drop(permit);
         placed
     })
@@ -357,7 +390,7 @@ async fn check(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
     use super::*;
@@ -370,6 +403,16 @@ mod tests {
         }
     }
 
+    /// The captured transaction's outputs, as [`gather`] reads them.
+    pub(crate) fn captured_outputs() -> Vec<Output> {
+        let raw = include_str!("../../../fixtures/fcmp/paths/get_transactions.json");
+        let answer: monerod_rpc::types::GetTransactionsResponse =
+            serde_json::from_str(raw).unwrap();
+        let entry = &answer.txs[0];
+        let tx = entry.parse_json().unwrap();
+        outputs(&tx, 0, entry.unified_ids_per_output(tx.vout.len()).unwrap())
+    }
+
     /// The captured transaction's paths as of block 814, placed, with the
     /// root block 806 records.
     fn captured() -> (u64, Vec<PlacedPath>, &'static str) {
@@ -380,7 +423,7 @@ mod tests {
             .answer(&monerod_rpc::epee::read_root(bin, PathQuery::WANTED).unwrap())
             .unwrap();
         let n = answer.n_leaf_tuples;
-        let placed = place_all(&IDS, answer.paths, n)
+        let placed = place_all(&captured_outputs(), answer.paths, n)
             .into_iter()
             .flatten()
             .collect();
@@ -394,13 +437,21 @@ mod tests {
     #[test]
     fn only_a_path_that_leads_to_its_blocks_root_is_kept() {
         let (n, placed, root) = captured();
+        let outputs = captured_outputs();
         let cache = PathCache::default();
+        assert!(placed.iter().all(|p| p.check == PathCheck::Holds));
 
         cache.keep(814, n, &placed[0], Some(root));
-        let kept = cache.get(814, placed[0].unified_id).unwrap();
+        let kept = cache.get(814, &outputs[0]).unwrap();
         assert_eq!((kept.n_leaf_tuples, &kept.placed), (n, &placed[0]));
         // Kept as of that block only.
-        assert!(cache.get(815, placed[0].unified_id).is_none());
+        assert!(cache.get(815, &outputs[0]).is_none());
+        // And given only for the output it climbs from.
+        let other_key = Output {
+            key: outputs[1].key,
+            ..outputs[0]
+        };
+        assert!(cache.get(814, &other_key).is_none());
 
         // Not without a root to compare with, nor with another root.
         cache.keep(814, n, &placed[1], None);
@@ -409,8 +460,8 @@ mod tests {
         let mut broken = placed[3].clone();
         broken.check = PathCheck::Broken { layer: 0 };
         cache.keep(814, n, &broken, Some(root));
-        for p in &placed[1..] {
-            assert!(cache.get(814, p.unified_id).is_none());
+        for o in &outputs[1..] {
+            assert!(cache.get(814, o).is_none());
         }
         assert_eq!(cache.stats().len, 1);
     }

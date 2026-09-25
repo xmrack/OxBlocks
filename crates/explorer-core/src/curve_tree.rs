@@ -171,6 +171,37 @@ pub enum PathCheck {
     /// The path does not have the shape a path to this leaf in a tree of
     /// this size has.
     Misshapen,
+    /// The leaf the path climbs from is not the output's: its key, or its
+    /// commitment, is not the one the output's transaction records.
+    NotTheOutput,
+}
+
+/// An output as its transaction records it: what the leaf its path climbs
+/// from must hold.
+///
+/// The hashes tie a path to the tree, not to an output: a path to another
+/// leaf hashes up to the same root. The unified id the daemon labels a leaf
+/// with is not hashed either. So the leaf is compared with the output itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Output {
+    pub unified_id: u64,
+    /// The one-time key. `None` when the transaction's is not 32 bytes of
+    /// hex, which no leaf matches.
+    pub key: Option<[u8; 32]>,
+    /// The amount commitment, where the transaction records one. A
+    /// coinbase's, and a pre-RingCT output's, is not recorded, so only the
+    /// key is compared for those.
+    pub commitment: Option<[u8; 32]>,
+}
+
+impl Output {
+    /// Whether `leaf` is this output's.
+    #[must_use]
+    pub fn is(&self, leaf: &PathLeaf) -> bool {
+        leaf.unified_id == self.unified_id
+            && self.key == Some(leaf.output_key)
+            && self.commitment.is_none_or(|c| c == leaf.commitment)
+    }
 }
 
 /// An output's path, placed in the tree and checked.
@@ -185,6 +216,14 @@ pub struct PlacedPath {
 }
 
 impl PlacedPath {
+    /// The leaf the path climbs from, where the path has the shape to name
+    /// one.
+    #[must_use]
+    pub fn leaf(&self) -> Option<&PathLeaf> {
+        let offset = usize::try_from(self.groups.first()?.offset()).ok()?;
+        self.path.leaves.get(offset)
+    }
+
     /// The root the path leads to, as the daemon sent it. Whether the path's
     /// hashes lead there is [`Self::check`].
     #[must_use]
@@ -203,33 +242,33 @@ impl PlacedPath {
     }
 }
 
-/// Place and check the path the daemon sent for output `unified_id`, in a
-/// tree of `n_leaf_tuples` leaves.
+/// Place and check the path the daemon sent for `output`, in a tree of
+/// `n_leaf_tuples` leaves.
 ///
 /// This costs a hash per layer and a point decompression and a hash to a
 /// point per leaf in the output's group: a few milliseconds, all of it CPU.
 #[must_use]
-pub fn place(unified_id: u64, path: TreePath, n_leaf_tuples: u64) -> PlacedPath {
-    Hashes::default().place(unified_id, path, n_leaf_tuples)
+pub fn place(output: &Output, path: TreePath, n_leaf_tuples: u64) -> PlacedPath {
+    Hashes::default().place(output, path, n_leaf_tuples)
 }
 
 /// Place and check every path of one answer, `paths[i]` being the path of
-/// `unified_ids[i]`.
+/// `outputs[i]`.
 ///
 /// A transaction's outputs usually share their groups, so each distinct
 /// group is hashed once. Groups are told apart by their contents, not their
 /// place, so two paths that disagree about a group are each checked.
 #[must_use]
 pub fn place_all(
-    unified_ids: &[u64],
+    outputs: &[Output],
     paths: Vec<Option<TreePath>>,
     n_leaf_tuples: u64,
 ) -> Vec<Option<PlacedPath>> {
     let mut hashes = Hashes::default();
     paths
         .into_iter()
-        .zip(unified_ids)
-        .map(|(p, &id)| p.map(|p| hashes.place(id, p, n_leaf_tuples)))
+        .zip(outputs)
+        .map(|(p, output)| p.map(|p| hashes.place(output, p, n_leaf_tuples)))
         .collect()
 }
 
@@ -240,11 +279,11 @@ pub fn place_all(
 struct Hashes(std::collections::HashMap<(usize, Vec<u8>), Option<[u8; 32]>>);
 
 impl Hashes {
-    fn place(&mut self, unified_id: u64, path: TreePath, n_leaf_tuples: u64) -> PlacedPath {
+    fn place(&mut self, output: &Output, path: TreePath, n_leaf_tuples: u64) -> PlacedPath {
         let groups = path_groups(n_leaf_tuples, path.leaf_idx);
-        let check = self.check(&path, &groups, unified_id);
+        let check = self.check(&path, &groups, output);
         PlacedPath {
-            unified_id,
+            unified_id: output.unified_id,
             path,
             groups,
             check,
@@ -260,7 +299,7 @@ impl Hashes {
         *self.0.entry((layer, key)).or_insert_with(hash)
     }
 
-    fn check(&mut self, path: &TreePath, groups: &[Group], unified_id: u64) -> PathCheck {
+    fn check(&mut self, path: &TreePath, groups: &[Group], output: &Output) -> PathCheck {
         let Some((leaves, layers)) = groups.split_first() else {
             return PathCheck::Misshapen;
         };
@@ -269,13 +308,18 @@ impl Hashes {
             && layers
                 .iter()
                 .zip(&path.layers)
-                .all(|(g, members)| usize::try_from(g.len).ok() == Some(members.len()))
-            && path
-                .leaves
-                .get(usize::try_from(leaves.offset()).unwrap_or(usize::MAX))
-                .is_some_and(|l| l.unified_id == unified_id);
+                .all(|(g, members)| usize::try_from(g.len).ok() == Some(members.len()));
         if !shaped {
             return PathCheck::Misshapen;
+        }
+        let leaf = path
+            .leaves
+            .get(usize::try_from(leaves.offset()).unwrap_or(usize::MAX));
+        match leaf {
+            None => return PathCheck::Misshapen,
+            Some(l) if l.unified_id != output.unified_id => return PathCheck::Misshapen,
+            Some(l) if !output.is(l) => return PathCheck::NotTheOutput,
+            Some(_) => {}
         }
 
         // Layer 0 to 1: the leaves, hashed on Selene.
@@ -467,6 +511,17 @@ mod tests {
         q.answer(&root).unwrap()
     }
 
+    /// Output `id` as the leaf labelled with it in `path` has it, for tests
+    /// of the hashing rather than of the match with a transaction.
+    fn own(id: u64, path: &TreePath) -> Output {
+        let leaf = path.leaves.iter().find(|l| l.unified_id == id);
+        Output {
+            unified_id: id,
+            key: leaf.map(|l| l.output_key),
+            commitment: leaf.map(|l| l.commitment),
+        }
+    }
+
     /// The root a block records, as bytes.
     fn block_root(name: &str) -> [u8; 32] {
         let v: serde_json::Value =
@@ -506,7 +561,8 @@ mod tests {
             let answer = paths(bin, as_of, ids);
             let expected = block_root(block);
             for (path, &id) in answer.paths.into_iter().zip(ids) {
-                let placed = place(id, path.unwrap(), answer.n_leaf_tuples);
+                let path = path.unwrap();
+                let placed = place(&own(id, &path), path, answer.n_leaf_tuples);
                 assert_eq!(placed.check, PathCheck::Holds, "{bin} output {id}");
                 assert_eq!(placed.root(), Some(&expected), "{bin} output {id}");
             }
@@ -522,7 +578,7 @@ mod tests {
         let path = answer.paths[0].clone().unwrap();
         assert_eq!(path.leaves[0].kind, LeafKind::Legacy);
         assert_eq!(
-            place(10, path, answer.n_leaf_tuples).check,
+            place(&own(10, &path), path, answer.n_leaf_tuples).check,
             PathCheck::Holds
         );
     }
@@ -534,33 +590,37 @@ mod tests {
         let answer = paths("get_path_by_unified_id_old.bin", 814, &[10, 60]);
         let good = answer.paths[0].clone().unwrap();
         let n = answer.n_leaf_tuples;
+        let ten = own(10, &good);
 
         // A different leaf in the output's group: the leaves no longer hash
         // to their parent.
         let mut p = good.clone();
         p.leaves.swap(3, 4);
-        assert_eq!(place(10, p, n).check, PathCheck::Broken { layer: 0 });
+        assert_eq!(place(&ten, p, n).check, PathCheck::Broken { layer: 0 });
 
         // A sibling in layer 1 swapped for the ancestor's neighbour's value:
         // layer 1 no longer hashes to layer 2.
         let mut p = good.clone();
         p.layers[0].swap(5, 6);
-        assert_eq!(place(10, p, n).check, PathCheck::Broken { layer: 1 });
+        assert_eq!(place(&ten, p, n).check, PathCheck::Broken { layer: 1 });
 
         // A root the path does not lead to.
         let mut p = good.clone();
         p.layers[2][0] = p.layers[1][1];
-        assert_eq!(place(10, p, n).check, PathCheck::Broken { layer: 2 });
+        assert_eq!(place(&ten, p, n).check, PathCheck::Broken { layer: 2 });
 
         // Not a point at all.
         let mut p = good.clone();
         p.layers[1][1] = [0xff; 32];
-        assert_eq!(place(10, p, n).check, PathCheck::Unreadable { layer: 2 });
+        assert_eq!(place(&ten, p, n).check, PathCheck::Unreadable { layer: 2 });
 
         // A path for a different leaf than the one asked about.
-        assert_eq!(place(11, good.clone(), n).check, PathCheck::Misshapen);
+        assert_eq!(
+            place(&own(11, &good), good.clone(), n).check,
+            PathCheck::Misshapen
+        );
         // Or for a tree of another size.
-        assert_eq!(place(10, good, n + 38 * 18).check, PathCheck::Misshapen);
+        assert_eq!(place(&ten, good, n + 38 * 18).check, PathCheck::Misshapen);
     }
 
     /// One answer's paths, placed together, come out as they do placed one
@@ -568,9 +628,13 @@ mod tests {
     #[test]
     fn paths_placed_together_are_each_checked() {
         let answer = paths("get_path_by_unified_id_tip.bin", 811, &[802, 803, 804, 805]);
-        let ids = [802, 803, 804, 805];
+        let ids: Vec<Output> = [802, 803, 804, 805]
+            .into_iter()
+            .zip(&answer.paths)
+            .map(|(id, p)| own(id, p.as_ref().unwrap()))
+            .collect();
         let together = place_all(&ids, answer.paths.clone(), answer.n_leaf_tuples);
-        for ((t, p), &id) in together.iter().zip(&answer.paths).zip(&ids) {
+        for ((t, p), id) in together.iter().zip(&answer.paths).zip(&ids) {
             let alone = place(id, p.clone().unwrap(), answer.n_leaf_tuples);
             assert_eq!(t.as_ref(), Some(&alone));
             assert_eq!(alone.check, PathCheck::Holds);
@@ -610,9 +674,87 @@ mod tests {
             }],
             layers: vec![vec![t, h], vec![hash_layer(1, &[t, h]).unwrap()]],
         };
-        let placed = place_all(&[first, 7], vec![Some(honest), Some(forged)], 39);
+        let outputs = [own(first, &honest), own(7, &forged)];
+        let placed = place_all(&outputs, vec![Some(honest), Some(forged)], 39);
         assert_eq!(placed[0].as_ref().unwrap().check, PathCheck::Holds);
         assert_ne!(placed[1].as_ref().unwrap().check, PathCheck::Holds);
+    }
+
+    /// The outputs of the captured transaction, as it records them.
+    fn captured_outputs() -> Vec<Output> {
+        let v: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(fixture("get_transactions.json")).unwrap())
+                .unwrap();
+        let entry = &v["txs"][0];
+        let tx: serde_json::Value =
+            serde_json::from_str(entry["as_json"].as_str().unwrap()).unwrap();
+        let bytes = |hex: &str| {
+            let mut out = [0u8; 32];
+            crate::hex::decode_to_slice(hex, &mut out).unwrap();
+            out
+        };
+        tx["vout"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(tx["rct_signatures"]["outPk"].as_array().unwrap())
+            .zip(entry["unified_ids"].as_array().unwrap())
+            .map(|((out, pk), id)| Output {
+                unified_id: id.as_u64().unwrap(),
+                key: Some(bytes(out["target"]["carrot_v1"]["key"].as_str().unwrap())),
+                commitment: Some(bytes(pk.as_str().unwrap())),
+            })
+            .collect()
+    }
+
+    /// Each path's leaf is its output as the transaction records it, and a
+    /// path that climbs from another leaf is caught although its hashes
+    /// hold: the daemon's label on a leaf is not hashed.
+    #[test]
+    fn a_path_must_climb_from_its_own_output() {
+        let outputs = captured_outputs();
+        let ids: Vec<u64> = outputs.iter().map(|o| o.unified_id).collect();
+        let answer = paths("get_path_by_unified_id_later.bin", 814, &ids);
+        let n = answer.n_leaf_tuples;
+        let placed = place_all(&outputs, answer.paths.clone(), n);
+        for p in &placed {
+            assert_eq!(p.as_ref().unwrap().check, PathCheck::Holds);
+        }
+
+        // The next output's real path, with its leaf labelled as this one.
+        let mut next = answer.paths[1].clone().unwrap();
+        for leaf in &mut next.leaves {
+            if leaf.unified_id == ids[1] {
+                leaf.unified_id = ids[0];
+            } else if leaf.unified_id == ids[0] {
+                leaf.unified_id = u64::MAX;
+            }
+        }
+        let wrong = place(&outputs[0], next.clone(), n);
+        assert_eq!(wrong.check, PathCheck::NotTheOutput);
+        // As its own output, the same path holds: only the match is wrong.
+        let relabelled = Output {
+            unified_id: ids[0],
+            ..outputs[1]
+        };
+        assert_eq!(place(&relabelled, next, n).check, PathCheck::Holds);
+
+        // The key alone is compared where the transaction records no
+        // commitment; a commitment it does record must match too.
+        let path = answer.paths[0].clone().unwrap();
+        let key_only = Output {
+            commitment: None,
+            ..outputs[0]
+        };
+        assert_eq!(place(&key_only, path.clone(), n).check, PathCheck::Holds);
+        let other_commitment = Output {
+            commitment: outputs[1].commitment,
+            ..outputs[0]
+        };
+        assert_eq!(
+            place(&other_commitment, path, n).check,
+            PathCheck::NotTheOutput
+        );
     }
 
     #[test]
