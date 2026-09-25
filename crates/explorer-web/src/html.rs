@@ -357,7 +357,6 @@ struct TreeFunnel {
     root: Option<String>,
     root_x: u32,
     root_y: u32,
-    root_anchor: &'static str,
     /// Where each row's count sits: at the right beside the bars, or over the
     /// middle of its bar when the label is above it.
     count_x: u32,
@@ -369,7 +368,8 @@ struct TreeFunnel {
 struct FunnelRow {
     name: String,
     curve: Option<&'static str>,
-    count: String,
+    /// `None` on the root when its hash is shown: there is always one.
+    count: Option<String>,
     class: &'static str,
     x: u32,
     y: u32,
@@ -402,7 +402,7 @@ struct FunnelLayout {
     top: u32,
     row: u32,
     /// Labels sit on the bar's line, or above it. Above, the count goes over
-    /// the middle of the bar and the root's hash moves to the right.
+    /// the middle of the bar.
     above: bool,
 }
 
@@ -476,7 +476,7 @@ fn tree_funnel(leaves: u64, root: Option<&str>, layout: &FunnelLayout) -> Option
             FunnelRow {
                 name,
                 curve,
-                count: grouped(count),
+                count: (i > 0 || root.is_none()).then(|| grouped(count)),
                 class,
                 x,
                 y,
@@ -509,9 +509,8 @@ fn tree_funnel(leaves: u64, root: Option<&str>, layout: &FunnelLayout) -> Option
         class: layout.class,
         width: layout.width,
         height: rows.last().map_or(0, |r| r.y) + FUNNEL_BAR + 6,
-        root_x: if layout.above { layout.width } else { centre },
+        root_x: centre,
         root_y: rows.first().map_or(0, |r| r.label_y.min(r.y - 3)),
-        root_anchor: if layout.above { "end" } else { "middle" },
         count_x: if layout.above { centre } else { layout.width },
         count_anchor: if layout.above { "middle" } else { "end" },
         rows,
@@ -3655,18 +3654,18 @@ mod tests {
         let rows: Vec<_> = t
             .rows
             .iter()
-            .map(|r| (r.name.as_str(), r.curve, r.count.as_str(), r.width))
+            .map(|r| (r.name.as_str(), r.curve, r.count.as_deref(), r.width))
             .collect();
         assert_eq!(
             rows,
             [
-                ("Root", Some("Helios"), "1", FUNNEL_MIN_BAR),
-                ("Layer 5", Some("Selene"), "9", 67),
-                ("Layer 4", Some("Helios"), "325", 160),
-                ("Layer 3", Some("Selene"), "5,848", 236),
-                ("Layer 2", Some("Helios"), "222,223", 330),
-                ("Layer 1", Some("Selene"), "4,000,000", 405),
-                ("Outputs", None, "152,000,000", FUNNEL_SPAN),
+                ("Root", Some("Helios"), Some("1"), FUNNEL_MIN_BAR),
+                ("Layer 5", Some("Selene"), Some("9"), 67),
+                ("Layer 4", Some("Helios"), Some("325"), 160),
+                ("Layer 3", Some("Selene"), Some("5,848"), 236),
+                ("Layer 2", Some("Helios"), Some("222,223"), 330),
+                ("Layer 1", Some("Selene"), Some("4,000,000"), 405),
+                ("Outputs", None, Some("152,000,000"), FUNNEL_SPAN),
             ]
         );
         assert_eq!(t.layers, 6);
@@ -3728,10 +3727,11 @@ mod tests {
         );
         assert_eq!(t.webs, ["155,44 165,44 320,74 0,74"]);
         assert_eq!(
-            (t.count_x, t.count_anchor, t.root_x, t.root_anchor),
-            (160, "middle", 320, "end"),
-            "the counts go over the bars and the root's hash to the right"
+            (t.count_x, t.count_anchor, t.root_x),
+            (160, "middle", 160),
+            "the counts go over the bars, and the root's hash takes the root's"
         );
+        assert_eq!(t.rows[0].count, None, "the hash stands in for the root's 1");
         assert_eq!(t.rows[1].cuts.first(), Some(&(320 / 22)));
 
         let wide = tree_funnel(22, None, &WIDE_FUNNEL).expect("a tree");
@@ -3739,14 +3739,11 @@ mod tests {
             (wide.class, wide.width, wide.root_x, wide.root_y),
             ("wide", 760, 400, 11)
         );
+        assert_eq!((wide.count_x, wide.count_anchor), (760, "end"));
         assert_eq!(
-            (
-                wide.count_x,
-                wide.count_anchor,
-                wide.root_x,
-                wide.root_anchor
-            ),
-            (760, "end", 400, "middle")
+            wide.rows[0].count.as_deref(),
+            Some("1"),
+            "without a hash, the root is counted"
         );
         assert_eq!(wide.rows[0].label_y, 26);
     }
