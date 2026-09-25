@@ -412,7 +412,7 @@ const NARROW_FUNNEL: FunnelLayout = FunnelLayout {
     left: 0,
     right: 0,
     top: 30,
-    row: 40,
+    row: 44,
     above: true,
 };
 
@@ -465,7 +465,7 @@ fn tree_funnel(leaves: u64, root: Option<&str>, layout: &FunnelLayout) -> Option
                 class,
                 x,
                 y,
-                label_y: if layout.above { y - 5 } else { y + 12 },
+                label_y: if layout.above { y - 8 } else { y + 12 },
                 width,
                 cuts,
             }
@@ -3701,13 +3701,13 @@ mod tests {
             .collect();
         assert_eq!(
             rows,
-            [("Root", 155, 30, 25, 10), ("Outputs", 0, 70, 65, 320)]
+            [("Root", 155, 30, 22, 10), ("Outputs", 0, 74, 66, 320)]
         );
         assert_eq!(
             (t.class, t.width, t.centre, t.height, t.root_y),
-            ("narrow", 320, 160, 90, 25)
+            ("narrow", 320, 160, 94, 22)
         );
-        assert_eq!(t.webs, ["155,44 165,44 320,70 0,70"]);
+        assert_eq!(t.webs, ["155,44 165,44 320,74 0,74"]);
         assert_eq!(t.rows[1].cuts.first(), Some(&(320 / 22)));
 
         let wide = tree_funnel(22, None, &WIDE_FUNNEL).expect("a tree");
@@ -3732,7 +3732,7 @@ mod tests {
             1
         );
         assert_eq!(
-            html.matches(r#"<svg class="funnel narrow" viewBox="0 0 320 90""#)
+            html.matches(r#"<svg class="funnel narrow" viewBox="0 0 320 94""#)
                 .count(),
             1
         );
