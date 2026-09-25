@@ -350,13 +350,18 @@ struct TreeFunnel {
     class: &'static str,
     width: u32,
     height: u32,
-    centre: u32,
     rows: Vec<FunnelRow>,
     /// The band joining each bar to the one below it, as polygon points.
     webs: Vec<String>,
     /// The root the proof was checked against, abbreviated.
     root: Option<String>,
+    root_x: u32,
     root_y: u32,
+    root_anchor: &'static str,
+    /// Where each row's count sits: at the right beside the bars, or over the
+    /// middle of its bar when the label is above it.
+    count_x: u32,
+    count_anchor: &'static str,
     leaves: String,
     layers: usize,
 }
@@ -372,6 +377,9 @@ struct FunnelRow {
     width: u32,
     /// Boundaries between nodes, drawn where a layer is narrow enough to count.
     cuts: Vec<u32>,
+    /// Too many nodes to draw their boundaries: the bar is textured at the
+    /// closest spacing a boundary would have instead.
+    grain: bool,
 }
 
 /// Labels take the left of the strip's width and counts the right.
@@ -381,6 +389,9 @@ const FUNNEL_TOP: u32 = 14;
 const FUNNEL_ROW: u32 = 30;
 const FUNNEL_BAR: u32 = 14;
 const FUNNEL_MIN_BAR: u32 = 10;
+/// The closest two node boundaries are drawn, and the spacing of the texture
+/// on a layer with more nodes than that allows.
+const FUNNEL_CUT_GAP: u32 = 4;
 
 /// Where a funnel's labels, counts and bars go.
 struct FunnelLayout {
@@ -390,7 +401,8 @@ struct FunnelLayout {
     right: u32,
     top: u32,
     row: u32,
-    /// Labels sit on the bar's line, or above it.
+    /// Labels sit on the bar's line, or above it. Above, the count goes over
+    /// the middle of the bar and the root's hash moves to the right.
     above: bool,
 }
 
@@ -454,9 +466,12 @@ fn tree_funnel(leaves: u64, root: Option<&str>, layout: &FunnelLayout) -> Option
                 _ if layer == 0 => ("Outputs".to_owned(), "leaf"),
                 _ => (format!("Layer {layer}"), "node"),
             };
-            let cuts = match u32::try_from(count) {
-                Ok(n) if n <= width / 4 => (1..n).map(|k| x + width * k / n).collect(),
-                _ => Vec::new(),
+            let countable = u32::try_from(count)
+                .ok()
+                .filter(|&n| n <= width / FUNNEL_CUT_GAP);
+            let cuts = match countable {
+                Some(n) => (1..n).map(|k| x + width * k / n).collect(),
+                None => Vec::new(),
             };
             FunnelRow {
                 name,
@@ -468,6 +483,7 @@ fn tree_funnel(leaves: u64, root: Option<&str>, layout: &FunnelLayout) -> Option
                 label_y: if layout.above { y - 8 } else { y + 12 },
                 width,
                 cuts,
+                grain: countable.is_none(),
             }
         })
         .collect();
@@ -493,8 +509,11 @@ fn tree_funnel(leaves: u64, root: Option<&str>, layout: &FunnelLayout) -> Option
         class: layout.class,
         width: layout.width,
         height: rows.last().map_or(0, |r| r.y) + FUNNEL_BAR + 6,
-        centre,
+        root_x: if layout.above { layout.width } else { centre },
         root_y: rows.first().map_or(0, |r| r.label_y.min(r.y - 3)),
+        root_anchor: if layout.above { "end" } else { "middle" },
+        count_x: if layout.above { centre } else { layout.width },
+        count_anchor: if layout.above { "middle" } else { "end" },
         rows,
         webs,
         root: root.and_then(|r| r.get(..16)).map(|r| format!("{r}…")),
@@ -3704,16 +3723,30 @@ mod tests {
             [("Root", 155, 30, 22, 10), ("Outputs", 0, 74, 66, 320)]
         );
         assert_eq!(
-            (t.class, t.width, t.centre, t.height, t.root_y),
+            (t.class, t.width, t.count_x, t.height, t.root_y),
             ("narrow", 320, 160, 94, 22)
         );
         assert_eq!(t.webs, ["155,44 165,44 320,74 0,74"]);
+        assert_eq!(
+            (t.count_x, t.count_anchor, t.root_x, t.root_anchor),
+            (160, "middle", 320, "end"),
+            "the counts go over the bars and the root's hash to the right"
+        );
         assert_eq!(t.rows[1].cuts.first(), Some(&(320 / 22)));
 
         let wide = tree_funnel(22, None, &WIDE_FUNNEL).expect("a tree");
         assert_eq!(
-            (wide.class, wide.width, wide.centre, wide.root_y),
+            (wide.class, wide.width, wide.root_x, wide.root_y),
             ("wide", 760, 400, 11)
+        );
+        assert_eq!(
+            (
+                wide.count_x,
+                wide.count_anchor,
+                wide.root_x,
+                wide.root_anchor
+            ),
+            (760, "end", 400, "middle")
         );
         assert_eq!(wide.rows[0].label_y, 26);
     }
@@ -3770,6 +3803,38 @@ mod tests {
                 .contains("curve-tree")
         );
         assert!(!tx_page().render().expect("renders").contains("curve-tree"));
+    }
+
+    /// A mainnet-sized tree stays one bar per layer. A layer too dense to
+    /// divide into its nodes is striped instead, so no bar draws more than
+    /// its width allows however many outputs the tree holds.
+    #[test]
+    fn a_mainnet_sized_tree_stripes_the_layers_too_dense_to_divide() {
+        let [wide, narrow] = tree_picture(152_318_407, None).expect("a tree");
+        for t in [&wide, &narrow] {
+            assert_eq!(t.rows.len(), 7, "six layers and the outputs");
+            let root = t.rows.first().expect("a root");
+            assert!(root.cuts.is_empty() && !root.grain);
+            let layer5 = t.rows.get(1).expect("layer 5");
+            assert_eq!((layer5.cuts.len(), layer5.grain), (8, false), "9 nodes fit");
+            for r in t.rows.iter().skip(2) {
+                assert!(r.cuts.is_empty() && r.grain, "{} is striped", r.name);
+            }
+        }
+
+        let mut page = fcmp_tx_page();
+        page.tree = Some([wide, narrow]);
+        let html = page.render().expect("renders");
+        assert!(html.contains(r#"<pattern id="grain-wide" width="4" height="14""#));
+        assert!(html.contains(r#"fill="url(#grain-narrow)"/>"#));
+        assert!(
+            html.matches(r#"<line class="cut""#).count() <= 2 * 8,
+            "only layer 5 is divided"
+        );
+
+        // A small tree is divided node by node, with no stripes.
+        let [small, _] = tree_picture(55, None).expect("a tree");
+        assert!(small.rows.iter().all(|r| !r.grain));
     }
 
     /// The walkthrough is linked from the head of the tree it explains, or on
