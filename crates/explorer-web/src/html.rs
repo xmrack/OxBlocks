@@ -3772,6 +3772,38 @@ mod tests {
         assert!(!tx_page().render().expect("renders").contains("curve-tree"));
     }
 
+    /// The walkthrough is linked from under the tree it explains, or on its
+    /// own above the inputs when there is no tree to draw.
+    #[test]
+    fn the_walkthrough_is_linked_under_the_tree() {
+        let link =
+            r#"<a class="walk" href="/tx/abc/fcmp">See how this spend stays private &rarr;</a>"#;
+        let mut page = fcmp_tx_page();
+        page.hash = "abc".to_owned();
+        page.tree = tree_picture(22, None);
+        let html = page.render().expect("renders");
+        assert_eq!(html.matches(link).count(), 1);
+        let at = html.find(link);
+        assert!(
+            at > html.find(r#"<svg class="funnel narrow""#),
+            "under the drawing"
+        );
+        assert!(at < html.find("</figure>"), "inside the tree's box");
+        assert!(!html.contains("how it works"));
+
+        page.tree = None;
+        let html = page.render().expect("renders");
+        assert_eq!(html.matches(link).count(), 1);
+        assert!(
+            html.find(link) < html.find("input-card"),
+            "above the inputs"
+        );
+
+        let mut ring = tx_page();
+        ring.hash = "abc".to_owned();
+        assert!(!ring.render().expect("renders").contains("/fcmp"));
+    }
+
     fn fcmp_fixture(file: &str) -> Vec<(TxEntry, TxJson)> {
         let json = match file {
             "full" => include_str!("../../../fixtures/fcmp/get_transactions_fcmp.json"),

@@ -442,6 +442,15 @@ dl.kv.spaced { margin-top: 0.8rem; }
 .curve-tree .label { fill: var(--accent); font-size: 13px; }
 .curve-tree .curve { fill: var(--fg-faint); }
 .curve-tree .count { fill: var(--fg-muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+/* The way into the FCMP++ walkthrough, under the tree it explains. */
+.walk-row { margin: 0.2rem 0 0.9rem; }
+.curve-tree .walk-row { margin: 0.7rem 0 0.35rem; text-align: center; }
+.walk {
+  display: inline-block; padding: 0.45rem 0.95rem; border-radius: var(--radius);
+  background: var(--accent); color: var(--accent-fg);
+  font-weight: 600; font-size: 0.9rem; text-decoration: none;
+}
+.walk:hover { text-decoration: none; filter: brightness(1.08); }
 .curve-tree .root-hash {
   fill: var(--fg-faint);
   font: 9.5px ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
