@@ -480,7 +480,7 @@ dl.kv.spaced { margin-top: 0.8rem; }
 .step-card .sub { color: var(--fg-muted); font-style: italic; margin: 0 0 0.6rem; }
 .step-card .pic { flex: none; width: 200px; height: 120px; margin-top: 1.4rem; }
 @media (max-width: 720px) {
-  .step-card { flex-direction: column-reverse; gap: 0; }
+  .step-card { flex-direction: column-reverse; align-items: stretch; gap: 0; padding: 1rem; }
   .step-card .pic { margin: 0 auto; }
 }
 
@@ -494,7 +494,7 @@ dl.kv.spaced { margin-top: 0.8rem; }
 }
 .facts dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 0; font-size: 0.88rem; }
 .facts dt { color: var(--fg-muted); }
-.facts dd { margin: 0; min-width: 0; }
+.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 
 .step-nav { display: flex; margin: 1rem 0 1.5rem; }
 .step-nav .btn {
