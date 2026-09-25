@@ -45,12 +45,16 @@ flate2
 flexible-transcript
 foldhash
 form_urlencoded
+full-chain-membership-proofs
 funty
 futures-channel
 futures-core
 futures-sink
 futures-task
 futures-util
+generalized-bulletproofs
+generalized-bulletproofs-circuit-abstraction
+generalized-bulletproofs-ec-gadgets
 generic-array
 getrandom
 glob
@@ -78,6 +82,9 @@ mime
 miniz_oxide
 mio
 monero-ed25519
+monero-epee
+monero-fcmp-plus-plus
+monero-fcmp-plus-plus-generators
 monero-io
 monero-primitives
 monerod-rpc

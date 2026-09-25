@@ -46,6 +46,8 @@ struct IndexPage {
     chain: Option<ChainStatus>,
     blocks: Vec<BlockRow>,
     page: u64,
+    /// The next page back, while there are older blocks.
+    older: Option<u64>,
 }
 
 struct BlockRow {
@@ -799,10 +801,12 @@ struct AltChainRow {
 
 /// The JSON API's own documentation.
 ///
-/// Every limit on this page is interpolated from the constant the handler
-/// actually enforces, and the accepted postfix lengths are computed by asking
-/// the validator. Documentation that restates a number is documentation that
-/// will one day be wrong; documentation that reads it cannot be.
+/// Every limit on this page is interpolated from what the handler actually
+/// enforces -- a constant, or the deployment's configured
+/// [`Limits`](crate::config::Limits) -- and the accepted postfix lengths are
+/// computed by asking the validator. Documentation that restates a number is
+/// documentation that will one day be wrong; documentation that reads it
+/// cannot be.
 #[derive(Template)]
 #[template(path = "api.html")]
 struct ApiPage {
@@ -1081,7 +1085,7 @@ async fn render_page(State(state): Shared, page: u64) -> Page {
     const PER_PAGE: u64 = 25;
 
     let chain = status_of(&state).await;
-    let Some(status) = chain.as_ref().map(|c| c.height) else {
+    let Some(height) = chain.as_ref().map(|c| c.height) else {
         return error_page(
             None,
             StatusCode::BAD_GATEWAY,
@@ -1090,7 +1094,18 @@ async fn render_page(State(state): Shared, page: u64) -> Page {
         );
     };
 
-    let top = status.saturating_sub(1);
+    let top = height.saturating_sub(1);
+    // Past the genesis block there is nothing to list. Refused here rather
+    // than rendered as a repeat of the oldest page, which also keeps the
+    // pager's next number from overflowing.
+    if page > top / PER_PAGE {
+        return error_page(
+            chain,
+            StatusCode::NOT_FOUND,
+            "No such page",
+            &format!("The chain has {} pages of blocks.", top / PER_PAGE + 1),
+        );
+    }
     let start = top.saturating_sub(page.saturating_mul(PER_PAGE));
     let end = start;
     let begin = start.saturating_sub(PER_PAGE.saturating_sub(1));
@@ -1134,6 +1149,7 @@ async fn render_page(State(state): Shared, page: u64) -> Page {
             chain,
             blocks,
             page,
+            older: (begin > 0).then_some(page + 1),
         },
     )
 }
@@ -1217,9 +1233,14 @@ pub async fn block(
     // A cached block carries the depth it had when fetched, so a block cached
     // as the tip would read as the tip for as long as it stayed cached.
     // Counted from the tip the status strip shows instead.
-    let depth = chain.as_ref().map_or(header.depth, |c| {
-        c.height.saturating_sub(header.height.saturating_add(1))
-    });
+    // An orphan is on no chain the tip is on, so nothing buries it.
+    let depth = if header.orphan_status {
+        0
+    } else {
+        chain.as_ref().map_or(header.depth, |c| {
+            c.height.saturating_sub(header.height.saturating_add(1))
+        })
+    };
 
     render(
         StatusCode::OK,
@@ -1741,7 +1762,7 @@ fn fcmp_page(
     let layers = tx.n_tree_layers();
     let shape = parts
         .as_ref()
-        .zip(layers.and_then(|l| monerod_rpc::types::MembershipShape::of(tx.vin.len(), l)))
+        .zip(layers.and_then(|l| explorer_core::fcmp::MembershipShape::of(tx.vin.len(), l)))
         .filter(|(p, s)| p.membership_len == s.len)
         .map(|(_, s)| ShapeView {
             selene_rows: s.selene_rows,
@@ -3215,7 +3236,26 @@ mod tests {
                 hash: "a".repeat(64),
             }],
             page: 0,
+            older: Some(1),
         }
+    }
+
+    /// The pager's links come from the handler, which knows where the chain
+    /// ends: none past the genesis block, and none that could overflow.
+    #[test]
+    fn the_last_page_links_to_no_older_one() {
+        let mut page = index_page();
+        page.page = u64::MAX;
+        page.older = None;
+        let html = page.render().expect("renders");
+        assert!(html.contains("<span>Older &rarr;</span>"));
+        assert!(!html.contains("/page/0\""));
+        assert!(
+            index_page()
+                .render()
+                .expect("renders")
+                .contains(r#"<a href="/page/1">Older"#)
+        );
     }
 
     fn block_tx(coinbase: bool) -> BlockTxRow {

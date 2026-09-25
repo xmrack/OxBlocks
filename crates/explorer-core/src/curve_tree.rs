@@ -25,13 +25,11 @@
 //! monerod's `src/fcmp_pp/curve_trees.cpp`, with the curve arithmetic from
 //! monero-oxide, which monerod itself links for it.
 //!
-//! The generators are the first of the FCMP++ proof's: the hash uses 228 of
-//! Selene's, for a group of 38 leaves of six values each, and 18 of Helios's.
-//! They are derived here, as monero-oxide derives each of its
-//! (`monero-fcmp-plus-plus-generators`), rather than loaded from its tables
-//! of hundreds of thousands, which take seconds to load and add megabytes to
-//! the binary for points this never uses. Recomputing monerod's own roots
-//! from its paths, as the tests do, checks every one of them.
+//! The hash, its generators and the curves are monero-oxide's
+//! (`fcmps::tree::hash_grow` and the FCMP++ generators), as are the
+//! hash-to-point functions and the Wei25519 coordinates. What is here is the
+//! leaf derivation and the walk up the path, which monero-oxide keeps inside
+//! its prover.
 //!
 //! None of this is secret or says anything about who owns an output: the
 //! tree is public and every node holds all of it.
@@ -40,8 +38,11 @@ use std::sync::LazyLock;
 
 use curve25519_dalek::edwards::{CompressedEdwardsY, EdwardsPoint};
 use ec_divisors::DivisorCurve as _;
-use helioselene::group::{self, GroupEncoding};
+use helioselene::group::{GroupEncoding as _, ff::Field as _};
 use helioselene::{Field25519, HeliosPoint, HelioseleneField, SelenePoint};
+use monero_fcmp_plus_plus::fcmps::tree::hash_grow;
+use monero_fcmp_plus_plus::{HELIOS_FCMP_GENERATORS, SELENE_FCMP_GENERATORS};
+use monero_fcmp_plus_plus_generators::{HELIOS_HASH_INIT, SELENE_HASH_INIT};
 use monerod_rpc::types::{
     HELIOS_CHUNK_WIDTH, LeafKind, PathLeaf, SELENE_CHUNK_WIDTH, TreePath, tree_layers,
 };
@@ -377,75 +378,40 @@ fn helios_x(bytes: &[u8; 32]) -> Option<Field25519> {
     Some(HeliosPoint::to_xy(p)?.0)
 }
 
-/// A curve's hash: its initial point and the generators its children are
-/// multiplied by.
-struct TreeHash<G> {
-    init: G,
-    generators: Vec<G>,
-}
-
-impl<G> TreeHash<G>
-where
-    G: group::Group + GroupEncoding<Repr = [u8; 32]>,
-    G::Scalar: group::ff::PrimeFieldBits,
-{
-    /// `rejection_sampling_hash_to_curve`, `SELENE_HASH_INIT` and
-    /// `FcmpGenerators::new_generator_pair` in monero-oxide's
-    /// `monero-fcmp-plus-plus-generators`: the curve's generator `i` is the
-    /// first of keccak256("Monero {curve} G {i}"), its hash, its hash's hash
-    /// and so on that is the canonical encoding of a point other than the
-    /// identity.
-    fn derive(curve: &str, generators: usize) -> Self {
-        Self {
-            init: sample(format!("Monero {curve} Hash Initializer").as_bytes()),
-            generators: (0..generators)
-                .map(|i| sample(format!("Monero {curve} G {i}").as_bytes()))
-                .collect(),
-        }
-    }
-
-    /// `hash_grow` from an empty hash in monero-oxide's `fcmps::tree`. `None`
-    /// for more children than there are generators.
-    fn hash(&self, children: &[G::Scalar]) -> Option<G> {
-        let pairs: Vec<(G::Scalar, G)> = children
-            .iter()
-            .copied()
-            .zip(self.generators.get(..children.len())?.iter().copied())
-            .collect();
-        Some(self.init + multiexp::multiexp_vartime(&pairs))
-    }
-}
-
-fn sample<G: group::Group + GroupEncoding<Repr = [u8; 32]>>(label: &[u8]) -> G {
-    let mut buf = monero_primitives::keccak256(label);
-    loop {
-        if let Some(point) = Option::<G>::from(G::from_bytes(&buf))
-            && point.to_bytes() == buf
-            && !bool::from(point.is_identity())
-        {
-            return point;
-        }
-        buf = monero_primitives::keccak256(buf);
-    }
-}
-
-/// Selene hashes the groups of leaves, six values a leaf, and the groups of
-/// Helios points.
-static SELENE: LazyLock<TreeHash<SelenePoint>> = LazyLock::new(|| {
-    let leaves = usize::try_from(SELENE_CHUNK_WIDTH).unwrap_or(0) * 6;
-    TreeHash::derive("Selene", leaves)
-});
-
-/// Helios hashes the groups of Selene points.
-static HELIOS: LazyLock<TreeHash<HeliosPoint>> =
-    LazyLock::new(|| TreeHash::derive("Helios", usize::try_from(HELIOS_CHUNK_WIDTH).unwrap_or(0)));
-
+/// A group's parent on Selene: `hash_grow` from an empty hash, over the
+/// FCMP++ generators, as monerod's `get_new_parent` calls it.
 fn hash_selene(children: &[Field25519]) -> Option<SelenePoint> {
-    SELENE.hash(children)
+    hash_grow(
+        &SELENE_FCMP_GENERATORS.generators,
+        *SELENE_HASH_INIT,
+        0,
+        Field25519::ZERO,
+        children,
+    )
 }
 
+/// A group's parent on Helios. See [`hash_selene`].
 fn hash_helios(children: &[HelioseleneField]) -> Option<HeliosPoint> {
-    HELIOS.hash(children)
+    hash_grow(
+        &HELIOS_FCMP_GENERATORS.generators,
+        *HELIOS_HASH_INIT,
+        0,
+        HelioseleneField::ZERO,
+        children,
+    )
+}
+
+/// Load the generators the tree's hashes use.
+///
+/// monero-oxide builds them into the binary and decodes them on first use,
+/// which takes a second or two: all of the FCMP++ proof's generators are
+/// decoded at once. Calling this at startup, off the request threads, keeps
+/// that cost from landing on the first page to check a path.
+pub fn load_generators() {
+    LazyLock::force(&SELENE_FCMP_GENERATORS);
+    LazyLock::force(&HELIOS_FCMP_GENERATORS);
+    LazyLock::force(&SELENE_HASH_INIT);
+    LazyLock::force(&HELIOS_HASH_INIT);
 }
 
 #[cfg(test)]

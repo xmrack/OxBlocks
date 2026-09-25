@@ -95,8 +95,14 @@ pub struct Config {
     ///
     /// This is the backpressure valve. Every request costs RPC calls,
     /// so an unbounded server would turn a traffic spike into a self-inflicted
-    /// denial of service against its own daemon.
-    #[arg(long, env = "OXBLOCKS_MAX_CONCURRENT", default_value_t = 128)]
+    /// denial of service against its own daemon. At least 1: with none, every
+    /// request would wait out its timeout.
+    #[arg(
+        long,
+        env = "OXBLOCKS_MAX_CONCURRENT",
+        default_value_t = 128,
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
+    )]
     pub max_concurrent: usize,
 
     /// Maximum RPC calls in flight against monerod at once.
@@ -106,11 +112,12 @@ pub struct Config {
     /// thread pool shared with its peer-to-peer duties, so a burst of requests
     /// here degrades the node itself. Requests that cannot get a slot queue in
     /// front of the daemon rather than stampeding it, and the inbound request
-    /// timeout eventually sheds them.
+    /// timeout eventually sheds them. At least 1.
     #[arg(
         long,
         env = "OXBLOCKS_MAX_INFLIGHT_RPC",
-        default_value_t = explorer_core::DEFAULT_MAX_INFLIGHT_RPC
+        default_value_t = explorer_core::DEFAULT_MAX_INFLIGHT_RPC,
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
     )]
     pub max_inflight_rpc: usize,
 
@@ -344,5 +351,16 @@ mod tests {
     #[test]
     fn a_bad_bind_address_is_rejected_rather_than_defaulted() {
         assert!(Config::try_parse_from(["oxblocks", "--bind", "not-an-address"]).is_err());
+        // A limit of none would leave every request waiting out its timeout.
+        for flag in ["--max-concurrent", "--max-inflight-rpc"] {
+            assert!(
+                Config::try_parse_from(["oxblocks", flag, "0"]).is_err(),
+                "{flag}"
+            );
+            assert!(
+                Config::try_parse_from(["oxblocks", flag, "1"]).is_ok(),
+                "{flag}"
+            );
+        }
     }
 }

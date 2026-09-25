@@ -14,24 +14,12 @@ use super::{
     mark_paths, render, status_of, tree_picture,
 };
 use crate::api::handlers::Shared;
-use crate::tree_paths::{MAX_OUTPUTS, PathsError, RootCheck, TxPaths, gather};
+use crate::tree_paths::{MAX_OUTPUTS, PathsError, PathsParams, RootCheck, TxPaths, gather};
 
 /// Bytes a wallet keeps per leaf of a path, its key and commitment, and per
 /// point above.
 const LEAF_BYTES: u64 = 64;
 const POINT_BYTES: u64 = 32;
-
-#[derive(serde::Deserialize)]
-pub struct PathsParams {
-    /// One output, counted from 1 as the transaction page lists them. All of
-    /// them when absent.
-    output: Option<usize>,
-    /// The block to take the tree as of. The tip when absent.
-    block: Option<u64>,
-    /// The first output of the window shown together, counted from 0, for a
-    /// transaction with more outputs than one call answers for.
-    from: Option<usize>,
-}
 
 #[derive(Template)]
 #[template(path = "paths.html")]
@@ -45,6 +33,9 @@ struct PathsPage {
     /// The block asked about, when it is not the tip, for the form that
     /// changes it.
     block: Option<u64>,
+    /// The window of outputs shown together, counted from 0, for the form to
+    /// keep. 0 when one output is shown.
+    from: usize,
     leaves: String,
     n_layers: usize,
     root_block: Option<(u64, String)>,
@@ -126,6 +117,12 @@ pub async fn tree_paths(
     };
     let hash = entry.tx_hash.to_lowercase();
     let total = tx.vout.len();
+    let q = match q.read() {
+        Ok(q) => q,
+        Err(why) => {
+            return error_page(chain, StatusCode::BAD_REQUEST, "Not a number", &why);
+        }
+    };
 
     let which = match q.output {
         Some(k) if k == 0 || k > total => {
@@ -138,7 +135,7 @@ pub async fn tree_paths(
         }
         Some(k) => (k - 1)..k,
         None => {
-            let from = q.from.unwrap_or(0) / MAX_OUTPUTS * MAX_OUTPUTS;
+            let from = q.from / MAX_OUTPUTS * MAX_OUTPUTS;
             from..from.saturating_add(MAX_OUTPUTS)
         }
     };
@@ -170,6 +167,18 @@ pub async fn tree_paths(
                 "No such block",
                 &format!(
                     "The chain's tip is block {tip}, so there is no tree as of block {asked}."
+                ),
+            );
+        }
+        Err(PathsError::NoSuchOutputs { from, total }) => {
+            return error_page(
+                chain,
+                StatusCode::NOT_FOUND,
+                "No such outputs",
+                &format!(
+                    "This transaction has {total} output{}, so none from output {}.",
+                    plural(total),
+                    from + 1
                 ),
             );
         }
@@ -300,6 +309,7 @@ fn page(
         as_of: paths.as_of_block,
         tip: paths.tip,
         block,
+        from: if showing.is_some() { 0 } else { from },
         leaves: grouped(paths.n_leaf_tuples),
         n_layers: monerod_rpc::types::tree_layers(paths.n_leaf_tuples).len(),
         root_block: paths.root_block.clone(),

@@ -43,9 +43,9 @@ groups are shown as the daemon sent them; the outputs listed as failing are
 the ones whose hashes do not hold.</div>
 {% endif %}
 <form class="as-of" method="get" action="/tx/{{ hash }}/paths">
-{% if let Some(k) = showing %}<input type="hidden" name="output" value="{{ k }}">{% endif %}
+{% if let Some(k) = showing %}<input type="hidden" name="output" value="{{ k }}">{% endif %}{% if from > 0 %}<input type="hidden" name="from" value="{{ from }}">{% endif %}
 <label>As of block <input name="block" inputmode="numeric" pattern="[0-9]*" placeholder="{{ tip }}"{% if let Some(b) = block %} value="{{ b }}"{% endif %}></label>
-<button type="submit">Show</button>{% if block.is_some() %} <a href="/tx/{{ hash }}/paths{% if let Some(k) = showing %}?output={{ k }}{% endif %}">back to the tip</a>{% endif %}
+<button type="submit">Show</button>{% if block.is_some() %} <a href="/tx/{{ hash }}/paths{% if let Some(k) = showing %}?output={{ k }}{% else if from > 0 %}?from={{ from }}{% endif %}">back to the tip</a>{% endif %}
 </form>
 </div>
 

@@ -109,61 +109,6 @@ pub fn default_quantization_mask() -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// JSON-RPC envelope
-// ---------------------------------------------------------------------------
-
-/// The `/json_rpc` envelope.
-///
-/// monerod emits two disjoint shapes — one with `result` and no `error` member
-/// at all, one with `error` and no `result` — so both are modelled as options
-/// rather than as an enum.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct JsonRpcEnvelope<T> {
-    #[serde(default)]
-    pub jsonrpc: String,
-    /// monerod echoes the request's `id` verbatim, preserving its JSON type: an
-    /// `"id": 42` comes back as the number 42. Omitting `id` yields the number
-    /// 0 on every path except `-32601`, which yields `""`. A `String` here
-    /// fails to deserialize against a caller that used a number.
-    #[serde(default)]
-    pub id: serde_json::Value,
-    /// Present on the success shape only — the error shape has no `result`
-    /// member at all. No `#[serde(default)]`: serde already reads a missing
-    /// `Option` field as `None`, and the attribute would demand `T: Default`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<T>,
-    /// Present on the error shape only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<JsonRpcError>,
-}
-
-/// The JSON-RPC `error` member. epee emits exactly these two keys — there is no
-/// `data` field.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct JsonRpcError {
-    pub code: i64,
-    pub message: String,
-}
-
-impl JsonRpcError {
-    /// Whether this is the "method is not available on this daemon" shape.
-    ///
-    /// Covers both a genuinely unknown method and one gated off by
-    /// `--restricted-rpc`; monerod does not distinguish them.
-    #[must_use]
-    pub fn is_method_unavailable(&self) -> bool {
-        self.code == error_code::METHOD_NOT_FOUND
-    }
-
-    /// Whether monerod refused a *parameter* as beyond the restricted allowance
-    /// (code -19), e.g. a block-header range wider than 1000.
-    #[must_use]
-    pub fn is_restricted(&self) -> bool {
-        self.code == error_code::RESTRICTED
-    }
-}
-
-// ---------------------------------------------------------------------------
 // get_info
 // ---------------------------------------------------------------------------
 
@@ -511,10 +456,6 @@ pub struct GetAlternateChains {
 }
 
 // ---------------------------------------------------------------------------
-// /get_height
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // get_txids_loose
 // ---------------------------------------------------------------------------
 
@@ -591,6 +532,10 @@ pub struct GetTxidsLooseResponse {
     #[serde(default)]
     pub top_hash: String,
 }
+
+// ---------------------------------------------------------------------------
+// /get_height
+// ---------------------------------------------------------------------------
 
 /// `/get_height`. No `credits`/`top_hash`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -748,6 +693,18 @@ impl TxEntry {
             return None;
         }
         Some(format!("{}{}", self.pruned_as_hex, self.prunable_as_hex))
+    }
+
+    /// The length of [`Self::raw_hex`], without assembling it.
+    #[must_use]
+    pub fn raw_hex_len(&self) -> Option<usize> {
+        if !self.as_hex.is_empty() {
+            return Some(self.as_hex.len());
+        }
+        if self.pruned_as_hex.is_empty() {
+            return None;
+        }
+        Some(self.pruned_as_hex.len() + self.prunable_as_hex.len())
     }
 
     /// Whether *this node* no longer holds the transaction's prunable half.
@@ -2325,73 +2282,6 @@ impl RctSigPrunable {
     }
 }
 
-/// The shape of an FCMP++ membership proof: the rows of each of its two
-/// arithmetic-circuit proofs, one on Selene and one on Helios, and its length.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MembershipShape {
-    pub selene_rows: usize,
-    pub helios_rows: usize,
-    /// Bytes, [`FCMP_PP_ROOT_POK_LEN`] included.
-    pub len: usize,
-}
-
-impl MembershipShape {
-    /// The shape for `inputs` inputs in a tree of `layers` layers. `None` for
-    /// zero of either.
-    ///
-    /// `Fcmp::ipa_rows` and `Fcmp::proof_size` in monero-oxide's
-    /// `crypto/fcmps`.
-    #[must_use]
-    pub fn of(inputs: usize, layers: u8) -> Option<Self> {
-        const C1_LEAVES_ROWS_PER_INPUT: usize = 97;
-        const C1_BRANCH_ROWS_PER_INPUT: usize = 52;
-        const C2_ROWS_PER_INPUT_PER_LAYER: usize = 32;
-        const C1_TARGET_ROWS: usize = 256;
-        const C2_TARGET_ROWS: usize = 128;
-        const COMMITMENT_WORD_LEN: usize = 128;
-        const WORDS_PER_CLAIMED_POINT: usize = 4;
-        const WORDS_PER_DIVISOR: usize = 2;
-
-        let layers = usize::from(layers);
-        if inputs == 0 || layers == 0 {
-            return None;
-        }
-        let c1_rows =
-            inputs * (C1_LEAVES_ROWS_PER_INPUT + (layers - 1) / 2 * C1_BRANCH_ROWS_PER_INPUT);
-        let c2_rows = inputs * (layers / 2 * C2_ROWS_PER_INPUT_PER_LAYER).max(1);
-        let selene_rows = c1_rows.next_power_of_two().max(C1_TARGET_ROWS);
-        let helios_rows = c2_rows.next_power_of_two().max(C2_TARGET_ROWS);
-
-        // AI, AO, AS, tau_x, u, t_caret, a and b for each proof, then an L and
-        // an R for each folding round.
-        let mut elements = 16
-            + 2 * selene_rows.trailing_zeros() as usize
-            + 2 * helios_rows.trailing_zeros() as usize;
-
-        let c1_root = layers % 2;
-        let c2_root = 1 - c1_root;
-        let c1_branches = inputs * (layers / 2) + c1_root;
-        let c2_branches = inputs * (layers / 2 - c2_root) + c2_root;
-        let c1_words = inputs * (WORDS_PER_DIVISOR + 4 * WORDS_PER_CLAIMED_POINT)
-            + inputs * ((layers - 1) / 2) * WORDS_PER_CLAIMED_POINT;
-        let c2_words = inputs * (layers / 2) * WORDS_PER_CLAIMED_POINT;
-        for (branches, words, rows) in [
-            (c1_branches, c1_words, selene_rows),
-            (c2_branches, c2_words, helios_rows),
-        ] {
-            let commitments = branches + (words * COMMITMENT_WORD_LEN).div_ceil(rows);
-            let ni = 2 + 2 * commitments;
-            let t_len = 2 * (ni + 2) - 1;
-            elements += commitments + (t_len - ni / 2 - 1);
-        }
-        Some(Self {
-            selene_rows,
-            helios_rows,
-            len: 32 * elements + FCMP_PP_ROOT_POK_LEN,
-        })
-    }
-}
-
 /// Bytes of an FCMP++ input tuple as serialized: O~, I~ and R. Its fourth
 /// member, C~, is the input's pseudo-out and is not repeated in the proof.
 pub const FCMP_PP_TUPLE_LEN: usize = 3 * 32;
@@ -2811,46 +2701,6 @@ mod tests {
 
         // std::vector<int> in C++, so negatives are representable.
         assert_eq!(SpentStatus::from_raw(-1), SpentStatus::Unknown(-1));
-    }
-
-    #[test]
-    fn json_rpc_id_survives_being_a_number() {
-        let env: JsonRpcEnvelope<GetBlockCount> = serde_json::from_str(
-            r#"{"jsonrpc":"2.0","id":42,"result":{"count":1,"status":"OK","untrusted":false}}"#,
-        )
-        .unwrap();
-        assert_eq!(env.id, serde_json::json!(42));
-        assert!(env.error.is_none());
-        assert_eq!(env.result.unwrap().count, 1);
-
-        let env: JsonRpcEnvelope<GetBlockCount> = serde_json::from_str(
-            r#"{"jsonrpc":"2.0","id":"0","result":{"count":1,"status":"OK","untrusted":false}}"#,
-        )
-        .unwrap();
-        assert_eq!(env.id, serde_json::json!("0"));
-    }
-
-    #[test]
-    fn restricted_errors_use_minus_nineteen_and_unavailable_methods_minus_32601() {
-        let restricted: JsonRpcEnvelope<serde_json::Value> = serde_json::from_str(
-            r#"{"jsonrpc":"2.0","id":"0","error":{"code":-19,"message":"Too many block headers requested."}}"#,
-        )
-        .unwrap();
-        let err = restricted.error.unwrap();
-        assert!(err.is_restricted());
-        assert!(!err.is_method_unavailable());
-        assert!(
-            restricted.result.is_none(),
-            "an error envelope has no result member"
-        );
-
-        let gated: JsonRpcEnvelope<serde_json::Value> = serde_json::from_str(
-            r#"{"jsonrpc":"2.0","id":"","error":{"code":-32601,"message":"Method not found"}}"#,
-        )
-        .unwrap();
-        let err = gated.error.unwrap();
-        assert!(err.is_method_unavailable());
-        assert!(!err.is_restricted());
     }
 
     #[test]

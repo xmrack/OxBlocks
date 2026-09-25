@@ -8,7 +8,7 @@ use explorer_core::fmt::{decimal, timestamp_utc};
 use explorer_core::{
     BlockId, BlockIdError, BlockTree, ChainError, Hash32, RpcChainSource, unexpanded_inputs,
 };
-use monerod_rpc::types::{GetTxidsLooseRequest, TxEntry};
+use monerod_rpc::types::{GetTxidsLooseRequest, TxEntry, TxJson};
 use serde::Serialize;
 
 use super::envelope::{ApiError, ApiOk};
@@ -98,27 +98,40 @@ pub async fn version(State(state): Shared) -> Result<ApiOk<VersionData>, ApiErro
 // /api/transaction/<hash>
 // ---------------------------------------------------------------------------
 
-pub async fn transaction(
-    State(state): Shared,
-    Path(raw): Path<String>,
-) -> Result<ApiOk<TxDetail>, ApiError> {
+/// The transaction `raw` names, as the daemon holds it.
+async fn fetch_tx(state: &AppState, raw: &str) -> Result<(Hash32, TxEntry), ApiError> {
     let hash: Hash32 = raw
         .parse()
-        .map_err(|_| ApiError::bad_request(format!("Cant parse tx hash: {}", echo(&raw))))?;
-
+        .map_err(|_| ApiError::bad_request(format!("Cant parse tx hash: {}", echo(raw))))?;
     let fetched = state
         .chain
         .transactions(std::slice::from_ref(&hash))
         .await
         .map_err(|e| on_chain_error(&e, &format!("Cant get tx: {hash}")))?;
+    let entry = fetched
+        .txs
+        .into_iter()
+        .next()
+        .ok_or_else(|| ApiError::not_found(format!("Cant find tx: {hash}")))?;
+    Ok((hash, entry))
+}
 
-    let Some(entry) = fetched.txs.first() else {
-        return Err(ApiError::not_found(format!("Cant find tx: {hash}")));
-    };
+/// The transaction's own JSON, decoded. What did not decode is logged for the
+/// operator; the caller is told only that it did not.
+fn decode_tx(hash: &Hash32, entry: &TxEntry) -> Result<TxJson, ApiError> {
+    entry.parse_json().map_err(|e| {
+        tracing::warn!("tx {hash} did not decode: {e}");
+        ApiError::daemon(format!("Cant parse tx {hash}"))
+    })
+}
 
-    let tx = entry
-        .parse_json()
-        .map_err(|e| ApiError::daemon(format!("Cant parse tx {hash}: {e}")))?;
+pub async fn transaction(
+    State(state): Shared,
+    Path(raw): Path<String>,
+) -> Result<ApiOk<TxDetail>, ApiError> {
+    let (hash, entry) = fetch_tx(&state, &raw).await?;
+    let entry = &entry;
+    let tx = decode_tx(&hash, entry)?;
 
     // One /get_outs per input. Never batched across the transaction: monerod
     // fails the whole request if any single index is out of range, which would
@@ -150,12 +163,6 @@ pub async fn transaction(
 // ---------------------------------------------------------------------------
 // /api/transaction/<hash>/paths
 // ---------------------------------------------------------------------------
-
-#[derive(serde::Deserialize)]
-pub struct PathsParams {
-    block: Option<u64>,
-    from: Option<usize>,
-}
 
 #[derive(Serialize)]
 pub struct PathsData {
@@ -214,52 +221,43 @@ pub struct LeafData {
     commitment: String,
 }
 
-/// Paths through the curve tree of a transaction's outputs, up to
-/// [`crate::tree_paths::MAX_OUTPUTS`] of them from `from`, as of `block` or
-/// the tip.
+/// Paths through the curve tree of a transaction's outputs, as of `block` or
+/// the tip: output `output` alone, counted from 1, or up to
+/// [`crate::tree_paths::MAX_OUTPUTS`] of them from `from`, counted from 0.
 pub async fn transaction_paths(
     State(state): Shared,
     Path(raw): Path<String>,
-    axum::extract::Query(q): axum::extract::Query<PathsParams>,
+    axum::extract::Query(q): axum::extract::Query<crate::tree_paths::PathsParams>,
 ) -> Result<ApiOk<PathsData>, ApiError> {
     use crate::tree_paths::{MAX_OUTPUTS, PathsError, RootCheck, gather};
     use explorer_core::curve_tree::{Curve, PathCheck};
     use monerod_rpc::types::LeafKind;
 
-    let hash: Hash32 = raw
-        .parse()
-        .map_err(|_| ApiError::bad_request(format!("Cant parse tx hash: {}", echo(&raw))))?;
-    let fetched = state
-        .chain
-        .transactions(std::slice::from_ref(&hash))
-        .await
-        .map_err(|e| on_chain_error(&e, &format!("Cant get tx: {hash}")))?;
-    let Some(entry) = fetched.txs.first() else {
-        return Err(ApiError::not_found(format!("Cant find tx: {hash}")));
-    };
-    let tx = entry
-        .parse_json()
-        .map_err(|e| ApiError::daemon(format!("Cant parse tx {hash}: {e}")))?;
+    let q = q.read().map_err(ApiError::bad_request)?;
 
-    let from = q.from.unwrap_or(0);
-    let paths = gather(
-        &state,
-        entry,
-        &tx,
-        q.block,
-        from..from.saturating_add(MAX_OUTPUTS),
-    )
-    .await
-    .map_err(|e| match e {
-        PathsError::InPool => {
-            ApiError::not_found(format!("Tx {hash} is in the pool, so not in the tree"))
-        }
-        PathsError::NoIds => ApiError::unsupported("The daemon has no curve tree".to_owned()),
-        PathsError::Ahead { asked, tip } => {
-            ApiError::not_found(format!("Block {asked} is past the tip, {tip}"))
-        }
-        PathsError::Chain(e) => on_chain_error(&e, &format!("Cant get paths of tx: {hash}")),
-    })?;
+    let (hash, entry) = fetch_tx(&state, &raw).await?;
+    let entry = &entry;
+    let tx = decode_tx(&hash, entry)?;
+
+    let which = match q.output {
+        Some(k) => k.saturating_sub(1)..k,
+        None => q.from..q.from.saturating_add(MAX_OUTPUTS),
+    };
+    let paths = gather(&state, entry, &tx, q.block, which)
+        .await
+        .map_err(|e| match e {
+            PathsError::InPool => {
+                ApiError::not_found(format!("Tx {hash} is in the pool, so not in the tree"))
+            }
+            PathsError::NoIds => ApiError::unsupported("The daemon has no curve tree".to_owned()),
+            PathsError::Ahead { asked, tip } => {
+                ApiError::not_found(format!("Block {asked} is past the tip, {tip}"))
+            }
+            PathsError::NoSuchOutputs { from, total } => {
+                ApiError::not_found(format!("Tx {hash} has {total} outputs, none from {from}"))
+            }
+            PathsError::Chain(e) => on_chain_error(&e, &format!("Cant get paths of tx: {hash}")),
+        })?;
 
     let outputs = paths
         .outputs
@@ -440,19 +438,7 @@ pub async fn raw_transaction(
     State(state): Shared,
     Path(raw): Path<String>,
 ) -> Result<ApiOk<serde_json::Value>, ApiError> {
-    let hash: Hash32 = raw
-        .parse()
-        .map_err(|_| ApiError::bad_request(format!("Cant parse tx hash: {}", echo(&raw))))?;
-
-    let fetched = state
-        .chain
-        .transactions(std::slice::from_ref(&hash))
-        .await
-        .map_err(|e| on_chain_error(&e, &format!("Cant get tx: {hash}")))?;
-
-    let Some(entry) = fetched.txs.first() else {
-        return Err(ApiError::not_found(format!("Cant find tx: {hash}")));
-    };
+    let (_, entry) = fetch_tx(&state, &raw).await?;
 
     let value: serde_json::Value = serde_json::from_str(&entry.as_json)
         .map_err(|_| ApiError::daemon("Faild parsing raw tx data into json".to_owned()))?;
@@ -608,6 +594,10 @@ pub async fn transactions(
     let start_signed = (height.wrapping_sub(span)) as i64;
     #[allow(clippy::cast_sign_loss, reason = "max(0) has already removed the sign")]
     let start = start_signed.max(0) as u64;
+    // The page is `limit` blocks up from its clamped start, which is how
+    // xmrblocks pages: the last page, whose start clamps to 0, repeats blocks
+    // the page before it listed, and pages past it list those same blocks.
+    // Kept, because clients page this endpoint by that arithmetic.
     let end = start.saturating_add(limit).min(height).saturating_sub(1);
 
     let mut blocks = Vec::new();
@@ -940,14 +930,6 @@ pub async fn network_info(State(state): Shared) -> Result<ApiOk<NetworkInfoData>
 /// served is around 40 transactions.
 pub const MIN_ANONYMITY_SET: u64 = 20;
 
-/// The most matches this explorer will expand before refusing.
-///
-/// Checked twice, against two different numbers. [`check_postfix`] refuses a
-/// postfix whose *expected* set is already larger than this, before the daemon
-/// is asked anything; the handler refuses again on the count that actually came
-/// back, because how many transactions share a postfix is Poisson around the
-/// expectation rather than equal to it.
-///
 /// Refuses the k-anonymous lookup on a daemon that has no `get_txids_loose`.
 fn no_txids_loose() -> ApiError {
     ApiError::unsupported(
@@ -956,6 +938,14 @@ fn no_txids_loose() -> ApiError {
     )
 }
 
+/// The most matches this explorer will expand before refusing.
+///
+/// Checked twice, against two different numbers. [`check_postfix`] refuses a
+/// postfix whose *expected* set is already larger than this, before the daemon
+/// is asked anything; the handler refuses again on the count that actually came
+/// back, because how many transactions share a postfix is Poisson around the
+/// expectation rather than equal to it.
+///
 /// The first check is the one that matters for load. `get_txids_loose` walks
 /// the whole transaction index, so a two-character postfix on mainnet is a
 /// full-index scan answering with something like a quarter of a million hashes
@@ -1298,21 +1288,6 @@ fn push_unexpanded(txs: &mut Vec<TxDetail>, entries: &[TxEntry], current_height:
 // /api/transactions/recent
 // ---------------------------------------------------------------------------
 
-/// How many blocks back `/api/transactions/recent` reaches.
-///
-/// The endpoint exists so that a caller who wants a *recent* transaction can
-/// take a window rather than name one. If everyone asks for the same window,
-/// asking reveals nothing.
-///
-/// **The window is bounded; the pool beside it is not.** Every unconfirmed
-/// transaction is listed, because counting them in `mempool_txs_no` and then
-/// withholding them was a real bug here. monerod offers no paging on
-/// `/get_transaction_pool` either, so the whole pool is fetched for the
-/// `/mempool` page and for `/api/mempool` regardless — capping the listing
-/// would shrink the response without shrinking the fetch. During a mempool
-/// flood this is the most expensive endpoint here; see
-/// `deploy/oxblocks.service`, which sizes `MemoryMax` against
-/// `--max-concurrent` for exactly this family of requests.
 /// The block range `/api/transactions/recent` covers, given the tip.
 ///
 /// Inclusive at both ends and counted back from the newest *mined* block, so a
@@ -1331,6 +1306,21 @@ pub struct RecentData {
     txs: Vec<TxDetail>,
 }
 
+/// The mempool, and the last `--recent-blocks` blocks.
+///
+/// The endpoint exists so that a caller who wants a *recent* transaction can
+/// take a window rather than name one. If everyone asks for the same window,
+/// asking reveals nothing.
+///
+/// **The window is bounded; the pool beside it is not.** Every unconfirmed
+/// transaction is listed, because counting them in `mempool_txs_no` and then
+/// withholding them was a real bug here. monerod offers no paging on
+/// `/get_transaction_pool` either, so the whole pool is fetched for the
+/// `/mempool` page and for `/api/mempool` regardless — capping the listing
+/// would shrink the response without shrinking the fetch. During a mempool
+/// flood this is the most expensive endpoint here; see
+/// `deploy/oxblocks.service`, which sizes `MemoryMax` against
+/// `--max-concurrent` for exactly this family of requests.
 pub async fn transactions_recent(State(state): Shared) -> Result<ApiOk<RecentData>, ApiError> {
     let info = state
         .chain

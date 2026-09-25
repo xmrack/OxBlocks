@@ -162,7 +162,7 @@ everything and deletes the characters it does not recognise before it parses.
 | --- | --- |
 | `/api/block/<height or hash>` | One block with its transactions. |
 | `/api/transaction/<hash>` | One transaction, with rings expanded. |
-| `/api/transaction/<hash>/paths?block=&from=` | The curve-tree paths of up to 50 of the transaction's outputs, checked. |
+| `/api/transaction/<hash>/paths?block=&from=&output=` | The curve-tree paths of up to 50 of the transaction's outputs, or of one, checked. |
 | `/api/rawblock/<height or hash>` | The block as the daemon holds it. |
 | `/api/rawtransaction/<hash>` | The transaction as the daemon holds it. |
 | `/api/transactions?page=&limit=` | Transactions by block, newest first. `limit` is at most 50. |
@@ -280,11 +280,15 @@ the most a restricted node answers. It then recomputes every hash from the
 leaves up: it derives each leaf from the output's key and commitment, hashes
 each group on its curve, and checks that each hash is the member of the layer
 above that the path names. The last hash must be the root recorded by the
-block eight below the one asked about. The curve arithmetic is monero-oxide's,
-at the revision monerod's stressnet branch links. oxblocks derives the few
-hundred generators the hash uses rather than loading the proof's full tables.
-The hashing runs off the request threads, and a group shared by several
-outputs is hashed once.
+block eight below the one asked about. The hash, its generators, the curves
+and the hash-to-point functions are monero-oxide's, at the revision monerod's
+stressnet branch links; the generators are loaded once at startup. The hashing
+runs off the request threads, four answers at a time, and a group shared by
+several outputs is hashed once.
+
+oxblocks also takes its reading of monerod's binary answers from monero-oxide
+(`monero-epee`), and the FCMP++ proof's layout (`Fcmp::ipa_rows`,
+`Fcmp::proof_size`).
 
 An output joins the tree when it unlocks, ten blocks after it is mined by
 default, so a transaction's outputs have no path before then. The page says

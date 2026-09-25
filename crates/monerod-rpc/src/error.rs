@@ -22,6 +22,17 @@ pub enum Status {
 /// bounded, and control characters are replaced so that it stays on one line.
 const MAX_STATUS_CHARS: usize = 64;
 
+/// At most `max` characters of `raw`, each control character replaced by
+/// `?`: text from the daemon, on its way into an error message and a log
+/// line, where a newline or an escape sequence would forge or garble one.
+#[must_use]
+pub fn printable(raw: &str, max: usize) -> String {
+    raw.chars()
+        .take(max)
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
+}
+
 impl Status {
     pub fn parse(raw: &str) -> Self {
         match raw {
@@ -29,13 +40,7 @@ impl Status {
             "BUSY" => Self::Busy,
             "Failed" => Self::Failed,
             "NOT MINING" => Self::NotMining,
-            other => Self::Other(
-                other
-                    .chars()
-                    .take(MAX_STATUS_CHARS)
-                    .map(|c| if c.is_control() { '?' } else { c })
-                    .collect(),
-            ),
+            other => Self::Other(printable(other, MAX_STATUS_CHARS)),
         }
     }
 

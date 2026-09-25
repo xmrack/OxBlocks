@@ -263,12 +263,14 @@
 </section>
 
 <section class="endpoint" id="paths">
-  <h3><span class="verb">GET</span><code class="lit">/api/transaction/&lt;hash&gt;/paths?block=&amp;from=</code></h3>
+  <h3><span class="verb">GET</span><code class="lit">/api/transaction/&lt;hash&gt;/paths?block=&amp;from=&amp;output=</code></h3>
   <p>
     The paths through the FCMP++ curve tree of a mined transaction's outputs,
     as of <code class="lit">block</code>, or the tip when it is left out: 50
     outputs at most, starting at output <code class="lit">from</code>, counted
-    from 0. One daemon call. The explorer recomputes each path's hashes from
+    from 0, or output <code class="lit">output</code> alone, counted from 1 as
+    the transaction page lists them. Each parameter is a plain number, and an
+    empty one counts as left out. One daemon call. The explorer recomputes each path's hashes from
     its leaves up and compares the result with the root in block
     <code class="lit">block</code> &minus; 8. <code class="lit">root_check</code>
     is <code class="lit">matches</code> when every path holds and reaches that
@@ -294,7 +296,8 @@
   </p>
   <p>
     A transaction in the pool is a 404: its outputs have no place in the tree
-    until it is mined and they unlock. So is a block past the tip.
+    until it is mined and they unlock. So is a block past the tip, and a
+    window that starts past the transaction's last output.
   </p>
   <pre class="blob">curl -s "$OXBLOCKS/api/transaction/&lt;hash&gt;/paths"</pre>
 </section>

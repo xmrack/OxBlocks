@@ -546,9 +546,9 @@ dependencies = [
  "futures-util",
  "helioselene",
  "monero-ed25519",
- "monero-primitives",
+ "monero-fcmp-plus-plus",
+ "monero-fcmp-plus-plus-generators",
  "monerod-rpc",
- "multiexp",
  "serde",
  "serde_json",
  "thiserror",
@@ -1065,6 +1065,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "monero-epee"
+version = "0.2.1"
+source = "git+https://github.com/monero-oxide/monero-oxide?rev=31c26d96eaadbba910ffe3613ad8b4cf9c598a93#31c26d96eaadbba910ffe3613ad8b4cf9c598a93"
+
+[[package]]
 name = "monero-fcmp-plus-plus"
 version = "0.1.0"
 source = "git+https://github.com/monero-oxide/monero-oxide?rev=31c26d96eaadbba910ffe3613ad8b4cf9c598a93#31c26d96eaadbba910ffe3613ad8b4cf9c598a93"
@@ -1133,7 +1138,7 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
- "monero-fcmp-plus-plus",
+ "monero-epee",
  "serde",
  "serde_json",
  "thiserror",

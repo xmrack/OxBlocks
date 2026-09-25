@@ -289,6 +289,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => tracing::warn!("could not reach monerod at startup: {e}"),
     }
 
+    // The curve-tree generators take a second or two to decode, so do it now
+    // rather than in the first request to check a path.
+    tokio::task::spawn_blocking(|| {
+        let started = std::time::Instant::now();
+        explorer_core::curve_tree::load_generators();
+        tracing::info!("curve-tree generators loaded in {:?}", started.elapsed());
+    });
+
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     tracing::info!(addr = %config.bind, "oxblocks listening");
 

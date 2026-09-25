@@ -2474,7 +2474,9 @@ fn the_tree_size_is_the_same_whichever_output_probes_it() {
     for root in [&own, &in_tree] {
         assert_eq!(root.text("status"), Some("OK"));
         assert_eq!(TreeSizeQuery::answer(root), Some(62));
-        assert!(matches!(root.get("paths"), Some(Value::Array(_))));
+        // One path, for the one id asked about: epee writes it as it writes
+        // a lone section.
+        assert!(matches!(root.array("paths"), Some([Value::Section(_)])));
         assert_eq!(root.unsigned("credits"), Some(0));
     }
 
@@ -2553,88 +2555,6 @@ fn a_path_holds_whole_groups_and_ends_at_one_root() {
     // 760 leaves: 20 parents, in groups of 18; 2 above them; then the root.
     assert_eq!(old.n_leaf_tuples, 760);
     assert_eq!(sizes, [18, 2, 1]);
-}
-
-/// The proof layout here agrees with monero-oxide's for every input and layer
-/// count consensus allows: `FCMP_PLUS_PLUS_MAX_INPUTS` and
-/// `FCMP_PLUS_PLUS_MAX_LAYERS` in monerod's `src/cryptonote_config.h`.
-#[test]
-fn the_proof_layout_matches_monero_oxide() {
-    use monero_fcmp_plus_plus::{Curves, FcmpPlusPlus, fcmps};
-    use monerod_rpc::types::{
-        FCMP_PP_SAL_LEN, FCMP_PP_TUPLE_LEN, HELIOS_CHUNK_WIDTH, MembershipShape, SELENE_CHUNK_WIDTH,
-    };
-
-    for inputs in 1..=128 {
-        for layers in 1..=12u8 {
-            let l = usize::from(layers);
-            let shape = MembershipShape::of(inputs, layers).expect("a shape");
-            let (selene_rows, helios_rows) = fcmps::Fcmp::<Curves>::ipa_rows(inputs, l);
-            assert_eq!(
-                (shape.selene_rows, shape.helios_rows, shape.len),
-                (
-                    selene_rows,
-                    helios_rows,
-                    fcmps::Fcmp::<Curves>::proof_size(inputs, l)
-                ),
-                "{inputs} inputs, {layers} layers"
-            );
-            assert_eq!(
-                inputs * (FCMP_PP_TUPLE_LEN + FCMP_PP_SAL_LEN) + shape.len,
-                FcmpPlusPlus::proof_size(inputs, l)
-            );
-        }
-    }
-    assert_eq!(SELENE_CHUNK_WIDTH, fcmps::LAYER_ONE_LEN as u64);
-    assert_eq!(HELIOS_CHUNK_WIDTH, fcmps::LAYER_TWO_LEN as u64);
-    assert_eq!(MembershipShape::of(0, 2), None);
-    assert_eq!(MembershipShape::of(2, 0), None);
-}
-
-/// Each captured proof is one monero-oxide reads whole, at the input count
-/// and layer count its transaction gives.
-#[test]
-fn monero_oxide_reads_each_captured_proof() {
-    use monero_fcmp_plus_plus::FcmpPlusPlus;
-
-    for (_, tx) in decoded_txs("fcmp/get_transactions_fcmp.json") {
-        let prunable = tx.rctsig_prunable.as_ref().expect("prunable");
-        let proof = hex_bytes(prunable.fcmp_pp.as_deref().expect("a proof"));
-        let pseudo_outs: Vec<[u8; 32]> = tx
-            .pseudo_outs()
-            .iter()
-            .map(|p| hex_bytes(p).try_into().expect("32 bytes"))
-            .collect();
-        let layers = usize::from(tx.n_tree_layers().expect("layers"));
-        let mut reader = proof.as_slice();
-        FcmpPlusPlus::read(&pseudo_outs, layers, &mut reader).expect("reads");
-        assert!(reader.is_empty(), "nothing left over");
-    }
-}
-
-fn hex_bytes(hex: &str) -> Vec<u8> {
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex"))
-        .collect()
-}
-
-/// The capture's spends' membership proofs are exactly the length the shape
-/// gives for their input and layer counts.
-#[test]
-fn a_captured_proof_splits_at_the_length_its_shape_gives() {
-    use monerod_rpc::types::MembershipShape;
-
-    for (_, tx) in decoded_txs("fcmp/get_transactions_fcmp.json") {
-        let parts = tx
-            .rctsig_prunable
-            .as_ref()
-            .and_then(|p| p.fcmp_pp_parts(tx.vin.len()))
-            .expect("splits");
-        let shape = MembershipShape::of(tx.vin.len(), tx.n_tree_layers().expect("layers"))
-            .expect("a shape");
-        assert_eq!(parts.membership_len, shape.len);
-    }
 }
 
 /// The capture's spends name block 120, when the tree held 62 outputs, and

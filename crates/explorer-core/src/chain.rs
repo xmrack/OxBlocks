@@ -139,9 +139,10 @@ impl ChainError {
                 format!("the daemon's answer to {what} could not be read")
             }
             // These carry internals. Say what happened, not where.
-            Self::Unavailable(_) | Self::Rpc(_) => {
+            Self::Unavailable(_) | Self::Rpc(monerod_rpc::RpcError::Transport { .. }) => {
                 "the explorer could not reach its daemon".to_owned()
             }
+            Self::Rpc(_) => "the explorer's daemon gave an answer it could not use".to_owned(),
         }
     }
 }

@@ -18,4 +18,4 @@ mod url;
 
 pub use client::{Client, ClientBuilder};
 pub use error::{RpcError, Status, TransportKind};
-pub use types::{JsonRpcEnvelope, JsonRpcError, NestedJsonError};
+pub use types::NestedJsonError;

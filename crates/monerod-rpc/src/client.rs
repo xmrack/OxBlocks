@@ -21,7 +21,8 @@ use hyper::header::{ACCEPT, CONTENT_TYPE, HeaderValue, USER_AGENT};
 use hyper::{Method, Request};
 use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::rt::TokioExecutor;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::value::RawValue;
 
 use crate::error::{RpcError, Status, TransportKind};
 use crate::url::BaseUrl;
@@ -33,6 +34,10 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// This is remote input on its way into logs, so it is bounded. monerod's own
 /// error bodies are far shorter than this.
 const MAX_ERROR_BODY: usize = 256;
+
+/// The most of a failing response's body that is read, to take
+/// [`MAX_ERROR_BODY`] characters from.
+const MAX_ERROR_BODY_READ: u64 = 64 * 1024;
 
 /// The largest response this client will accumulate, unless told otherwise.
 ///
@@ -169,25 +174,23 @@ impl Client {
         Ok(Bytes::from(buf))
     }
 
-    /// POST a body to `path` and return the parsed JSON, without interpreting it.
+    /// POST a body to `path` as JSON and return the answer's bytes.
     async fn post(
         &self,
         path: &str,
         context: &'static str,
         body: &impl Serialize,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<Bytes, RpcError> {
         let payload =
             serde_json::to_vec(body).map_err(|source| RpcError::Encode { context, source })?;
-        let bytes = self
-            .exchange(
-                path,
-                context,
-                "application/json",
-                payload,
-                self.max_response_bytes,
-            )
-            .await?;
-        serde_json::from_slice(&bytes).map_err(|source| RpcError::Decode { context, source })
+        self.exchange(
+            path,
+            context,
+            "application/json",
+            payload,
+            self.max_response_bytes,
+        )
+        .await
     }
 
     /// POST `payload` to `path` and return the body of a successful answer.
@@ -241,16 +244,22 @@ impl Client {
         })?;
 
         let http_status = response.status();
-        let bytes =
-            tokio::time::timeout_at(deadline, Self::collect_body(response, context, max_bytes))
-                .await
-                .map_err(|_| expired("body not read"))??;
-
         if !http_status.is_success() {
             // Keep a bounded slice of the body: monerod's error pages are short,
-            // but this is remote input and it ends up in logs.
-            let body = String::from_utf8_lossy(&bytes);
-            let body: String = body.chars().take(MAX_ERROR_BODY).collect();
+            // but this is remote input and it ends up in logs. Only that much
+            // is read, not the whole answer up to `max_bytes`.
+            let read = tokio::time::timeout_at(
+                deadline,
+                Self::collect_body(response, context, MAX_ERROR_BODY_READ),
+            )
+            .await
+            .map_err(|_| expired("body not read"))?;
+            let body = match read {
+                Ok(bytes) => {
+                    crate::error::printable(&String::from_utf8_lossy(&bytes), MAX_ERROR_BODY)
+                }
+                Err(_) => "<error body too large to read>".to_owned(),
+            };
             return Err(RpcError::Http {
                 context,
                 status: http_status.as_u16(),
@@ -258,7 +267,9 @@ impl Client {
             });
         }
 
-        Ok(bytes)
+        tokio::time::timeout_at(deadline, Self::collect_body(response, context, max_bytes))
+            .await
+            .map_err(|_| expired("body not read"))?
     }
 
     /// Call a JSON-RPC 2.0 method on `/json_rpc`.
@@ -280,7 +291,18 @@ impl Client {
             params: Option<P>,
         }
 
-        let mut value = self
+        /// The envelope of the answer. `result` is kept as text and parsed
+        /// once, into `R`: parsing the whole answer into a
+        /// `serde_json::Value` first holds it in memory many times over.
+        #[derive(Deserialize)]
+        struct Reply<'a> {
+            #[serde(default)]
+            error: Option<serde_json::Value>,
+            #[serde(borrow, default)]
+            result: Option<&'a RawValue>,
+        }
+
+        let bytes = self
             .post(
                 "json_rpc",
                 method,
@@ -292,8 +314,13 @@ impl Client {
                 },
             )
             .await?;
+        let reply: Reply<'_> =
+            serde_json::from_slice(&bytes).map_err(|source| RpcError::Decode {
+                context: method,
+                source,
+            })?;
 
-        if let Some(error) = value.get("error") {
+        if let Some(error) = reply.error {
             return Err(RpcError::JsonRpc {
                 method,
                 code: error
@@ -303,26 +330,23 @@ impl Client {
                 message: error
                     .get("message")
                     .and_then(serde_json::Value::as_str)
-                    .unwrap_or("<no message>")
-                    .to_owned(),
+                    .map_or_else(
+                        || "<no message>".to_owned(),
+                        |m| crate::error::printable(m, MAX_ERROR_BODY),
+                    ),
             });
         }
-
-        let result =
-            value
-                .get_mut("result")
-                .map(serde_json::Value::take)
-                .ok_or(RpcError::Missing {
-                    context: method,
-                    field: "result",
-                })?;
+        let result = reply.result.ok_or(RpcError::Missing {
+            context: method,
+            field: "result",
+        })?;
 
         // Several JSON-RPC results carry a `status` of their own in addition to
         // the envelope. An `error`-free response with `"status": "Failed"` is
         // still a failure.
-        Self::check_status(&result, method)?;
+        Self::check_status(result.get().as_bytes(), method)?;
 
-        serde_json::from_value(result).map_err(|source| RpcError::Decode {
+        serde_json::from_str(result.get()).map_err(|source| RpcError::Decode {
             context: method,
             source,
         })
@@ -336,9 +360,9 @@ impl Client {
         B: Serialize,
         R: DeserializeOwned,
     {
-        let value = self.post(endpoint, endpoint, body).await?;
-        Self::check_status(&value, endpoint)?;
-        serde_json::from_value(value).map_err(|source| RpcError::Decode {
+        let bytes = self.post(endpoint, endpoint, body).await?;
+        Self::check_status(&bytes, endpoint)?;
+        serde_json::from_slice(&bytes).map_err(|source| RpcError::Decode {
             context: endpoint,
             source,
         })
@@ -408,15 +432,23 @@ impl Client {
         }
     }
 
-    /// Reject a payload whose `status` is present and not `OK`.
+    /// Reject a JSON object whose `status` is present and not `OK`.
     ///
     /// A missing `status` is tolerated: not every result carries one, and
-    /// absence is not failure.
-    fn check_status(value: &serde_json::Value, context: &'static str) -> Result<(), RpcError> {
-        let Some(raw) = value.get("status").and_then(serde_json::Value::as_str) else {
+    /// absence is not failure. Only `status` is read; the rest of the object
+    /// is walked past without being kept.
+    fn check_status(json: &[u8], context: &'static str) -> Result<(), RpcError> {
+        #[derive(Deserialize)]
+        struct WithStatus<'a> {
+            #[serde(borrow, default)]
+            status: Option<std::borrow::Cow<'a, str>>,
+        }
+        // Anything but an object with a string `status` has no status to
+        // fail on; whether it is the answer expected is for its own parse.
+        let Ok(WithStatus { status: Some(raw) }) = serde_json::from_slice(json) else {
             return Ok(());
         };
-        let status = Status::parse(raw);
+        let status = Status::parse(&raw);
         if status.is_ok() {
             Ok(())
         } else {
@@ -848,18 +880,18 @@ mod tests {
 
     #[test]
     fn non_ok_status_is_an_error_and_missing_status_is_not() {
-        let failed = serde_json::json!({ "status": "Failed" });
-        assert!(Client::check_status(&failed, "/get_outs").is_err());
-
-        let busy = serde_json::json!({ "status": "BUSY" });
-        let err = Client::check_status(&busy, "/get_outs").expect_err("BUSY is not OK");
+        let status = |json: &str| Client::check_status(json.as_bytes(), "/get_outs");
+        assert!(status(r#"{"status": "Failed"}"#).is_err());
+        let err = status(r#"{"status": "BUSY", "height": 1}"#).expect_err("BUSY is not OK");
         assert!(err.is_transient());
-
-        let ok = serde_json::json!({ "status": "OK" });
-        assert!(Client::check_status(&ok, "/get_outs").is_ok());
-
-        let absent = serde_json::json!({ "height": 1 });
-        assert!(Client::check_status(&absent, "/get_outs").is_ok());
+        assert!(status(r#"{"height": 1, "status": "OK"}"#).is_ok());
+        assert!(status(r#"{"height": 1}"#).is_ok());
+        // No string status, nothing to fail on: the typed parse decides.
+        assert!(status(r#"{"status": 7}"#).is_ok());
+        assert!(status("[1, 2]").is_ok());
+        // A status carrying control characters reaches the error printable.
+        let err = status("{\"status\": \"bad\\nline\"}").expect_err("not OK");
+        assert!(!err.to_string().contains('\n'), "{err}");
 
         // Binary: a status that is present but unreadable is a failure, not a
         // missing field.

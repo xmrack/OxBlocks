@@ -32,7 +32,7 @@
 //! Derived from monerod v0.18 `src/cryptonote_basic/tx_extra.h`,
 //! `src/cryptonote_basic/cryptonote_format_utils.cpp:564-583` and the
 //! serialization archive templates that actually implement the parse, then
-//! checked against monerod'''s own parser by the differential test below.
+//! checked against monerod's own parser by the differential test below.
 
 use std::fmt;
 

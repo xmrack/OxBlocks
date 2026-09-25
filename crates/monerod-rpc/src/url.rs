@@ -21,7 +21,16 @@ impl BaseUrl {
     /// A query or fragment is refused rather than dropped: it means whoever
     /// configured this had something else in mind, and silently ignoring it
     /// would talk to a URL they did not ask for.
+    ///
+    /// So are credentials in the authority (`user:pass@host`). This client
+    /// never sends them, and the URL is logged at startup and carried in
+    /// errors, where a password does not belong.
     pub fn parse(raw: &str) -> Result<Self, String> {
+        // `http::Uri` drops a fragment without a word, so it is looked for
+        // before the parse.
+        if raw.contains('#') {
+            return Err("a fragment is not meaningful here".to_owned());
+        }
         let uri: Uri = raw.parse().map_err(|e| format!("not a URL: {e}"))?;
 
         match uri.scheme_str() {
@@ -36,6 +45,9 @@ impl BaseUrl {
             .as_str();
         if authority.is_empty() {
             return Err("no host".to_owned());
+        }
+        if authority.contains('@') {
+            return Err("credentials in the URL are not sent, so they are refused".to_owned());
         }
 
         if let Some(pq) = uri.path_and_query()
@@ -86,6 +98,15 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn a_fragment_or_credentials_are_refused_not_dropped() {
+        assert!(BaseUrl::parse("http://h:1/mon#frag").is_err());
+        assert!(BaseUrl::parse("http://h:1#").is_err());
+        assert!(BaseUrl::parse("http://user:pass@h:1/").is_err());
+        assert!(BaseUrl::parse("http://user@h:1/").is_err());
+        assert!(BaseUrl::parse("http://h:1/").is_ok());
+    }
 
     #[test]
     fn a_plain_host_gains_a_trailing_slash() {

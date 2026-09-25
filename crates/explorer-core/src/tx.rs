@@ -62,7 +62,7 @@ impl TxFacts {
     /// returned it.
     #[must_use]
     pub fn from_entry(entry: &TxEntry, tx: &TxJson) -> Self {
-        let size = entry.raw_hex().map_or(0, |h| (h.len() / 2) as u64);
+        let size = entry.raw_hex_len().map_or(0, |n| (n / 2) as u64);
         Self::derive(tx, size, None)
     }
 

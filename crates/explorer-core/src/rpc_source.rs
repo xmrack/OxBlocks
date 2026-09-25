@@ -50,8 +50,11 @@ fn in_requested_order(hashes: &[Hash32], mut found: HashMap<Hash32, TxEntry>) ->
 
 pub struct RpcChainSource {
     client: Client,
-    /// Blocks keyed by hash. A hash names one block forever, so this never
-    /// needs invalidating.
+    /// Blocks keyed by hash. A hash names one block forever, but not where it
+    /// stands: a reorg can orphan a recent block, or put an orphan on the main
+    /// chain, and the cached header would go on saying otherwise. So entries
+    /// expire after a block's time; a block buried past the reorg window is
+    /// kept in `blocks_by_height` as well, without expiry.
     blocks_by_hash: Cache<Hash32, GetBlock>,
     /// Blocks keyed by height, populated **only** for heights buried deeper
     /// than [`REORG_WINDOW`]. A reorg reassigns a height to a different block,
@@ -59,7 +62,8 @@ pub struct RpcChainSource {
     blocks_by_height: Cache<u64, GetBlock>,
     /// Confirmed transactions, keyed by hash and cached only once buried.
     txs: Cache<Hash32, TxEntry>,
-    /// Ring members. An output at a given index is immutable once it exists.
+    /// Ring members, keyed by amount and index, cached only once buried: a
+    /// reorg can give a recent index to a different output.
     outs: Cache<(u64, u64), OutKey>,
     /// The chain tip. Short-lived by nature, so it expires rather than being
     /// invalidated.
@@ -185,6 +189,40 @@ impl BlockTree {
 /// daemon will happily serve.
 pub const DEFAULT_MAX_INFLIGHT_RPC: usize = 24;
 
+/// Roughly the bytes a cached block holds: its strings, which the daemon
+/// sizes, and a word for everything else.
+fn block_bytes(b: &GetBlock) -> usize {
+    let h = &b.block_header;
+    b.blob.len()
+        + b.json.len()
+        + b.miner_tx_hash.len()
+        + b.status.len()
+        + b.tx_hashes.iter().map(String::len).sum::<usize>()
+        + h.hash.len()
+        + h.prev_hash.len()
+        + h.wide_difficulty.len()
+        + h.wide_cumulative_difficulty.len()
+        + h.pow_hash.len()
+        + std::mem::size_of::<GetBlock>()
+}
+
+/// Roughly the bytes a cached transaction holds. See [`block_bytes`].
+fn tx_bytes(t: &TxEntry) -> usize {
+    t.tx_hash.len()
+        + t.as_hex.len()
+        + t.pruned_as_hex.len()
+        + t.prunable_as_hex.len()
+        + t.prunable_hash.len()
+        + t.as_json.len()
+        + 8 * (t.output_indices.len() + t.unified_ids.len())
+        + std::mem::size_of::<TxEntry>()
+}
+
+/// Roughly the bytes a cached ring member holds. See [`block_bytes`].
+fn out_bytes(o: &OutKey) -> usize {
+    o.key.len() + o.mask.len() + o.txid.len() + std::mem::size_of::<OutKey>()
+}
+
 impl RpcChainSource {
     #[must_use]
     pub fn new(client: Client) -> Self {
@@ -193,10 +231,15 @@ impl RpcChainSource {
             // Sized for a working set of a few thousand objects: enough that
             // paging through recent history is warm, small enough that the
             // process footprint stays predictable.
-            blocks_by_hash: Cache::permanent(512),
-            blocks_by_height: Cache::permanent(2048),
-            txs: Cache::permanent(8192),
-            outs: Cache::permanent(65_536),
+            //
+            // What the daemon sends is sized by the daemon, so the caches
+            // holding its strings are also held to a byte budget: about 200
+            // MiB in all, inside the 512 MiB `deploy/oxblocks.service` allows.
+            blocks_by_hash: Cache::expiring(512, Duration::from_secs(120))
+                .within_bytes(32 << 20, block_bytes),
+            blocks_by_height: Cache::permanent(2048).within_bytes(64 << 20, block_bytes),
+            txs: Cache::permanent(8192).within_bytes(96 << 20, tx_bytes),
+            outs: Cache::permanent(65_536).within_bytes(16 << 20, out_bytes),
             // Long enough to collapse the several calls a single page makes,
             // short enough that the height on screen is never visibly stale.
             info: Cache::expiring(1, Duration::from_secs(5)),
@@ -406,8 +449,22 @@ impl RpcChainSource {
                 _ => ChainError::from(e),
             })?;
 
+        // The block asked for, or none: a block the daemon sends in its place
+        // must not be shown, nor cached under a name it does not have.
+        let answered = fresh.block_header.hash.parse::<Hash32>().ok();
+        let matches = match id {
+            BlockId::Hash(h) => answered == Some(h),
+            BlockId::Height(h) => fresh.block_header.height == h,
+        };
+        if !matches {
+            return Err(ChainError::BadAnswer {
+                what: "get_block",
+                detail: format!("asked for block {id}, sent {}", fresh.block_header.height),
+            });
+        }
+
         // Keyed by hash: always safe, because a hash names one block forever.
-        if let Ok(h) = fresh.block_header.hash.parse::<Hash32>() {
+        if let Some(h) = answered {
             self.blocks_by_hash.insert(h, fresh.clone());
         }
 
@@ -419,7 +476,17 @@ impl RpcChainSource {
         // by hash, with a depth counted from the main tip like any other, so
         // one looked up once buried would otherwise take the main chain's
         // place at its height for every later lookup by height.
-        if safe_to_cache_by_height(fresh.block_header.depth) && !fresh.block_header.orphan_status {
+        //
+        // The daemon's depth is checked against the tip rather than taken on
+        // its word alone.
+        let buried = safe_to_cache_by_height(fresh.block_header.depth)
+            && self.info().await.is_ok_and(|info| {
+                safe_to_cache_by_height(
+                    info.height
+                        .saturating_sub(fresh.block_header.height.saturating_add(1)),
+                )
+            });
+        if buried && !fresh.block_header.orphan_status {
             return Ok(self
                 .blocks_by_height
                 .insert(fresh.block_header.height, fresh));
@@ -492,7 +559,13 @@ impl RpcChainSource {
     /// reads as the tip for as long as it stays cached. Anything shown to a
     /// reader is recounted from the current tip. When the tip cannot be had,
     /// the stored count is the best there is.
+    ///
+    /// 0 for an orphan: it is on no chain the tip is on, so no block buries
+    /// it, although monerod counts its depth from the main tip like any other.
     pub async fn depth_now(&self, header: &monerod_rpc::types::BlockHeader) -> u64 {
+        if header.orphan_status {
+            return 0;
+        }
         match self.info().await {
             Ok(info) => info.height.saturating_sub(header.height.saturating_add(1)),
             Err(_) => header.depth,
@@ -535,6 +608,11 @@ impl RpcChainSource {
             }
         }
 
+        // What was asked for, so that only that is cached, and the chain's
+        // height, so that "buried" is not the daemon's word alone.
+        let asked: std::collections::HashSet<&Hash32> = hashes.iter().collect();
+        // Asked for only when an answer might be cached.
+        let mut tip_height: Option<Option<u64>> = None;
         let mut missed = Vec::new();
         for response in futures_util::future::join_all(want.chunks(MAX_TXS_PER_CALL).map(|chunk| {
             let request = GetTransactionsRequest::decoded(chunk.to_vec());
@@ -553,10 +631,23 @@ impl RpcChainSource {
                 let Ok(h) = entry.tx_hash.parse::<Hash32>() else {
                     continue;
                 };
+                // A transaction not asked for is dropped, not cached under a
+                // name the daemon chose.
+                if !asked.contains(&h) {
+                    continue;
+                }
                 // Only confirmed and buried transactions. A pool transaction
                 // will gain a block, and a freshly confirmed one can still be
                 // reorged back out -- either would be cached as a lie.
-                if !entry.in_pool && entry.confirmations >= REORG_WINDOW {
+                let candidate = !entry.in_pool && entry.confirmations >= REORG_WINDOW;
+                if candidate && tip_height.is_none() {
+                    tip_height = Some(self.info().await.ok().map(|i| i.height));
+                }
+                let buried = candidate
+                    && tip_height.flatten().is_some_and(|tip| {
+                        safe_to_cache_by_height(tip.saturating_sub(entry.block_height))
+                    });
+                if buried {
                     self.txs.insert(h, entry.clone());
                 }
                 found.insert(h, entry);
@@ -868,8 +959,9 @@ impl RpcChainSource {
             return unresolved(true);
         }
 
+        let tip = self.info().await.ok().map(|i| i.height);
         for (req, out) in requests.iter().zip(response.outs.iter()) {
-            self.outs.insert((req.amount(), req.index()), out.clone());
+            self.keep_out((req.amount(), req.index()), out.clone(), tip);
         }
 
         let ring = requests
@@ -950,6 +1042,19 @@ impl RpcChainSource {
     /// entry written at the top of this function can be evicted before the
     /// bottom of it, and a ring assembled from what survived would be reported
     /// as partly unavailable when it was in fact complete.
+    /// A ring member, cached when its block is buried past the reorg window
+    /// below `tip`, the chain's height, and returned either way.
+    fn keep_out(&self, key: (u64, u64), out: OutKey, tip: Option<u64>) -> Arc<OutKey> {
+        let buried = tip.is_some_and(|tip| {
+            safe_to_cache_by_height(tip.saturating_sub(out.height.saturating_add(1)))
+        });
+        if buried {
+            self.outs.insert(key, out)
+        } else {
+            Arc::new(out)
+        }
+    }
+
     async fn resolve_rings_together(&self, inputs: &[&TxInToKey]) -> Option<Vec<ResolvedInput>> {
         let rings: Vec<Vec<OutKeyRequest>> = inputs
             .iter()
@@ -989,9 +1094,10 @@ impl RpcChainSource {
             if response.outs.len() != wanted.len() {
                 return None;
             }
+            let tip = self.info().await.ok().map(|i| i.height);
             for (req, out) in wanted.iter().zip(response.outs) {
                 let key = (req.amount(), req.index());
-                known.insert(key, self.outs.insert(key, out));
+                known.insert(key, self.keep_out(key, out, tip));
             }
         }
 
@@ -1833,6 +1939,23 @@ mod tests {
         assert_eq!(daemon.count("get_block"), 10);
     }
 
+    /// A block sent in place of the one asked for is refused, and is not
+    /// cached under the name asked for or its own.
+    #[tokio::test]
+    async fn a_block_other_than_the_one_asked_for_is_refused() {
+        let chain = Chain { tip: 9, fork: 0 };
+        // Any unknown hash is answered with the orphan at height 3, whose own
+        // hash is another.
+        let daemon = chain.daemon(&[], Some(3));
+        let source = daemon.source();
+        let asked: Hash32 = format!("{:064x}", 0xdead).parse().unwrap();
+        let err = source.block(BlockId::Hash(asked)).await.unwrap_err();
+        assert!(matches!(err, ChainError::BadAnswer { .. }), "{err}");
+        assert!(source.blocks_by_hash.get(&asked).is_none());
+        let sent: Hash32 = format!("{:064x}", 3 + 1_000_000).parse().unwrap();
+        assert!(source.blocks_by_hash.get(&sent).is_none());
+    }
+
     /// Without the tree the same range fetches no bodies at all.
     #[tokio::test]
     async fn a_range_that_does_not_show_the_tree_does_not_pay_for_it() {
@@ -1950,6 +2073,12 @@ mod tests {
 
         // With no tip to count from, the stored count is all there is.
         assert_eq!(source().depth_now(&header).await, 0);
+
+        // An orphan is buried by nothing, whatever depth monerod gives it.
+        let orphan: monerod_rpc::types::BlockHeader =
+            serde_json::from_value(chain.header(90, true)).unwrap();
+        assert!(orphan.depth > 0);
+        assert_eq!(src.depth_now(&orphan).await, 0);
     }
 
     /// A cached transaction's confirmations are counted from the tip as it is
