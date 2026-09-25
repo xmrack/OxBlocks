@@ -2054,6 +2054,73 @@ impl RctSigPrunable {
     }
 }
 
+/// The shape of an FCMP++ membership proof: the rows of each of its two
+/// arithmetic-circuit proofs, one on Selene and one on Helios, and its length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MembershipShape {
+    pub selene_rows: usize,
+    pub helios_rows: usize,
+    /// Bytes, [`FCMP_PP_ROOT_POK_LEN`] included.
+    pub len: usize,
+}
+
+impl MembershipShape {
+    /// The shape for `inputs` inputs in a tree of `layers` layers. `None` for
+    /// zero of either.
+    ///
+    /// `Fcmp::ipa_rows` and `Fcmp::proof_size` in monero-oxide's
+    /// `crypto/fcmps`.
+    #[must_use]
+    pub fn of(inputs: usize, layers: u8) -> Option<Self> {
+        const C1_LEAVES_ROWS_PER_INPUT: usize = 97;
+        const C1_BRANCH_ROWS_PER_INPUT: usize = 52;
+        const C2_ROWS_PER_INPUT_PER_LAYER: usize = 32;
+        const C1_TARGET_ROWS: usize = 256;
+        const C2_TARGET_ROWS: usize = 128;
+        const COMMITMENT_WORD_LEN: usize = 128;
+        const WORDS_PER_CLAIMED_POINT: usize = 4;
+        const WORDS_PER_DIVISOR: usize = 2;
+
+        let layers = usize::from(layers);
+        if inputs == 0 || layers == 0 {
+            return None;
+        }
+        let c1_rows =
+            inputs * (C1_LEAVES_ROWS_PER_INPUT + (layers - 1) / 2 * C1_BRANCH_ROWS_PER_INPUT);
+        let c2_rows = inputs * (layers / 2 * C2_ROWS_PER_INPUT_PER_LAYER).max(1);
+        let selene_rows = c1_rows.next_power_of_two().max(C1_TARGET_ROWS);
+        let helios_rows = c2_rows.next_power_of_two().max(C2_TARGET_ROWS);
+
+        // AI, AO, AS, tau_x, u, t_caret, a and b for each proof, then an L and
+        // an R for each folding round.
+        let mut elements = 16
+            + 2 * selene_rows.trailing_zeros() as usize
+            + 2 * helios_rows.trailing_zeros() as usize;
+
+        let c1_root = layers % 2;
+        let c2_root = 1 - c1_root;
+        let c1_branches = inputs * (layers / 2) + c1_root;
+        let c2_branches = inputs * (layers / 2 - c2_root) + c2_root;
+        let c1_words = inputs * (WORDS_PER_DIVISOR + 4 * WORDS_PER_CLAIMED_POINT)
+            + inputs * ((layers - 1) / 2) * WORDS_PER_CLAIMED_POINT;
+        let c2_words = inputs * (layers / 2) * WORDS_PER_CLAIMED_POINT;
+        for (branches, words, rows) in [
+            (c1_branches, c1_words, selene_rows),
+            (c2_branches, c2_words, helios_rows),
+        ] {
+            let commitments = branches + (words * COMMITMENT_WORD_LEN).div_ceil(rows);
+            let ni = 2 + 2 * commitments;
+            let t_len = 2 * (ni + 2) - 1;
+            elements += commitments + (t_len - ni / 2 - 1);
+        }
+        Some(Self {
+            selene_rows,
+            helios_rows,
+            len: 32 * elements + FCMP_PP_ROOT_POK_LEN,
+        })
+    }
+}
+
 /// Bytes of an FCMP++ input tuple as serialized: O~, I~ and R. Its fourth
 /// member, C~, is the input's pseudo-out and is not repeated in the proof.
 pub const FCMP_PP_TUPLE_LEN: usize = 3 * 32;

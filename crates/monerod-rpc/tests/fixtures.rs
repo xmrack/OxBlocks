@@ -2481,6 +2481,57 @@ fn the_tree_size_is_the_same_whichever_output_probes_it() {
     assert_eq!(lean.get("paths"), None, "nothing unasked for is kept");
 }
 
+/// Every length monerod's own library gives, for every input and layer count
+/// consensus allows.
+#[test]
+fn the_membership_proof_is_as_long_as_monerod_makes_it() {
+    use monerod_rpc::types::MembershipShape;
+
+    let path = fixtures_root().join("fcmp/membership_proof_size.txt");
+    let table = std::fs::read_to_string(&path).expect("the table is readable");
+    let mut rows = 0;
+    for line in table.lines().filter(|l| !l.starts_with('#')) {
+        let [inputs, layers, len]: [usize; 3] = line
+            .split_whitespace()
+            .map(|n| n.parse().expect("a number"))
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("three columns");
+        let layers = u8::try_from(layers).expect("a layer count");
+        let shape = MembershipShape::of(inputs, layers).expect("a shape");
+        assert_eq!(shape.len, len, "{inputs} inputs, {layers} layers");
+        rows += 1;
+    }
+    assert_eq!(rows, 128 * 12);
+
+    // Small spends sit at each proof's floor; the rows grow past it with
+    // inputs and layers.
+    let small = MembershipShape::of(2, 2).expect("a shape");
+    assert_eq!((small.selene_rows, small.helios_rows), (256, 128));
+    let large = MembershipShape::of(8, 6).expect("a shape");
+    assert_eq!((large.selene_rows, large.helios_rows), (2048, 1024));
+    assert_eq!(MembershipShape::of(0, 2), None);
+    assert_eq!(MembershipShape::of(2, 0), None);
+}
+
+/// The capture's spends' membership proofs are exactly the length the shape
+/// gives for their input and layer counts.
+#[test]
+fn a_captured_proof_splits_at_the_length_its_shape_gives() {
+    use monerod_rpc::types::MembershipShape;
+
+    for (_, tx) in decoded_txs("fcmp/get_transactions_fcmp.json") {
+        let parts = tx
+            .rctsig_prunable
+            .as_ref()
+            .and_then(|p| p.fcmp_pp_parts(tx.vin.len()))
+            .expect("splits");
+        let shape = MembershipShape::of(tx.vin.len(), tx.n_tree_layers().expect("layers"))
+            .expect("a shape");
+        assert_eq!(parts.membership_len, shape.len);
+    }
+}
+
 /// The capture's spends name block 120, when the tree held 62 outputs, and
 /// monerod reports the layer count those 62 give.
 #[test]

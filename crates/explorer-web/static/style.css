@@ -518,3 +518,24 @@ dl.kv.spaced { margin-top: 0.8rem; }
 .pic .pen { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; }
 .pic .small { fill: var(--fg-muted); font-size: 11px; }
 .pic .q { fill: var(--accent); font-size: 28px; font-weight: 700; }
+
+.proof-map { display: block; width: 100%; height: auto; margin: 0.2rem 0 0.1rem; }
+.proof-map .seg { fill: var(--accent); opacity: 0.22; }
+.proof-map .seg.sal { opacity: 0.32; }
+.proof-map .seg.on { opacity: 1; }
+.proof-map a:hover .seg { opacity: 0.7; }
+
+.step-card .curve-tree { border: 0; padding: 0; margin: 1rem 0 0; background: none; }
+
+.maths { margin-top: 0.8rem; font-size: 0.9rem; }
+.maths > summary { cursor: pointer; color: var(--accent); font-weight: 600; font-size: 0.85rem; }
+.maths[open] > summary { margin-bottom: 0.4rem; }
+.maths p, .maths ol { margin: 0.4rem 0; }
+.maths .eq {
+  padding: 0.5rem 0.8rem; border-left: 2px solid var(--accent);
+  background: var(--bg-sunken); line-height: 1.9;
+  font-family: "STIX Two Math", "Cambria Math", "Latin Modern Math", Georgia, serif; font-size: 1.02rem;
+}
+.maths var { font-style: italic; font-family: Georgia, "Times New Roman", serif; }
+.maths .eq var { font-family: inherit; }
+.map-note { margin: 0.1rem 0 0; font-size: 0.78rem; color: var(--fg-faint); }

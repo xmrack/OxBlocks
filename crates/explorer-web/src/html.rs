@@ -1431,6 +1431,115 @@ struct FcmpPage {
     fee: String,
     outputs: usize,
     range_proofs: usize,
+    /// The two circuit proofs' rows, shown only where they account for the
+    /// membership proof's actual length.
+    shape: Option<ShapeView>,
+    /// The curve the root is on: Selene for an odd layer count.
+    root_curve: Option<&'static str>,
+    /// The proof drawn to scale, one segment per part.
+    map: Vec<ProofSegment>,
+    tree: Option<TreeFunnel>,
+}
+
+struct ShapeView {
+    selene_rows: usize,
+    selene_rounds: u32,
+    helios_rows: usize,
+    helios_rounds: u32,
+}
+
+/// One part of the proof along the walkthrough's bar.
+struct ProofSegment {
+    x: u32,
+    width: u32,
+    class: &'static str,
+    /// The step that explains this part.
+    step: usize,
+    label: String,
+}
+
+/// The bar's coordinate space, and the narrowest a part is drawn so it can
+/// still be seen and clicked.
+const MAP_WIDTH: u32 = 1000;
+const MAP_MIN_SEGMENT: f64 = 14.0;
+
+/// Lays the proof's parts along the bar, each as wide as its share of the
+/// bytes but never narrower than [`MAP_MIN_SEGMENT`].
+fn proof_map(inputs: usize, membership_len: usize) -> Vec<ProofSegment> {
+    use monerod_rpc::types::{FCMP_PP_ROOT_POK_LEN, FCMP_PP_SAL_LEN, FCMP_PP_TUPLE_LEN};
+
+    let mut parts: Vec<(usize, &'static str, usize, String)> = (1..=inputs)
+        .flat_map(|i| {
+            [
+                (
+                    FCMP_PP_TUPLE_LEN,
+                    "tuple",
+                    2,
+                    format!("Input {i}'s disguised output, {FCMP_PP_TUPLE_LEN} bytes"),
+                ),
+                (
+                    FCMP_PP_SAL_LEN,
+                    "sal",
+                    3,
+                    format!("Input {i}'s signature, {FCMP_PP_SAL_LEN} bytes"),
+                ),
+            ]
+        })
+        .collect();
+    let body = membership_len.saturating_sub(FCMP_PP_ROOT_POK_LEN);
+    parts.push((
+        body,
+        "member",
+        4,
+        format!("The membership proof, {} bytes", grouped(body as u64)),
+    ));
+    parts.push((
+        FCMP_PP_ROOT_POK_LEN,
+        "anchor",
+        5,
+        format!("The root anchor, {FCMP_PP_ROOT_POK_LEN} bytes"),
+    ));
+
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a chart coordinate, not chain arithmetic"
+    )]
+    let total = parts.iter().map(|p| p.0).sum::<usize>().max(1) as f64;
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a chart coordinate, not chain arithmetic"
+    )]
+    let drawn: Vec<f64> = parts
+        .iter()
+        .map(|p| (p.0 as f64 / total * f64::from(MAP_WIDTH)).max(MAP_MIN_SEGMENT))
+        .collect();
+    let scale = f64::from(MAP_WIDTH) / drawn.iter().sum::<f64>();
+
+    let mut at = 0.0;
+    parts
+        .into_iter()
+        .zip(drawn)
+        .map(|((_, class, step, label), w)| {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "within the bar's width by construction"
+            )]
+            let (x, end) = (
+                (at * scale).round() as u32,
+                ((at + w) * scale).round() as u32,
+            );
+            at += w;
+            // A pixel of space either side, so neighbours read as separate.
+            ProofSegment {
+                x: x + 1,
+                width: (end - x).saturating_sub(2),
+                class,
+                step,
+                label,
+            }
+        })
+        .collect()
 }
 
 struct StepLink {
@@ -1511,6 +1620,24 @@ fn fcmp_page(
         })
         .collect();
 
+    let layers = tx.n_tree_layers();
+    let shape = parts
+        .as_ref()
+        .zip(layers.and_then(|l| monerod_rpc::types::MembershipShape::of(tx.vin.len(), l)))
+        .filter(|(p, s)| p.membership_len == s.len)
+        .map(|(_, s)| ShapeView {
+            selene_rows: s.selene_rows,
+            selene_rounds: s.selene_rows.trailing_zeros(),
+            helios_rows: s.helios_rows,
+            helios_rounds: s.helios_rows.trailing_zeros(),
+        });
+    let map = parts
+        .as_ref()
+        .map(|p| proof_map(p.inputs.len(), p.membership_len))
+        .unwrap_or_default();
+    let tree = anonymity_set
+        .and_then(|n| tree_funnel(n, root_block.as_ref().map(|(_, root)| root.as_str())));
+
     let membership = parts.as_ref().zip(proof_len).map(|(p, total)| {
         let share = p.membership_len * 100 / total.max(1);
         (grouped(p.membership_len as u64), share as u64)
@@ -1540,6 +1667,10 @@ fn fcmp_page(
         fee: xmr(f.fee),
         outputs: tx.vout.len(),
         range_proofs: prunable.and_then(|p| p.bpp.as_ref()).map_or(0, Vec::len),
+        shape,
+        root_curve: layers.map(|l| if l % 2 == 1 { "Selene" } else { "Helios" }),
+        map,
+        tree,
     }
 }
 
@@ -3654,6 +3785,100 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("all 2 inputs at once"));
+    }
+
+    /// Parts in the proof's own order, each linked to its step, edge to edge
+    /// with a pixel either side, filling the bar.
+    #[test]
+    fn the_proof_bar_lays_each_part_out_in_order() {
+        let map = proof_map(2, 5_568);
+        let order: Vec<_> = map.iter().map(|g| (g.class, g.step)).collect();
+        assert_eq!(
+            order,
+            [
+                ("tuple", 2),
+                ("sal", 3),
+                ("tuple", 2),
+                ("sal", 3),
+                ("member", 4),
+                ("anchor", 5)
+            ]
+        );
+        assert_eq!(map.first().map(|g| g.x), Some(1));
+        let last = map.last().expect("an anchor");
+        assert_eq!(last.x + last.width + 1, MAP_WIDTH);
+        for w in map.windows(2) {
+            assert_eq!(w[1].x, w[0].x + w[0].width + 2);
+        }
+        // To scale: 5,504 of 6,528 bytes, less what the narrow parts borrow.
+        let member = &map[4];
+        assert!((800..840).contains(&member.width), "{}", member.width);
+        assert!(
+            map[0].width < map[1].width,
+            "a tuple is a quarter of a signature"
+        );
+        assert_eq!(map[4].label, "The membership proof, 5,504 bytes");
+        assert_eq!(map[0].label, "Input 1's disguised output, 96 bytes");
+        assert_eq!(map[3].label, "Input 2's signature, 384 bytes");
+
+        // Every part of a 128-input proof still gets a visible sliver.
+        let wide = proof_map(128, 200_000);
+        assert_eq!(wide.len(), 258);
+        assert!(wide.iter().all(|g| g.width >= 1), "no part vanishes");
+        let end = wide.last().expect("an anchor");
+        assert_eq!(end.x + end.width + 1, MAP_WIDTH);
+    }
+
+    /// The proof's shape, the tree, the root's curve and the bar all come
+    /// from this transaction, and every step's maths starts closed.
+    #[test]
+    fn the_walkthrough_draws_this_proof_and_hides_the_maths() {
+        let (entry, mut tx) = fcmp_fixture("full").remove(0);
+        let page = fcmp_page(None, &entry, &tx, Some(62), Some((112, "9".repeat(64))));
+        let s = page
+            .shape
+            .as_ref()
+            .expect("the shape accounts for the proof");
+        assert_eq!(
+            (
+                s.selene_rows,
+                s.selene_rounds,
+                s.helios_rows,
+                s.helios_rounds
+            ),
+            (256, 8, 128, 7)
+        );
+        assert_eq!(page.root_curve, Some("Helios"));
+        let html = page.render().expect("renders");
+        assert!(html.contains(
+            "Here the Selene proof has\n256 rows, folded in 8 rounds, and the Helios\nproof 128 rows in 7 rounds."
+        ), "{html}");
+        assert!(html.contains("<dt>Root is on</dt><dd>Helios</dd>"));
+        assert!(html.contains(r#"aria-label="Curve tree of 62 outputs in 2 layers"#));
+        assert_eq!(html.matches(r#"<details class="maths">"#).count(), 7);
+        assert!(!html.contains(r#"class="maths" open"#));
+        assert_eq!(html.matches(r#"aria-current="step""#).count(), 7);
+        // Step 2 lights both inputs' tuples, step 4 the membership proof,
+        // step 5 the anchor, and nothing else is ever lit.
+        assert_eq!(html.matches(r#"class="seg tuple on""#).count(), 2);
+        assert_eq!(html.matches(r#"class="seg sal on""#).count(), 2);
+        assert_eq!(html.matches(r#"class="seg member on""#).count(), 1);
+        assert_eq!(html.matches(r#"class="seg anchor on""#).count(), 1);
+        assert_eq!(html.matches(r#"<svg class="proof-map""#).count(), 4);
+
+        // A layer count the proof's length does not fit leaves the shape out
+        // rather than print rows that describe some other proof.
+        tx.rctsig_prunable.as_mut().expect("prunable").n_tree_layers = Some(1);
+        let odd = fcmp_page(None, &entry, &tx, None, None);
+        assert!(odd.shape.is_none());
+        assert_eq!(odd.root_curve, Some("Selene"));
+        assert!(odd.tree.is_none());
+        let html = odd.render().expect("renders");
+        assert!(!html.contains("rows, folded in"));
+        assert!(
+            html.contains(r#"<path class="web" d="M95 28H105"#),
+            "the drawing stands in"
+        );
     }
 
     /// A pruned node has none of the proof, and says so rather than showing
