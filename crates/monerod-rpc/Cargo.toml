@@ -32,6 +32,10 @@ tls = ["dep:hyper-rustls"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# The FCMP++ implementation monerod's stressnet v3 branch builds with, at the
+# same revision (its `src/fcmp_pp/fcmp_pp_rust/Cargo.toml`). Tests only: the
+# proof layout here is checked against it, not linked from it.
+monero-fcmp-plus-plus = { git = "https://github.com/monero-oxide/monero-oxide", rev = "31c26d96eaadbba910ffe3613ad8b4cf9c598a93" }
 
 [lints]
 workspace = true

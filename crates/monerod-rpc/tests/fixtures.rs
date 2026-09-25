@@ -2481,37 +2481,68 @@ fn the_tree_size_is_the_same_whichever_output_probes_it() {
     assert_eq!(lean.get("paths"), None, "nothing unasked for is kept");
 }
 
-/// Every length monerod's own library gives, for every input and layer count
-/// consensus allows.
+/// The proof layout here agrees with monero-oxide's for every input and layer
+/// count consensus allows: `FCMP_PLUS_PLUS_MAX_INPUTS` and
+/// `FCMP_PLUS_PLUS_MAX_LAYERS` in monerod's `src/cryptonote_config.h`.
 #[test]
-fn the_membership_proof_is_as_long_as_monerod_makes_it() {
-    use monerod_rpc::types::MembershipShape;
+fn the_proof_layout_matches_monero_oxide() {
+    use monero_fcmp_plus_plus::{Curves, FcmpPlusPlus, fcmps};
+    use monerod_rpc::types::{
+        FCMP_PP_SAL_LEN, FCMP_PP_TUPLE_LEN, HELIOS_CHUNK_WIDTH, MembershipShape, SELENE_CHUNK_WIDTH,
+    };
 
-    let path = fixtures_root().join("fcmp/membership_proof_size.txt");
-    let table = std::fs::read_to_string(&path).expect("the table is readable");
-    let mut rows = 0;
-    for line in table.lines().filter(|l| !l.starts_with('#')) {
-        let [inputs, layers, len]: [usize; 3] = line
-            .split_whitespace()
-            .map(|n| n.parse().expect("a number"))
-            .collect::<Vec<_>>()
-            .try_into()
-            .expect("three columns");
-        let layers = u8::try_from(layers).expect("a layer count");
-        let shape = MembershipShape::of(inputs, layers).expect("a shape");
-        assert_eq!(shape.len, len, "{inputs} inputs, {layers} layers");
-        rows += 1;
+    for inputs in 1..=128 {
+        for layers in 1..=12u8 {
+            let l = usize::from(layers);
+            let shape = MembershipShape::of(inputs, layers).expect("a shape");
+            let (selene_rows, helios_rows) = fcmps::Fcmp::<Curves>::ipa_rows(inputs, l);
+            assert_eq!(
+                (shape.selene_rows, shape.helios_rows, shape.len),
+                (
+                    selene_rows,
+                    helios_rows,
+                    fcmps::Fcmp::<Curves>::proof_size(inputs, l)
+                ),
+                "{inputs} inputs, {layers} layers"
+            );
+            assert_eq!(
+                inputs * (FCMP_PP_TUPLE_LEN + FCMP_PP_SAL_LEN) + shape.len,
+                FcmpPlusPlus::proof_size(inputs, l)
+            );
+        }
     }
-    assert_eq!(rows, 128 * 12);
-
-    // Small spends sit at each proof's floor; the rows grow past it with
-    // inputs and layers.
-    let small = MembershipShape::of(2, 2).expect("a shape");
-    assert_eq!((small.selene_rows, small.helios_rows), (256, 128));
-    let large = MembershipShape::of(8, 6).expect("a shape");
-    assert_eq!((large.selene_rows, large.helios_rows), (2048, 1024));
+    assert_eq!(SELENE_CHUNK_WIDTH, fcmps::LAYER_ONE_LEN as u64);
+    assert_eq!(HELIOS_CHUNK_WIDTH, fcmps::LAYER_TWO_LEN as u64);
     assert_eq!(MembershipShape::of(0, 2), None);
     assert_eq!(MembershipShape::of(2, 0), None);
+}
+
+/// Each captured proof is one monero-oxide reads whole, at the input count
+/// and layer count its transaction gives.
+#[test]
+fn monero_oxide_reads_each_captured_proof() {
+    use monero_fcmp_plus_plus::FcmpPlusPlus;
+
+    for (_, tx) in decoded_txs("fcmp/get_transactions_fcmp.json") {
+        let prunable = tx.rctsig_prunable.as_ref().expect("prunable");
+        let proof = hex_bytes(prunable.fcmp_pp.as_deref().expect("a proof"));
+        let pseudo_outs: Vec<[u8; 32]> = tx
+            .pseudo_outs()
+            .iter()
+            .map(|p| hex_bytes(p).try_into().expect("32 bytes"))
+            .collect();
+        let layers = usize::from(tx.n_tree_layers().expect("layers"));
+        let mut reader = proof.as_slice();
+        FcmpPlusPlus::read(&pseudo_outs, layers, &mut reader).expect("reads");
+        assert!(reader.is_empty(), "nothing left over");
+    }
+}
+
+fn hex_bytes(hex: &str) -> Vec<u8> {
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex"))
+        .collect()
 }
 
 /// The capture's spends' membership proofs are exactly the length the shape
